@@ -1,0 +1,38 @@
+id	decision	regex	must_appear_in
+D01	Name is Sekisho (renamed from Mooring)	sekisho	README design plan1 plans comparison inventory agw spike memory
+D02	Key token prefix sek_	sek_	design plan1 claude
+D03	Target users: Obot users switching	obot users|switching	design comparison memory
+D04	Shape like Obot	shape|like obot|obot.s shape	design comparison memory README
+D05	All of ACH's features over time	ach.s features|everything ach|all of ach	design comparison memory claude
+D06	Ideas from APM, identity broker, Cupcake	cupcake	design README memory
+D07	Rust for server and CLI	\brust\b	README design plan1 comparison memory claude
+D08	Open source, Apache-2.0	apache-2\.0	README design plan1 comparison claude
+D09	No licence key, user cap or phone-home	licence key|license key	README design comparison
+D10	Built on unmodified agentgateway	unmodified	README design plan1 comparison memory claude
+D11	Config file now, xDS later	xds	design plan1 agw
+D12	Gateway agent next to each agentgateway	gateway agent|gateway-agent	README design plan1
+D13	Release 1 scope (control plane, catalogs+delivery, MCP sign-in, basic audit)	basic audit|mcp sign-in	design
+D14	First-hour story	first hour|first-hour	design plans
+D15	Local accounts required	local account	README design plans comparison memory
+D16	Dex as the sign-in layer	\bdex\b	README design plans comparison memory claude
+D17	Sekisho runs its own OAuth server	oauth	README design plans claude
+D18	Web UI React + TypeScript	react	README design plans comparison memory claude
+D19	Release 1 coding tools: Claude Code, Codex, Gemini CLI, OpenCode	gemini cli	README design plans comparison
+D20	Git mode with pull requests (GitHub first)	pull request	README design plans comparison
+D21	Each model maps to one provider; routing in release 2	routing	design comparison
+D22	One provider per API format per environment	one provider per	design plan1 comparison
+D23	Budget refusal in extAuthz; rate limit records spend only	extauthz	design plan1
+D24	USD budgets per person, environment and key	per key|per environment key|BudgetScope	README design plan1 comparison
+D25	agentgateway pinned v1.7.0 until DNS fix released	v1\.7\.0	design plan1 spike claude
+D26	Session tokens 1 hour	1 hour	design
+D27	Audit kept 90 days	90 days	design
+D28	One organisation per install	organisation per install	design
+D29	Release 1 split into 8 plans plus 1b	1b	plans memory design
+D30	Internal docs never committed	committed	memdocs claude
+D31	Fail closed by default, fail-open per hook	fail.open	design plan1 plans
+D32	Mid-stream revocation via ext_proc	ext_proc	design plan1 agw spike
+D33	Catalogs in Obot-compatible formats	obot	README design plans
+D34	Bedrock and Azure providers in plan 1b	bedrock	design plan1 plans comparison
+D35	Client credentials stripped, not refused	stripped	design plan1
+D36	Official Apache-2.0 LICENSE file in repo	license	README plan1 claude
+D37	.claude/ tracked in Git; personal notes in CLAUDE.local.md	\.claude/.? is (tracked|public)	claude memdocs memory
