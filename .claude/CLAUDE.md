@@ -60,7 +60,7 @@ truth. Where a maintainer has them:
 | HTTP headers | `x-sekisho-*` |
 | Environment key tokens | `sek_<id>_<secret>`. Never `sk_`, which OpenAI and Stripe use |
 | Money | Integer micro-USD; prices per 1,000,000 tokens |
-| Line endings | LF, even where Git has `core.autocrlf=true`; plan 1 adds `.gitattributes` with `* text=auto eol=lf` |
+| Line endings | LF, even where Git has `core.autocrlf=true`; `.gitattributes` sets `* text=auto eol=lf` |
 
 ## Pins
 

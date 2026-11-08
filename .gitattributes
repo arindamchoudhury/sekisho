@@ -1,0 +1,3 @@
+# LF everywhere, even where Git has core.autocrlf=true (Git for Windows):
+# CRLF breaks shell scripts and TSV parsing.
+* text=auto eol=lf
