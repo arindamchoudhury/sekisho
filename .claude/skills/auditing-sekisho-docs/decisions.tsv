@@ -36,3 +36,4 @@ D34	Bedrock and Azure providers in plan 1b	bedrock	design plan1 plans comparison
 D35	Client credentials stripped, not refused	stripped	design plan1
 D36	Official Apache-2.0 LICENSE file in repo	license	README plan1 claude
 D37	.claude/ tracked in Git; personal notes in CLAUDE.local.md	\.claude/.? is (tracked|public)	claude memdocs memory
+D38	.private/ folder for private files, excluded from Git	\.private/	claude memdocs

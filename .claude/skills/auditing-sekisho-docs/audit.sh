@@ -14,18 +14,19 @@ cd "$root" || exit 2
 abs="$(pwd -W 2>/dev/null || pwd)"
 mem="${AUDIT_MEMORY_DIR:-$HOME/.claude/projects/$(printf '%s' "$abs" | sed 's/[^A-Za-z0-9]/-/g')/memory}"
 
-# Private notes, kept out of Git by these .git/info/exclude rules.
-rules=(/docs/comparison.md /docs/research/ /docs/superpowers/ /docs/architecture.md /docs/environment-spec.md /CLAUDE.local.md)
+# Private files, kept out of Git by these .git/info/exclude rules. The last one
+# is a safety net: the superpowers skills save there by default.
+rules=(/.private/ /CLAUDE.local.md /docs/superpowers/)
 
 declare -A F=(
   [README]=README.md
-  [design]=docs/superpowers/specs/2026-11-08-sekisho-release-1-design.md
-  [plan1]=docs/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md
-  [plans]=docs/superpowers/plans/README.md
-  [comparison]=docs/comparison.md
-  [inventory]=docs/research/feature-inventory.md
-  [agw]=docs/research/building-on-agentgateway.md
-  [spike]=docs/research/spike-agentgateway.md
+  [design]=.private/superpowers/specs/2026-11-08-sekisho-release-1-design.md
+  [plan1]=.private/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md
+  [plans]=.private/superpowers/plans/README.md
+  [comparison]=.private/comparison.md
+  [inventory]=.private/research/feature-inventory.md
+  [agw]=.private/research/building-on-agentgateway.md
+  [spike]=.private/research/spike-agentgateway.md
   [claude]=.claude/CLAUDE.md
   [memory]="$mem/sekisho-project.md"
   [memdocs]="$mem/sekisho-internal-docs-not-in-git.md"
@@ -54,8 +55,8 @@ else
   echo "  $((total - missing)) of $total decisions present everywhere expected"
 fi
 
-echo "== 2. Broken relative links (superseded docs may point at removed files)"
-for f in README.md $(find docs .claude -name '*.md' 2>/dev/null); do
+echo "== 2. Broken relative links (superseded notes may point at removed files)"
+for f in README.md $(find .private .claude docs -name '*.md' 2>/dev/null); do
   grep -o -E '\]\([^)]+\)' "$f" | sed -E 's/^\]\(//; s/\)$//' | grep -v -E '^(https?|mailto):' |
   while read -r link; do
     p="${link%%#*}"; [ -z "$p" ] && continue
@@ -64,7 +65,7 @@ for f in README.md $(find docs .claude -name '*.md' 2>/dev/null); do
 done
 
 echo "== 3. Leftover old names (Mooring, mk_), except the recorded rename"
-grep -r -n -i -E --exclude-dir=auditing-sekisho-docs 'mooring|\bmk_' README.md docs .claude 2>/dev/null |
+grep -r -n -i -E --exclude-dir=auditing-sekisho-docs 'mooring|\bmk_' README.md .private .claude docs 2>/dev/null |
   grep -v -i -E 'renamed from mooring|not mooring|formerly mooring|old name|mooring\.git|arindamchoudhury/mooring|projects.mooring|mooring, which' || echo "  none"
 
 echo "== 4. Git hygiene"
@@ -73,6 +74,8 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   for rule in "${rules[@]}"; do
     grep -qx -- "$rule" "$exc" || echo "  EXCLUDE RULE MISSING: $rule"
   done
+  stray="$(find docs/superpowers -type f 2>/dev/null)"
+  [ -n "$stray" ] && echo "  STRAY PRIVATE NOTE, move it into .private/superpowers/: $(echo $stray)"
   # Everything Git tracks, plus everything `git add -A` would pick up.
   visible="$( { git ls-files; git ls-files --others --exclude-standard; } | sort -u)"
   for rule in "${rules[@]}"; do
@@ -89,7 +92,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   done
   echo "  tracked: $(git ls-files | tr '\n' ' ')"
   echo "  git add -A would add: $(git ls-files --others --exclude-standard | tr '\n' ' ')"
-  echo "  README links to private notes: $(grep -c -E '\]\((\./)?(docs/(comparison|research|superpowers|architecture|environment-spec)|CLAUDE\.local)' README.md)"
+  echo "  README links to private files: $(grep -c -E '\]\((\./)?(\.private/|CLAUDE\.local|docs/superpowers/)' README.md)"
 else
   echo "  not a Git repository"
 fi

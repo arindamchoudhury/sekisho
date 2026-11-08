@@ -17,19 +17,21 @@ truth. Where a maintainer has them:
 
 | What | Path |
 |---|---|
-| Release 1 design. Section 14 lists every decision: **(decided)** = the owner decided; **(our call)** = can still change | `docs/superpowers/specs/2026-11-08-sekisho-release-1-design.md` |
-| Plans index (1, 1b, 2–8) | `docs/superpowers/plans/README.md` |
-| Plan 1, governed gateway core | `docs/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md` |
-| Research: feature inventory, building on agentgateway, spike results | `docs/research/` |
-| Comparison with ACH, Blue, Obot | `docs/comparison.md` |
-| Superseded first idea (history only, don't build from it) | `docs/architecture.md`, `docs/environment-spec.md` |
+| Release 1 design. Section 14 lists every decision: **(decided)** = the owner decided; **(our call)** = can still change | `.private/superpowers/specs/2026-11-08-sekisho-release-1-design.md` |
+| Plans index (1, 1b, 2–8) | `.private/superpowers/plans/README.md` |
+| Plan 1, governed gateway core | `.private/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md` |
+| Research: feature inventory, building on agentgateway, spike results | `.private/research/` |
+| Comparison with ACH, Blue, Obot | `.private/comparison.md` |
+| Superseded first idea (history only, don't build from it) | `.private/architecture.md`, `.private/environment-spec.md` |
 
 ## Rules
 
 1. **Private notes are never committed** and never linked from the README.
-   Each maintainer excludes them in `.git/info/exclude`:
-   `/docs/comparison.md`, `/docs/research/`, `/docs/superpowers/`,
-   `/docs/architecture.md`, `/docs/environment-spec.md`, `/CLAUDE.local.md`.
+   They all live in `.private/`. Each maintainer excludes them in
+   `.git/info/exclude` with `/.private/`, `/CLAUDE.local.md` and, as a safety
+   net, `/docs/superpowers/`. The superpowers skills save specs and plans to
+   `docs/superpowers/` by default: save them to `.private/superpowers/`
+   instead, and ignore those skills' "commit the doc" steps.
    If `.git` is ever re-created, restore these lines before the first
    `git add`. Before committing, check `git status --short --ignored`.
 2. **Tracked files:** `README.md`; `LICENSE` (the official Apache-2.0 text,

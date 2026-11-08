@@ -9,7 +9,7 @@ description: Use when writing, validating or debugging agentgateway configuratio
 
 Sekisho uses agentgateway unmodified: Sekisho writes its config and answers its
 hooks. Facts below were proven against **v1.7.0** in a spike (write-up in the
-maintainers' private notes, `docs/research/spike-agentgateway.md`; the table
+maintainers' private notes, `.private/research/spike-agentgateway.md`; the table
 below stands on its own). Anything else must be checked against the source at
 the pinned tag.
 

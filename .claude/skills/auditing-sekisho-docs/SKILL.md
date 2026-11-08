@@ -45,7 +45,7 @@ problems were found by reading, not by the script.
 
 ## Known, accepted output
 
-- Broken links in `docs/environment-spec.md`, which point at the removed
+- Broken links in `.private/environment-spec.md`, which point at the removed
   `examples/`; it is superseded.
 - "Mooring" in the design's note recording the rename.
 
@@ -61,5 +61,5 @@ problems were found by reading, not by the script.
 
 ## Without the private notes
 
-A fresh clone has no `docs/superpowers/`, `docs/research/` or project memory.
+A fresh clone has no `.private/superpowers/`, `.private/research/` or project memory.
 The script then says so and runs only the hygiene checks.

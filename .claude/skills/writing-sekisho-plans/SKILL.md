@@ -17,10 +17,10 @@ Global Constraints, Review Focus, test-first tasks and self-review.
 ## Before writing
 
 1. Read:
-   - the design sections that the plans index (`docs/superpowers/plans/README.md`)
+   - the design sections that the plans index (`.private/superpowers/plans/README.md`)
      lists for this plan;
    - plan 1's Global Constraints and Interfaces blocks;
-   - the related research in `docs/research/`.
+   - the related research in `.private/research/`.
 2. Check upstream facts live:
    - **agentgateway:** config shapes, protos and CEL fields at the pinned tag.
      **REQUIRED SUB-SKILL:** `working-with-agentgateway`.
@@ -37,7 +37,7 @@ Global Constraints, Review Focus, test-first tasks and self-review.
 
 ## The plan
 
-- Save it to `docs/superpowers/plans/YYYY-MM-DD-plan-<n>-<slug>.md`. It is
+- Save it to `.private/superpowers/plans/YYYY-MM-DD-plan-<n>-<slug>.md`. It is
   internal: never `git add` it.
 - Copy into Global Constraints the design values that apply: fail closed,
   micro-USD, one provider per API format, the pins, and "a Sekisho token never
