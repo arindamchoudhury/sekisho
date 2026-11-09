@@ -1,0 +1,14 @@
+[package]
+name = "sekisho-e2e"
+description = "Plan 1's end-to-end acceptance tests against agentgateway v1.7.0 (see e2e/docker-compose.yml)"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

@@ -1,0 +1,142 @@
+//! `sekisho-mock-model`: an OpenAI-compatible model for the end-to-end tests.
+//!
+//! `POST /v1/chat/completions` answers with `x-mock-chunks` chunks (default
+//! 20), one every `x-mock-interval-ms` (default 1000), and always reports
+//! usage: 1000 prompt tokens and one completion token per chunk. With
+//! `"stream": true` it streams server-sent events ending in `[DONE]`;
+//! otherwise it answers one JSON body with the same usage.
+//!
+//! `GET /_last_headers` returns the headers of the last model request, so a
+//! test can check what reached the provider. Listens on `MOCK_LISTEN`
+//! (default `0.0.0.0:8000`) with `TCP_NODELAY` on.
+
+use std::collections::BTreeMap;
+use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::body::{Body, Bytes};
+use axum::extract::State;
+use axum::http::{HeaderMap, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::serve::ListenerExt;
+use axum::{Json, Router};
+use serde_json::{Value, json};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+type LastHeaders = Arc<Mutex<BTreeMap<String, String>>>;
+
+#[tokio::main]
+async fn main() {
+    let addr = std::env::var("MOCK_LISTEN").unwrap_or_else(|_| "0.0.0.0:8000".into());
+    let last: LastHeaders = Arc::default();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(completions))
+        .route("/_last_headers", get(last_headers))
+        .route("/healthz", get(|| async { "ok" }))
+        .with_state(last);
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("cannot listen on {addr}: {e}"))
+        .tap_io(|tcp| {
+            // Without it, small SSE writes wait for ACKs (the spike's 40 ms).
+            let _ = tcp.set_nodelay(true);
+        });
+    println!("sekisho-mock-model listening on {addr}");
+    axum::serve(listener, app).await.expect("serve");
+}
+
+fn header_number(headers: &HeaderMap, name: &str, default: u64) -> u64 {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+async fn last_headers(State(last): State<LastHeaders>) -> Json<BTreeMap<String, String>> {
+    Json(last.lock().unwrap().clone())
+}
+
+async fn completions(
+    State(last): State<LastHeaders>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    *last.lock().unwrap() = headers
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
+    let model = body["model"].as_str().unwrap_or("mock-model").to_owned();
+    let usage = json!({
+        "prompt_tokens": 1000,
+        "completion_tokens": chunks,
+        "total_tokens": 1000 + chunks,
+    });
+    if body["stream"].as_bool() != Some(true) {
+        let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+        return Json(json!({
+            "id": "mock",
+            "object": "chat.completion",
+            "created": 0,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": text },
+                "finish_reason": "stop",
+            }],
+            "usage": usage,
+        }))
+        .into_response();
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+    tokio::spawn(async move {
+        let event = |value: Value| Ok(Bytes::from(format!("data: {value}\n\n")));
+        let chunk = |delta: Value, finish: Value| {
+            json!({
+                "id": "mock",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
+            })
+        };
+        for i in 0..chunks {
+            tokio::time::sleep(interval).await;
+            if tx
+                .send(event(chunk(
+                    json!({ "content": format!("t{i} ") }),
+                    Value::Null,
+                )))
+                .await
+                .is_err()
+            {
+                return; // the client went away
+            }
+        }
+        let _ = tx.send(event(chunk(json!({}), json!("stop")))).await;
+        let mut with_usage = chunk(json!({}), Value::Null);
+        with_usage["choices"] = json!([]);
+        with_usage["usage"] = usage;
+        let _ = tx.send(event(with_usage)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"data: [DONE]\n\n"))).await;
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
+}

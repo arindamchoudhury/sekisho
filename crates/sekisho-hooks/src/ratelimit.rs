@@ -3,10 +3,12 @@
 //! agentgateway calls it twice per request: before (cost 0) and after (the
 //! catalog cost in micro-USD, from `cost: int(llm.cost.total * 1000000.0)`).
 //! It always answers OK; refusals happen in `extAuthz`, whose answers reach
-//! the client with a message.
+//! the client with a message. Each descriptor carries the route's `env` and
+//! the `key` id that `extAuthz` verified.
 
 use std::sync::Arc;
 
+use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::EnvName;
 use sekisho_proto::ratelimit::rate_limit_response::Code;
@@ -17,7 +19,6 @@ use time::OffsetDateTime;
 use tonic::{Request, Response, Status};
 
 use crate::cache::AuthCache;
-use crate::credential::{Credential, resolve};
 
 pub struct Charger {
     pub cache: Arc<AuthCache>,
@@ -62,8 +63,13 @@ impl Charger {
                 .find(|e| e.key == key)
                 .map(|e| e.value.as_str())
         };
-        // Revoked or suspended keys are still charged for what they used.
-        let Credential::Known(key) = resolve(&self.cache, entry("credential")) else {
+        // The key id comes from Sekisho's own extAuthz answer (`extauthz.key`),
+        // never from the client, so no secret is needed. Revoked or suspended
+        // keys are still charged for what they used.
+        let Some(key) = entry("key")
+            .and_then(EnvKeyId::parse)
+            .and_then(|id| self.cache.key(&id))
+        else {
             tracing::warn!(cost, "spend not recorded: no known key in the descriptor");
             return;
         };

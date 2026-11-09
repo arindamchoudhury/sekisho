@@ -93,8 +93,10 @@ async fn rig() -> Rig {
     }
 }
 
-/// A descriptor as agentgateway sends it for a Sekisho route.
-fn req(env: &str, token: &str, cost: u64) -> RateLimitRequest {
+/// A descriptor as agentgateway sends it for a Sekisho route: the route's
+/// environment and the key id Sekisho's extAuthz hook verified
+/// (`extauthz.key`).
+fn req(env: &str, key: &str, cost: u64) -> RateLimitRequest {
     RateLimitRequest {
         domain: "sekisho".into(),
         descriptors: vec![RateLimitDescriptor {
@@ -104,8 +106,8 @@ fn req(env: &str, token: &str, cost: u64) -> RateLimitRequest {
                     value: env.into(),
                 },
                 Entry {
-                    key: "credential".into(),
-                    value: format!("Bearer {token}"),
+                    key: "key".into(),
+                    value: key.into(),
                 },
             ],
             hits_addend: Some(cost),
@@ -127,7 +129,7 @@ async fn charge_records_exact_cost() {
     let (store, budgets, now) = (&rig.store, rig.budgets.clone(), NOW);
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", &rig.token, 4500))
+        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await
         .unwrap()
         .into_inner();
@@ -139,7 +141,7 @@ async fn charge_records_exact_cost() {
     // Every applicable budget is charged: environment, key and person.
     assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
     rig.rls
-        .should_rate_limit(req("data-team", &rig.token, 500))
+        .should_rate_limit(req("data-team", rig.key.as_str(), 500))
         .await
         .unwrap();
     assert_eq!(spent(&rig).await, [MicroUsd(5000); 3]);
@@ -150,7 +152,7 @@ async fn precheck_with_zero_cost_charges_nothing() {
     let mut rig = rig().await;
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", &rig.token, 0))
+        .should_rate_limit(req("data-team", rig.key.as_str(), 0))
         .await
         .unwrap()
         .into_inner();
@@ -161,7 +163,7 @@ async fn precheck_with_zero_cost_charges_nothing() {
 #[tokio::test]
 async fn request_level_hits_addend_is_the_fallback() {
     let mut rig = rig().await;
-    let mut request = req("data-team", &rig.token, 0);
+    let mut request = req("data-team", rig.key.as_str(), 0);
     request.descriptors[0].hits_addend = None;
     request.hits_addend = 1234;
     rig.rls.should_rate_limit(request).await.unwrap();
@@ -171,22 +173,20 @@ async fn request_level_hits_addend_is_the_fallback() {
 #[tokio::test]
 async fn always_ok_but_charges_only_known_keys() {
     let mut rig = rig().await;
-    let (id, _) = sekisho_core::keys::parse_token(&rig.token).unwrap();
-    let wrong_secret = format!("sek_{id}_{}", "A".repeat(43));
     let mut odd = vec![
         req("data-team", "garbage", 4500),
-        req("data-team", &wrong_secret, 4500),
-        req(
-            "data-team",
-            &format!("sek_aaaaaaaaaaaa_{}", "A".repeat(43)),
-            4500,
-        ),
+        req("data-team", "aaaaaaaaaaaa", 4500), // well-formed, unknown
     ];
-    let mut no_credential = req("data-team", &rig.token, 4500);
-    no_credential.descriptors[0]
-        .entries
-        .retain(|e| e.key != "credential");
-    odd.push(no_credential);
+    let mut no_key = req("data-team", rig.key.as_str(), 4500);
+    no_key.descriptors[0].entries.retain(|e| e.key != "key");
+    odd.push(no_key);
+    // The old descriptor shape: a bearer token is not accepted as a key id.
+    let mut credential = req("data-team", rig.key.as_str(), 4500);
+    credential.descriptors[0].entries[1] = Entry {
+        key: "credential".into(),
+        value: format!("Bearer {}", rig.token),
+    };
+    odd.push(credential);
     odd.push(RateLimitRequest {
         domain: "sekisho".into(),
         descriptors: vec![],
@@ -209,7 +209,7 @@ async fn a_revoked_key_is_still_charged_for_its_last_request() {
     let mut rig = rig().await;
     rig.store.revoke_key(&rig.key).await.unwrap();
     rig.rls
-        .should_rate_limit(req("data-team", &rig.token, 4500))
+        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await
         .unwrap();
     assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
@@ -221,7 +221,7 @@ async fn store_failure_still_answers_ok() {
     rig.store.pool().close().await;
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", &rig.token, 4500))
+        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await
         .unwrap()
         .into_inner();

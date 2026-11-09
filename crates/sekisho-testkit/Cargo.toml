@@ -1,6 +1,6 @@
 [package]
 name = "sekisho-testkit"
-description = "Test support for Sekisho: throwaway PostgreSQL stores"
+description = "Test support for Sekisho: throwaway PostgreSQL stores and a mock model server"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "sekisho-mock-model"
+path = "src/main.rs"
+
 [dependencies]
+axum = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-store = { workspace = true }
+serde_json = { workspace = true }
 testcontainers = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { workspace = true }

@@ -106,7 +106,8 @@ fn hook_policies(
         "extAuthz".into(),
         json!({
             "host": hooks.authz_http,
-            "protocol": { "http": {} },
+            // Exposes the key id the hook verified as `extauthz.key`.
+            "protocol": { "http": { "metadata": { "key": "response.headers[\"x-sekisho-key\"]" } } },
             "includeRequestHeaders": ["authorization"],
             "failureMode": if options.fail_open_authz { "allow" } else { "deny" },
         }),
@@ -121,7 +122,9 @@ fn hook_policies(
                 "type": "tokens",
                 "entries": [
                     { "key": "env", "value": cel_string(env) },
-                    { "key": "credential", "value": "request.headers[\"authorization\"]" },
+                    // Not the Authorization header: agentgateway evaluates these
+                    // after backendAuth has put the provider key there.
+                    { "key": "key", "value": "extauthz.key" },
                 ],
                 // The catalog price of the finished request, in micro-USD.
                 "cost": "int(llm.cost.total * 1000000.0)",

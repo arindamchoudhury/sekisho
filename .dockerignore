@@ -1,0 +1,8 @@
+# Build outputs and Git data are not needed in the image build.
+target
+.git
+# Private notes and per-checkout files must never reach an image layer.
+.private
+.superpowers
+CLAUDE.local.md
+.claude

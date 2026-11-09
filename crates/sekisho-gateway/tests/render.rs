@@ -345,6 +345,26 @@ fn every_kind_renders_sorted_and_valid() {
     );
 }
 
+/// agentgateway evaluates descriptor entries after `backendAuth` has replaced
+/// `Authorization` with the provider key, so spend is keyed on the key id
+/// Sekisho's own extAuthz hook verified, exposed as `extauthz.key`.
+#[test]
+fn spend_is_charged_to_the_key_extauthz_verified() {
+    let doc = parse(&render(&fixtures::basic(), &RenderOptions::default()));
+    let policies = &routes(&doc)[0]["policies"];
+    assert_eq!(
+        policies["extAuthz"]["protocol"]["http"]["metadata"],
+        serde_json::json!({ "key": "response.headers[\"x-sekisho-key\"]" })
+    );
+    assert_eq!(
+        policies["remoteRateLimit"]["descriptors"][0]["entries"],
+        serde_json::json!([
+            { "key": "env", "value": "\"data-team\"" },
+            { "key": "key", "value": "extauthz.key" }
+        ])
+    );
+}
+
 #[test]
 fn client_credentials_are_stripped_on_every_route() {
     let doc = parse(&render(

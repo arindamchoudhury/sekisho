@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
 use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
@@ -18,7 +19,9 @@ use sekisho_server::app::{AppState, router, start_publisher};
 use sekisho_server::config::ServerConfig;
 use sekisho_store::Store;
 use time::OffsetDateTime;
+use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 
 #[derive(Parser)]
@@ -130,23 +133,38 @@ async fn serve() -> anyhow::Result<()> {
     let until_stopped = |mut stopped: watch::Receiver<bool>| async move {
         let _ = stopped.wait_for(|s| *s).await;
     };
-    let admin = axum::serve(admin_listener, router(state))
+    // TCP_NODELAY on every connection: with Nagle's algorithm, a small answer
+    // written in two parts waits for agentgateway's delayed ACK, about 40 ms
+    // per hook call.
+    let admin = axum::serve(admin_listener.tap_io(|tcp| no_delay(tcp)), router(state))
         .with_graceful_shutdown(until_stopped(stopped.clone()));
-    let hooks = axum::serve(hooks_listener, authz::router(hooks))
-        .with_graceful_shutdown(until_stopped(stopped.clone()));
+    let hooks = axum::serve(
+        hooks_listener.tap_io(|tcp| no_delay(tcp)),
+        authz::router(hooks),
+    )
+    .with_graceful_shutdown(until_stopped(stopped.clone()));
+    let grpc_incoming = TcpListenerStream::new(grpc_listener).map(|conn| {
+        if let Ok(tcp) = &conn {
+            no_delay(tcp);
+        }
+        conn
+    });
     let grpc = tonic::transport::Server::builder()
         .add_service(RateLimitServiceServer::new(charger))
         .add_service(ExternalProcessorServer::new(guard))
-        .serve_with_incoming_shutdown(
-            TcpListenerStream::new(grpc_listener),
-            until_stopped(stopped),
-        );
+        .serve_with_incoming_shutdown(grpc_incoming, until_stopped(stopped));
     tokio::try_join!(
         async { admin.await.context("admin API") },
         async { hooks.await.context("extAuthz hook") },
         async { grpc.await.context("rate-limit and ext_proc hooks") },
     )?;
     Ok(())
+}
+
+fn no_delay(tcp: &TcpStream) {
+    if let Err(error) = tcp.set_nodelay(true) {
+        tracing::warn!(%error, "could not set TCP_NODELAY");
+    }
 }
 
 async fn gateway_agent(server_url: Url, config_path: PathBuf) -> anyhow::Result<()> {

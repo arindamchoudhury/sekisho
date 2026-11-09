@@ -2517,6 +2517,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sekisho-e2e"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sekisho-gateway"
 version = "0.1.0"
 dependencies = [
@@ -2611,9 +2620,13 @@ dependencies = [
 name = "sekisho-testkit"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "sekisho-core",
  "sekisho-store",
+ "serde_json",
  "testcontainers",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

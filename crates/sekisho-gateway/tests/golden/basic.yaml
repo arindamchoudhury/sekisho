@@ -30,7 +30,9 @@ binds:
         extAuthz:
           host: sekisho:9080
           protocol:
-            http: {}
+            http:
+              metadata:
+                key: response.headers["x-sekisho-key"]
           includeRequestHeaders:
           - authorization
           failureMode: deny
@@ -43,8 +45,8 @@ binds:
             entries:
             - key: env
               value: '"data-team"'
-            - key: credential
-              value: request.headers["authorization"]
+            - key: key
+              value: extauthz.key
             cost: int(llm.cost.total * 1000000.0)
         extProc:
           host: sekisho:9081

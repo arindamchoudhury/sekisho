@@ -1,0 +1,89 @@
+# End-to-end stack for plan 1's acceptance tests (crates/sekisho-e2e).
+#   docker compose -f e2e/docker-compose.yml up -d --build --wait
+#   cargo test -p sekisho-e2e -- --ignored --test-threads=1
+#   docker compose -f e2e/docker-compose.yml down -v
+# Test-only secrets below; never reuse them.
+
+name: sekisho-e2e
+
+x-sekisho: &sekisho
+  image: sekisho-e2e:dev
+  build:
+    context: ..
+    dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:18
+    command: ["postgres", "-c", "fsync=off"]
+    environment:
+      POSTGRES_PASSWORD: sekisho
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      retries: 30
+
+  migrate:
+    <<: *sekisho
+    command: ["migrate"]
+    environment:
+      SEKISHO_DATABASE_URL: postgres://postgres:sekisho@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sekisho:
+    <<: *sekisho
+    command: ["serve"]
+    environment:
+      SEKISHO_DATABASE_URL: postgres://postgres:sekisho@postgres:5432/postgres
+      SEKISHO_ENCRYPTION_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+      SEKISHO_BOOTSTRAP_TOKEN: e2e-bootstrap-token-0123456789
+      SEKISHO_GATEWAY_TOKEN: e2e-gateway-token-0123456789
+      SEKISHO_HOOKS_HTTP_TARGET: sekisho:9080
+      SEKISHO_HOOKS_GRPC_TARGET: sekisho:9081
+      # Adds the hook-free /bare/openai route for the latency test.
+      SEKISHO_E2E_BARE_ROUTE: "1"
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  gateway-agent:
+    <<: *sekisho
+    command: ["gateway-agent", "--server", "http://sekisho:8080/", "--config-path", "/config/config.yaml"]
+    environment:
+      SEKISHO_GATEWAY_TOKEN: e2e-gateway-token-0123456789
+    volumes:
+      - agwcfg:/config
+    healthcheck:
+      # Healthy once the first config is on disk, so agentgateway can start.
+      test: ["CMD", "test", "-s", "/config/config.yaml"]
+      interval: 1s
+      retries: 60
+    depends_on:
+      - sekisho
+
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:v1.7.0
+    command: ["-f", "/config/config.yaml"]
+    environment:
+      # 32 bytes as 64 hex characters, quoted so YAML keeps it a string.
+      SESSION_KEY: "e2e0000000000000000000000000000000000000000000000000000000000abc"
+    volumes:
+      - agwcfg:/config:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      gateway-agent:
+        condition: service_healthy
+
+  mock-model:
+    <<: *sekisho
+    entrypoint: ["sekisho-mock-model"]
+    ports:
+      - "127.0.0.1:18000:8000"
+
+volumes:
+  agwcfg:
