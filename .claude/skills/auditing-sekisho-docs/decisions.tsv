@@ -29,10 +29,10 @@ D27	Audit kept 90 days	90 days	design
 D28	One organisation per install	organisation per install	design
 D29	Release 1 split into 8 plans plus 1b	1b	plans memory design
 D30	Internal docs never committed	committed	memdocs claude
-D31	Fail closed by default, fail-open per hook	fail.open	design plan1 plans
+D31	Fail closed by default, fail-open per hook	fail.open	design plan1 plans README
 D32	Mid-stream revocation via ext_proc	ext_proc	design plan1 agw spike
 D33	Catalogs in Obot-compatible formats	obot	README design plans
-D34	Bedrock and Azure providers in plan 1b	bedrock	design plan1 plans comparison
+D34	Bedrock and Azure providers in plan 1b	bedrock	design plan1 plans comparison README
 D35	Client credentials stripped, not refused	stripped	design plan1
 D36	Official Apache-2.0 LICENSE file in repo	license	README plan1 claude
 D37	.claude/ tracked in Git; personal notes in CLAUDE.local.md	\.claude/.? is (tracked|public)	claude memdocs memory
@@ -42,11 +42,11 @@ D40	MCP clients can register with CIMD as well as dynamic client registration	ci
 D41	No existence oracle on /env/ routes	existence oracle	design plans
 D42	CLI refresh token in the OS keyring, never in a file	keyring	design plans
 D43	OAuth server returns iss (RFC 9207); pre-registered clients tried first	rfc 9207	design plans
-D44	Release 1 works with clients on both MCP protocol generations (2026-07-28 and earlier)	protocol generations	design plans
-D45	Owner on every catalog entry and environment, handed over at offboarding	handed over|hand-over	design plans
-D46	Quarantine (kill switch) of a catalog entry in every environment	quarantin	design plans
-D47	Budget alerts by signed webhook	alert webhook	design plans
-D48	Spend export in FOCUS format	\bfocus\b	design plans
-D49	sekisho status reports unmanaged MCP servers and marketplaces, kept on the machine	unmanaged config	design plans
-D50	Market-research gaps placed in releases 2 and 3 (enforced settings, MCP Registry API, ID-JAG, lifecycle, scanners, risk signals; rug-pull detection, session rules, analytics)	enforced settings	design
+D44	Release 1 works with clients on both MCP protocol generations (2026-07-28 and earlier)	protocol generations|2026-07-28 mcp specification and on earlier	design plans README
+D45	Owner on every catalog entry and environment, handed over at offboarding	handed over|hand-over|to a new owner	design plans README
+D46	Quarantine (kill switch) of a catalog entry in every environment	quarantin	design plans README
+D47	Budget alerts by signed webhook	alert webhook|alerts to signed webhooks	design plans README
+D48	Spend export in FOCUS format	\bfocus\b	design plans README
+D49	sekisho status reports unmanaged MCP servers and marketplaces, kept on the machine	unmanaged config|config sekisho didn.t install	design plans README
+D50	Market-research gaps placed in releases 2 and 3 (enforced settings, MCP Registry API, ID-JAG, lifecycle, scanners, risk signals; rug-pull detection, session rules, analytics)	enforced settings	design README
 D51	agentgateway-only formats stay in the rendered config and ext_mcp; hooks use standard protocols; each bump checks for features leaving open source (risk 13)	commercial edition|envoy.s standard protocols	design agw plan1
