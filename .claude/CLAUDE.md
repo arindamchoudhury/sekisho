@@ -67,7 +67,7 @@ truth. Where a maintainer has them:
 | What | Pin |
 |---|---|
 | Rust | 1.99.1, edition 2024; crate versions from plan 1's Tech Stack |
-| New dependency versions | Must be at least 14 days old (`writing-sekisho-plans` has a script) |
+| New dependency versions | Must be at least 14 days old, indirect ones in `Cargo.lock` too. After any lockfile change, run `bash .claude/skills/writing-sekisho-plans/pin-versions.sh --lock --since HEAD` and apply the pins it prints |
 | agentgateway | `cr.agentgateway.dev/agentgateway:v1.7.0` until a release contains PRs #4302 and #4304 (the DNS fix for #2810) |
 | PostgreSQL | 18 |
 | Dex | v2.46.1, the sign-in layer behind Sekisho's own OAuth 2.1 server |

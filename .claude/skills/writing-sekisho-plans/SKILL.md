@@ -29,6 +29,12 @@ Global Constraints, Review Focus, test-first tasks and self-review.
    - **Crate versions:** run
      `bash .claude/skills/writing-sekisho-plans/pin-versions.sh <crate>...`.
      Use the "use" column, which is at least 14 days old.
+   - **Indirect versions:** the 14-day rule covers every crate in
+     `Cargo.lock`, and Cargo resolves indirect dependencies to their newest
+     versions, which can be hours old. Any task that changes `Cargo.lock`
+     runs `pin-versions.sh --lock --since HEAD` before its commit and applies
+     the `cargo update --precise` pins it prints. Say so in Global
+     Constraints.
 3. Reuse plan 1's names rather than inventing parallel ones:
    - crates `sekisho-*`, binary `sekisho`, `SEKISHO_*` variables, `sek_`
      tokens;
@@ -59,6 +65,8 @@ Global Constraints, Review Focus, test-first tasks and self-review.
 
 - Writing agentgateway config from memory instead of validating it.
 - Picking a crate version less than 14 days old.
+- Checking only direct dependencies: plan 1's first lockfile took `syn` and
+  `itoa` versions published that day.
 - A design requirement left with no owning plan: compare every plan's scope
   note with the index.
 - Changing a decision inside a plan without also updating the design and
