@@ -20,7 +20,7 @@ truth. Where a maintainer has them:
 | Release 1 design. Section 14 lists every decision: **(decided)** = the owner decided; **(our call)** = can still change | `.private/superpowers/specs/2026-11-08-sekisho-release-1-design.md` |
 | Plans index (1, 1b, 2–8) | `.private/superpowers/plans/README.md` |
 | Plan 1, governed gateway core | `.private/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md` |
-| Research: feature inventory, feasibility study, building on agentgateway, spike results | `.private/research/` |
+| Research: feature inventory, feasibility study, market research, building on agentgateway, spike results | `.private/research/` |
 | Comparison with ACH, Blue, Obot | `.private/comparison.md` |
 | Superseded first idea (history only, don't build from it) | `.private/architecture.md`, `.private/environment-spec.md` |
 

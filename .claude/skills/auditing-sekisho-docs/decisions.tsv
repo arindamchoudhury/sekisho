@@ -41,3 +41,11 @@ D39	Per-user MCP tokens through token exchange per server, not the credential pr
 D40	MCP clients can register with CIMD as well as dynamic client registration	cimd	design plans
 D41	No existence oracle on /env/ routes	existence oracle	design plans
 D42	CLI refresh token in the OS keyring, never in a file	keyring	design plans
+D43	OAuth server returns iss (RFC 9207); pre-registered clients tried first	rfc 9207	design plans
+D44	Release 1 works with clients on both MCP protocol generations (2026-07-28 and earlier)	protocol generations	design plans
+D45	Owner on every catalog entry and environment, handed over at offboarding	handed over|hand-over	design plans
+D46	Quarantine (kill switch) of a catalog entry in every environment	quarantin	design plans
+D47	Budget alerts by signed webhook	alert webhook	design plans
+D48	Spend export in FOCUS format	\bfocus\b	design plans
+D49	sekisho status reports unmanaged MCP servers and marketplaces, kept on the machine	unmanaged config	design plans
+D50	Market-research gaps placed in releases 2 and 3 (enforced settings, MCP Registry API, ID-JAG, lifecycle, scanners, risk signals; rug-pull detection, session rules, analytics)	enforced settings	design
