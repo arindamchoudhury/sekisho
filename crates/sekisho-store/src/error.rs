@@ -56,6 +56,11 @@ pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(d) if d.is_unique_violation())
 }
 
+/// Whether `e` breaks the named constraint.
+pub(crate) fn violates(e: &sqlx::Error, constraint: &str) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.constraint() == Some(constraint))
+}
+
 pub(crate) fn is_foreign_key_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(d) if d.is_foreign_key_violation())
 }

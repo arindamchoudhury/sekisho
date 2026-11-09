@@ -3,7 +3,9 @@
 //! Each write that changes what the gateway or the hooks see announces a
 //! [`ChangeKind`] in the same transaction (see [`notify`]).
 
+mod environments;
 mod error;
+mod keys;
 mod models;
 pub mod notify;
 mod providers;
@@ -11,7 +13,9 @@ mod providers;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
+pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
+pub use keys::EnvKey;
 pub use models::{Model, NewModel};
 pub use notify::ChangeKind;
 pub use providers::{NewProvider, Provider};
