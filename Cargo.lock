@@ -2346,14 +2346,18 @@ dependencies = [
 name = "sekisho-hooks"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "reqwest",
  "sekisho-core",
  "sekisho-store",
  "sekisho-testkit",
+ "serde_json",
  "sqlx",
  "time",
  "tokio",
  "tokio-stream",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2366,6 +2370,7 @@ dependencies = [
  "reqwest",
  "sekisho-core",
  "sekisho-gateway",
+ "sekisho-hooks",
  "sekisho-store",
  "sekisho-testkit",
  "serde",

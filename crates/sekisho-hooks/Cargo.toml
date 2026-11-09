@@ -8,14 +8,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+axum = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-store = { workspace = true }
-time = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true, features = ["formatting"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
 sekisho-testkit = { workspace = true }
 sqlx = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+time = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+uuid = { workspace = true }

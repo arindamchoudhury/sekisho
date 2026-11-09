@@ -17,6 +17,7 @@ axum = { workspace = true }
 clap = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-gateway = { workspace = true }
+sekisho-hooks = { workspace = true }
 sekisho-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

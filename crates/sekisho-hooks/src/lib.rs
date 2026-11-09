@@ -2,4 +2,5 @@
 //! (`extAuthz`), spend charging (rate limit) and stream guarding (`ext_proc`).
 //! All of them read keys from the [`cache::AuthCache`].
 
+pub mod authz;
 pub mod cache;

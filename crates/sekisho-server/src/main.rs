@@ -1,12 +1,17 @@
 //! The `sekisho` binary.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use sekisho_hooks::authz::{self, HooksState};
+use sekisho_hooks::cache::AuthCache;
 use sekisho_server::app::{AppState, router, start_publisher};
 use sekisho_server::config::ServerConfig;
 use sekisho_store::Store;
+use time::OffsetDateTime;
+use tokio::sync::watch;
 
 #[derive(Parser)]
 #[command(name = "sekisho", version, about = "Control plane for coding agents")]
@@ -17,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the admin API and publish agentgateway's configuration.
+    /// Run the admin API and the extAuthz hook, and publish agentgateway's configuration.
     Serve,
     /// Apply database migrations (needs SEKISHO_DATABASE_URL).
     Migrate,
@@ -51,17 +56,50 @@ async fn serve() -> anyhow::Result<()> {
     let store = Store::connect(&config.database_url)
         .await
         .context("connecting to SEKISHO_DATABASE_URL")?;
+
+    let cache = AuthCache::load(&store)
+        .await
+        .context("loading keys for the hooks")?;
+    cache.spawn_refresh(store.clone());
+    let hooks = HooksState {
+        cache,
+        store: store.clone(),
+        clock: Arc::new(OffsetDateTime::now_utc),
+    };
     let state = AppState::new(store, config.secret_box, config.settings);
     start_publisher(&state)
         .await
         .context("starting the gateway config publisher")?;
-    let listener = tokio::net::TcpListener::bind(config.listen)
+
+    let admin_listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("binding SEKISHO_LISTEN {}", config.listen))?;
-    tracing::info!(address = %config.listen, "admin API listening");
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let hooks_listener = tokio::net::TcpListener::bind(config.hooks_http_listen)
+        .await
+        .with_context(|| {
+            format!(
+                "binding SEKISHO_HOOKS_HTTP_LISTEN {}",
+                config.hooks_http_listen
+            )
+        })?;
+    tracing::info!(admin = %config.listen, hooks_http = %config.hooks_http_listen, "listening");
+
+    // One signal stops both servers.
+    let (stop, stopped) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown().await;
+        let _ = stop.send(true);
+    });
+    let until_stopped = |mut stopped: watch::Receiver<bool>| async move {
+        let _ = stopped.wait_for(|s| *s).await;
+    };
+    let admin = axum::serve(admin_listener, router(state))
+        .with_graceful_shutdown(until_stopped(stopped.clone()));
+    let hooks = axum::serve(hooks_listener, authz::router(hooks))
+        .with_graceful_shutdown(until_stopped(stopped));
+    tokio::try_join!(async { admin.await.context("admin API") }, async {
+        hooks.await.context("extAuthz hook")
+    },)?;
     Ok(())
 }
 
