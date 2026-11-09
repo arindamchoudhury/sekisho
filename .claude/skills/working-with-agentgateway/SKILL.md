@@ -20,6 +20,10 @@ the pinned tag.
   for #2810), and set its DNS `maxTTL` low. Check with
   `gh release list -R agentgateway/agentgateway` and
   `gh api repos/agentgateway/agentgateway/compare/v1.7.0...<tag>`.
+- Before a bump, read the release notes and the config schema diff for
+  anything Sekisho uses that is removed, deprecated or moved to a commercial
+  edition. agentgateway has a closed enterprise edition, so a feature can
+  leave the open-source one.
 - After a bump, re-validate every config and re-run plan 1's e2e tests.
 
 ## Validate a config

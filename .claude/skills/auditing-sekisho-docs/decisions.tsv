@@ -49,3 +49,4 @@ D47	Budget alerts by signed webhook	alert webhook	design plans
 D48	Spend export in FOCUS format	\bfocus\b	design plans
 D49	sekisho status reports unmanaged MCP servers and marketplaces, kept on the machine	unmanaged config	design plans
 D50	Market-research gaps placed in releases 2 and 3 (enforced settings, MCP Registry API, ID-JAG, lifecycle, scanners, risk signals; rug-pull detection, session rules, analytics)	enforced settings	design
+D51	agentgateway-only formats stay in the rendered config and ext_mcp; hooks use standard protocols; each bump checks for features leaving open source (risk 13)	commercial edition|envoy.s standard protocols	design agw plan1
