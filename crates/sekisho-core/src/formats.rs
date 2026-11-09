@@ -36,6 +36,27 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    pub const ALL: [ProviderKind; 4] = [
+        ProviderKind::Anthropic,
+        ProviderKind::OpenAi,
+        ProviderKind::Gemini,
+        ProviderKind::OpenAiCompatible,
+    ];
+
+    /// The same spelling as the serde name, for storage as text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAi => "openai",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::OpenAiCompatible => "openai_compatible",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
     pub fn api_format(self) -> ApiFormat {
         match self {
             ProviderKind::Anthropic => ApiFormat::Anthropic,
@@ -79,5 +100,16 @@ mod tests {
             assert_eq!(serde_json::from_str::<ProviderKind>(wire).unwrap(), kind);
         }
         assert!(serde_json::from_str::<ProviderKind>("\"open_ai\"").is_err());
+    }
+
+    #[test]
+    fn provider_kind_text_matches_wire_names() {
+        for kind in ProviderKind::ALL {
+            let wire = serde_json::to_string(&kind).unwrap();
+            assert_eq!(format!("\"{}\"", kind.as_str()), wire);
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ProviderKind::parse("open_ai"), None);
+        assert_eq!(ProviderKind::parse("OpenAI"), None);
     }
 }
