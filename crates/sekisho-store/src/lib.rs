@@ -3,6 +3,7 @@
 //! Each write that changes what the gateway or the hooks see announces a
 //! [`ChangeKind`] in the same transaction (see [`notify`]).
 
+mod budgets;
 mod environments;
 mod error;
 mod keys;
@@ -13,6 +14,7 @@ mod providers;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
+pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
 pub use keys::EnvKey;

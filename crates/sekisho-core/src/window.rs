@@ -9,6 +9,23 @@ pub enum WindowKind {
     Month,
 }
 
+impl WindowKind {
+    pub const ALL: [WindowKind; 3] = [WindowKind::Day, WindowKind::Week, WindowKind::Month];
+
+    /// Lowercase, for storage as text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WindowKind::Day => "day",
+            WindowKind::Week => "week",
+            WindowKind::Month => "month",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
 /// A budget's window. Calendar windows follow UTC days, ISO weeks (from
 /// Monday) and months. Rolling windows are fixed lengths (1, 7 or 30 days)
 /// counted from the budget's creation.
@@ -251,5 +268,19 @@ mod tests {
                 datetime!(2026-11-01 10:30 UTC)
             )
         );
+    }
+
+    #[test]
+    fn window_kind_text() {
+        for (kind, text) in [
+            (WindowKind::Day, "day"),
+            (WindowKind::Week, "week"),
+            (WindowKind::Month, "month"),
+        ] {
+            assert_eq!(kind.as_str(), text);
+            assert_eq!(WindowKind::parse(text), Some(kind));
+        }
+        assert_eq!(WindowKind::ALL.len(), 3);
+        assert_eq!(WindowKind::parse("Month"), None);
     }
 }

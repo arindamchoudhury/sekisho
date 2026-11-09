@@ -43,6 +43,26 @@ fn describe(errors: &[FieldError]) -> String {
         .join("; ")
 }
 
+const LABEL_MAX_CHARS: usize = 100;
+
+/// Checks a human-readable name such as a key's or a budget's: 1–100
+/// characters, not only spaces, no control characters.
+pub(crate) fn check_label(errors: &mut Vec<FieldError>, field: &str, value: &str) {
+    if value.trim().is_empty() {
+        errors.push(FieldError::new(field, "must not be empty"));
+    } else if value.chars().count() > LABEL_MAX_CHARS {
+        errors.push(FieldError::new(
+            field,
+            format!("use at most {LABEL_MAX_CHARS} characters"),
+        ));
+    } else if value.chars().any(char::is_control) {
+        errors.push(FieldError::new(
+            field,
+            "must not contain control characters",
+        ));
+    }
+}
+
 /// `Ok` when there are no field errors, otherwise `Validation` with all of them.
 pub(crate) fn check(errors: Vec<FieldError>) -> Result<(), StoreError> {
     if errors.is_empty() {

@@ -4,7 +4,7 @@ use sqlx::Row;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 
-use crate::error::{FieldError, bad_column, check, violates};
+use crate::error::{FieldError, bad_column, check, check_label, violates};
 use crate::notify::{ChangeKind, notify};
 use crate::{Result, Store, StoreError};
 
@@ -36,26 +36,12 @@ macro_rules! select_keys {
     };
 }
 
-const NAME_MAX_CHARS: usize = 100;
-
 fn validate(owner: &str, name: &str, expires_at: Option<OffsetDateTime>) -> Vec<FieldError> {
     let mut errors = Vec::new();
     if owner.trim().is_empty() {
         errors.push(FieldError::new("owner", "must not be empty"));
     }
-    if name.trim().is_empty() {
-        errors.push(FieldError::new("name", "must not be empty"));
-    } else if name.chars().count() > NAME_MAX_CHARS {
-        errors.push(FieldError::new(
-            "name",
-            format!("use at most {NAME_MAX_CHARS} characters"),
-        ));
-    } else if name.chars().any(char::is_control) {
-        errors.push(FieldError::new(
-            "name",
-            "must not contain control characters",
-        ));
-    }
+    check_label(&mut errors, "name", name);
     if expires_at.is_some_and(|at| at <= OffsetDateTime::now_utc()) {
         errors.push(FieldError::new("expires_at", "must be in the future"));
     }
