@@ -1,10 +1,13 @@
 //! The `sekisho` binary.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
@@ -31,8 +34,16 @@ enum Command {
     Serve,
     /// Apply database migrations (needs SEKISHO_DATABASE_URL).
     Migrate,
-    /// Run next to agentgateway and keep its config file current.
-    GatewayAgent,
+    /// Run next to agentgateway and keep its config file current (needs
+    /// SEKISHO_GATEWAY_TOKEN).
+    GatewayAgent {
+        /// Sekisho's admin listener, such as http://sekisho:8080/.
+        #[arg(long)]
+        server: Url,
+        /// The file agentgateway reads its config from.
+        #[arg(long)]
+        config_path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -43,9 +54,10 @@ async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve => serve().await,
         Command::Migrate => migrate().await,
-        Command::GatewayAgent => Err(anyhow::anyhow!(
-            "gateway-agent is not implemented yet (plan 1, Task 11)"
-        )),
+        Command::GatewayAgent {
+            server,
+            config_path,
+        } => gateway_agent(server, config_path).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -134,6 +146,24 @@ async fn serve() -> anyhow::Result<()> {
         async { hooks.await.context("extAuthz hook") },
         async { grpc.await.context("rate-limit and ext_proc hooks") },
     )?;
+    Ok(())
+}
+
+async fn gateway_agent(server_url: Url, config_path: PathBuf) -> anyhow::Result<()> {
+    let gateway_token = std::env::var("SEKISHO_GATEWAY_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .context("SEKISHO_GATEWAY_TOKEN is not set")?;
+    let config = AgentConfig {
+        server_url,
+        gateway_token,
+        config_path,
+        retry: Duration::from_secs(1),
+    };
+    tokio::select! {
+        result = run_agent(config) => result?,
+        () = shutdown() => {}
+    }
     Ok(())
 }
 

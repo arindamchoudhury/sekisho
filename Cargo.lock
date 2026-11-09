@@ -2520,12 +2520,16 @@ dependencies = [
 name = "sekisho-gateway"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "jsonschema",
+ "reqwest",
  "sekisho-core",
  "sekisho-store",
  "sekisho-testkit",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
+ "tempfile",
  "tokio",
  "tracing",
 ]
