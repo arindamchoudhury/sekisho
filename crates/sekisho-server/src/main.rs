@@ -7,11 +7,16 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
+use sekisho_hooks::extproc::StreamGuard;
+use sekisho_hooks::ratelimit::Charger;
+use sekisho_proto::ext_proc::external_processor_server::ExternalProcessorServer;
+use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitServiceServer;
 use sekisho_server::app::{AppState, router, start_publisher};
 use sekisho_server::config::ServerConfig;
 use sekisho_store::Store;
 use time::OffsetDateTime;
 use tokio::sync::watch;
+use tokio_stream::wrappers::TcpListenerStream;
 
 #[derive(Parser)]
 #[command(name = "sekisho", version, about = "Control plane for coding agents")]
@@ -22,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the admin API and the extAuthz hook, and publish agentgateway's configuration.
+    /// Run the admin API and agentgateway's hooks, and publish its configuration.
     Serve,
     /// Apply database migrations (needs SEKISHO_DATABASE_URL).
     Migrate,
@@ -61,11 +66,18 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .context("loading keys for the hooks")?;
     cache.spawn_refresh(store.clone());
+    let clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync> = Arc::new(OffsetDateTime::now_utc);
     let hooks = HooksState {
-        cache,
+        cache: Arc::clone(&cache),
         store: store.clone(),
-        clock: Arc::new(OffsetDateTime::now_utc),
+        clock: Arc::clone(&clock),
     };
+    let charger = Charger {
+        cache: Arc::clone(&cache),
+        store: store.clone(),
+        clock: Arc::clone(&clock),
+    };
+    let guard = StreamGuard { cache, clock };
     let state = AppState::new(store, config.secret_box, config.settings);
     start_publisher(&state)
         .await
@@ -82,9 +94,22 @@ async fn serve() -> anyhow::Result<()> {
                 config.hooks_http_listen
             )
         })?;
-    tracing::info!(admin = %config.listen, hooks_http = %config.hooks_http_listen, "listening");
+    let grpc_listener = tokio::net::TcpListener::bind(config.hooks_grpc_listen)
+        .await
+        .with_context(|| {
+            format!(
+                "binding SEKISHO_HOOKS_GRPC_LISTEN {}",
+                config.hooks_grpc_listen
+            )
+        })?;
+    tracing::info!(
+        admin = %config.listen,
+        hooks_http = %config.hooks_http_listen,
+        hooks_grpc = %config.hooks_grpc_listen,
+        "listening"
+    );
 
-    // One signal stops both servers.
+    // One signal stops every server.
     let (stop, stopped) = watch::channel(false);
     tokio::spawn(async move {
         shutdown().await;
@@ -96,10 +121,19 @@ async fn serve() -> anyhow::Result<()> {
     let admin = axum::serve(admin_listener, router(state))
         .with_graceful_shutdown(until_stopped(stopped.clone()));
     let hooks = axum::serve(hooks_listener, authz::router(hooks))
-        .with_graceful_shutdown(until_stopped(stopped));
-    tokio::try_join!(async { admin.await.context("admin API") }, async {
-        hooks.await.context("extAuthz hook")
-    },)?;
+        .with_graceful_shutdown(until_stopped(stopped.clone()));
+    let grpc = tonic::transport::Server::builder()
+        .add_service(RateLimitServiceServer::new(charger))
+        .add_service(ExternalProcessorServer::new(guard))
+        .serve_with_incoming_shutdown(
+            TcpListenerStream::new(grpc_listener),
+            until_stopped(stopped),
+        );
+    tokio::try_join!(
+        async { admin.await.context("admin API") },
+        async { hooks.await.context("extAuthz hook") },
+        async { grpc.await.context("rate-limit and ext_proc hooks") },
+    )?;
     Ok(())
 }
 

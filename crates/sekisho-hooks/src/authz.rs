@@ -13,7 +13,6 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
-use sekisho_core::keys::{KeyState, effective_state, parse_token, verify_secret};
 use sekisho_core::names::EnvName;
 use sekisho_store::{BudgetStatus, Store, StoreError};
 use serde_json::json;
@@ -21,6 +20,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::cache::{AuthCache, CachedKey};
+use crate::credential::{Credential, refusal, resolve};
 
 /// What every hook needs.
 #[derive(Clone)]
@@ -52,15 +52,14 @@ async fn check(State(state): State<HooksState>, req: Request) -> Response {
     decision.into_response()
 }
 
-/// The token of exactly one `Authorization: Bearer <token>` header.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+/// The value of exactly one `Authorization` header.
+fn single_authorization(headers: &HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(AUTHORIZATION).iter();
     let value = values.next()?;
     if values.next().is_some() {
         return None;
     }
-    let (scheme, token) = value.to_str().ok()?.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    value.to_str().ok()
 }
 
 /// The environment of a `/env/<name>/…` path.
@@ -70,32 +69,18 @@ fn path_environment(path: &str) -> Option<EnvName> {
 }
 
 async fn decide(state: &HooksState, path: &str, headers: &HeaderMap) -> Decision {
-    let Some((id, secret)) = bearer_token(headers).and_then(parse_token) else {
-        return Decision::Unauthorized;
-    };
-    // A wrong secret looks the same as an unknown key.
-    let Some(key) = state
-        .cache
-        .key(&id)
-        .filter(|k| verify_secret(&secret, &k.secret_sha256))
-    else {
-        return Decision::Forbidden("unknown_key");
+    let key = match resolve(&state.cache, single_authorization(headers)) {
+        Credential::Malformed => return Decision::Unauthorized,
+        Credential::Unknown => return Decision::Forbidden("unknown_key"),
+        Credential::Known(key) => key,
     };
     match path_environment(path) {
         Some(env) if env == key.environment && state.cache.environment_exists(&env) => {}
         _ => return Decision::Forbidden("wrong_environment"),
     }
     let now = (state.clock)();
-    match effective_state(
-        key.revoked.then_some(now),
-        key.suspended,
-        key.expires_at,
-        now,
-    ) {
-        KeyState::Active => {}
-        KeyState::Revoked => return Decision::Forbidden("revoked"),
-        KeyState::Expired => return Decision::Forbidden("expired"),
-        KeyState::Suspended => return Decision::Forbidden("suspended"),
+    if let Some(reason) = refusal(&key, now) {
+        return Decision::Forbidden(reason);
     }
     match exhausted_budget(&state.store, &key, now).await {
         Ok(None) => Decision::Allow(key),

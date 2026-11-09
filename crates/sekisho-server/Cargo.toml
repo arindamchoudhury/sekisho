@@ -18,13 +18,15 @@ clap = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-gateway = { workspace = true }
 sekisho-hooks = { workspace = true }
+sekisho-proto = { workspace = true }
 sekisho-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde", "formatting", "parsing"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }

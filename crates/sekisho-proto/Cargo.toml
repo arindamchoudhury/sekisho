@@ -1,0 +1,22 @@
+[package]
+name = "sekisho-proto"
+description = "gRPC types for agentgateway's rate-limit and ext_proc hooks (Envoy protocols)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+protox = { workspace = true }
+tonic-prost-build = { workspace = true }
+
+[lib]
+# Envoy's proto comments hold indented text that rustdoc would run as Rust.
+doctest = false

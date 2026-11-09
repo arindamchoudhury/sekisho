@@ -10,11 +10,13 @@ repository.workspace = true
 [dependencies]
 axum = { workspace = true }
 sekisho-core = { workspace = true }
+sekisho-proto = { workspace = true }
 sekisho-store = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -23,4 +25,5 @@ sekisho-testkit = { workspace = true }
 sqlx = { workspace = true }
 time = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+tokio-stream = { workspace = true, features = ["net"] }
 uuid = { workspace = true }

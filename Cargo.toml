@@ -13,6 +13,7 @@ repository = "https://github.com/arindamchoudhury/sekisho"
 sekisho-core = { path = "crates/sekisho-core" }
 sekisho-gateway = { path = "crates/sekisho-gateway" }
 sekisho-hooks = { path = "crates/sekisho-hooks" }
+sekisho-proto = { path = "crates/sekisho-proto" }
 sekisho-store = { path = "crates/sekisho-store" }
 sekisho-testkit = { path = "crates/sekisho-testkit" }
 aes-gcm = "0.11.1"
@@ -21,6 +22,9 @@ axum = "0.8.9"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 jsonschema = { version = "0.60.1", default-features = false }
+prost = "0.14.4"
+prost-types = "0.14.4"
+protox = "0.10.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -33,6 +37,9 @@ thiserror = "2.0.21"
 time = "0.3.55"
 tokio = "1.54.1"
 tokio-stream = "0.1.19"
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = "1.29.0"
