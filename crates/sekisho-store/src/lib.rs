@@ -18,7 +18,7 @@ use sqlx::postgres::PgPoolOptions;
 pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
-pub use keys::EnvKey;
+pub use keys::{AuthSnapshot, EnvKey};
 pub use models::{Model, NewModel};
 pub use notify::ChangeKind;
 pub use providers::{NewProvider, Provider};

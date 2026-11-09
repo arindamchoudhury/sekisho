@@ -510,3 +510,44 @@ async fn writes_notify_and_failures_do_not() {
         "no notification from refused writes"
     );
 }
+
+#[tokio::test]
+async fn auth_snapshot_has_every_key_and_environment() {
+    let (store, _sb) = common::store().await;
+    let data = store
+        .upsert_environment(spec("data-team", &[]))
+        .await
+        .unwrap()
+        .spec
+        .name;
+    let empty = store
+        .upsert_environment(spec("empty", &[]))
+        .await
+        .unwrap()
+        .spec
+        .name;
+    let (live, token) = store
+        .create_key(&data, "alice@example.com", "ci", None)
+        .await
+        .unwrap();
+    let (gone, _) = store
+        .create_key(&data, "bob@example.com", "old", None)
+        .await
+        .unwrap();
+    store.revoke_key(&gone.id).await.unwrap();
+
+    let snapshot = store.auth_snapshot().await.unwrap();
+    assert_eq!(snapshot.environments, vec![data, empty]);
+    let (_, secret) = parse_token(&token).unwrap();
+    let ids: Vec<&str> = snapshot.keys.iter().map(|(k, _)| k.id.as_str()).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&live.id.as_str()) && ids.contains(&gone.id.as_str()));
+    let (_, sha) = snapshot.keys.iter().find(|(k, _)| k.id == live.id).unwrap();
+    assert_eq!(*sha, hash_secret(&secret));
+    assert!(
+        snapshot
+            .keys
+            .iter()
+            .any(|(k, _)| k.id == gone.id && k.revoked_at.is_some())
+    );
+}

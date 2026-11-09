@@ -2343,6 +2343,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sekisho-hooks"
+version = "0.1.0"
+dependencies = [
+ "sekisho-core",
+ "sekisho-store",
+ "sekisho-testkit",
+ "sqlx",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "sekisho-server"
 version = "0.1.0"
 dependencies = [

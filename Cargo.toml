@@ -12,6 +12,7 @@ repository = "https://github.com/arindamchoudhury/sekisho"
 [workspace.dependencies]
 sekisho-core = { path = "crates/sekisho-core" }
 sekisho-gateway = { path = "crates/sekisho-gateway" }
+sekisho-hooks = { path = "crates/sekisho-hooks" }
 sekisho-store = { path = "crates/sekisho-store" }
 sekisho-testkit = { path = "crates/sekisho-testkit" }
 aes-gcm = "0.11.1"

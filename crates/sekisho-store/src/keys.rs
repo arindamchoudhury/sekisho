@@ -69,6 +69,15 @@ fn from_row(row: &PgRow) -> Result<(EnvKey, [u8; 32])> {
     Ok((key, sha))
 }
 
+/// Everything the hooks' auth cache holds, read at one point in time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthSnapshot {
+    /// Every key, revoked ones included, with the SHA-256 of its secret.
+    pub keys: Vec<(EnvKey, [u8; 32])>,
+    /// Every environment name, sorted.
+    pub environments: Vec<EnvName>,
+}
+
 impl Store {
     /// Makes a key for `environment`. The token is returned once, here; only
     /// the hash of its secret is stored.
@@ -135,6 +144,29 @@ impl Store {
         .await?;
         tx.commit().await?;
         rows.iter().map(|r| Ok(from_row(r)?.0)).collect()
+    }
+
+    /// Every key and environment in one consistent read, for the auth cache.
+    pub async fn auth_snapshot(&self) -> Result<AuthSnapshot> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("set transaction isolation level repeatable read, read only")
+            .execute(&mut *tx)
+            .await?;
+        let keys = sqlx::query(concat!(select_keys!(), " order by k.id"))
+            .fetch_all(&mut *tx)
+            .await?
+            .iter()
+            .map(from_row)
+            .collect::<Result<_>>()?;
+        let names: Vec<String> = sqlx::query_scalar("select name from environments order by name")
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let environments = names
+            .iter()
+            .map(|n| EnvName::parse(n).map_err(|_| bad_column("environment name", n)))
+            .collect::<Result<_>>()?;
+        Ok(AuthSnapshot { keys, environments })
     }
 
     /// The key and the SHA-256 of its secret, for checking a presented token.
