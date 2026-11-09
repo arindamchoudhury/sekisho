@@ -1,0 +1,17 @@
+[package]
+name = "sekisho-core"
+description = "Sekisho's domain types: names, money, budget windows and API formats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+time = { workspace = true, features = ["macros"] }
