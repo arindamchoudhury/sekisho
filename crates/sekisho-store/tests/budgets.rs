@@ -488,3 +488,21 @@ async fn charge_edge_cases() {
     );
     assert_eq!(store.charge(&[], MicroUsd(50), NOW).await.unwrap(), []);
 }
+
+#[tokio::test]
+async fn get_budget_by_id() {
+    let (store, _sb) = common::store().await;
+    let env = env(&store, "data-team").await;
+    let b = budget(
+        &store,
+        BudgetScope::Environment(env),
+        "1",
+        WindowKind::Month,
+    )
+    .await;
+    assert_eq!(store.get_budget(b.id).await.unwrap(), b);
+    assert!(matches!(
+        store.get_budget(Uuid::nil()).await,
+        Err(StoreError::NotFound)
+    ));
+}

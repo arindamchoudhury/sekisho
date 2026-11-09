@@ -253,16 +253,7 @@ fn catalog(priced: &[PricedModel]) -> Value {
 /// An exact USD decimal for agentgateway's catalog: `4500` micro-USD is
 /// `"0.0045"`, `3000000` is `"3"`.
 pub fn usd(amount: MicroUsd) -> String {
-    const PER_USD: u64 = 1_000_000;
-    let sign = if amount.0 < 0 { "-" } else { "" };
-    let abs = amount.0.unsigned_abs();
-    let (whole, frac) = (abs / PER_USD, abs % PER_USD);
-    if frac == 0 {
-        format!("{sign}{whole}")
-    } else {
-        let frac = format!("{frac:06}");
-        format!("{sign}{whole}.{}", frac.trim_end_matches('0'))
-    }
+    amount.to_usd_string()
 }
 
 static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {

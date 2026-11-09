@@ -1,0 +1,14 @@
+[package]
+name = "sekisho-testkit"
+description = "Test support for Sekisho: throwaway PostgreSQL stores"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sekisho-core = { workspace = true }
+sekisho-store = { workspace = true }
+testcontainers = { workspace = true }

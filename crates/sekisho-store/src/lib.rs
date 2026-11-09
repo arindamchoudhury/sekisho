@@ -6,6 +6,7 @@
 mod budgets;
 mod environments;
 mod error;
+mod gateway_config;
 mod keys;
 mod models;
 pub mod notify;

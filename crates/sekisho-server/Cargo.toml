@@ -1,0 +1,33 @@
+[package]
+name = "sekisho-server"
+description = "The sekisho binary: admin API, gateway config publishing and hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sekisho"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+sekisho-core = { workspace = true }
+sekisho-gateway = { workspace = true }
+sekisho-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true, features = ["serde", "formatting", "parsing"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+sekisho-testkit = { workspace = true }

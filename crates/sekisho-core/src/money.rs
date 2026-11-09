@@ -51,6 +51,23 @@ impl MicroUsd {
     }
 }
 
+impl MicroUsd {
+    /// The shortest exact decimal: `4500` is `"0.0045"`, `3_000_000` is `"3"`.
+    /// [`MicroUsd::from_usd_str`] reads it back.
+    pub fn to_usd_string(self) -> String {
+        let per = MICROS_PER_USD.unsigned_abs();
+        let sign = if self.0 < 0 { "-" } else { "" };
+        let abs = self.0.unsigned_abs();
+        let (whole, frac) = (abs / per, abs % per);
+        if frac == 0 {
+            format!("{sign}{whole}")
+        } else {
+            let frac = format!("{frac:0DECIMALS$}");
+            format!("{sign}{whole}.{}", frac.trim_end_matches('0'))
+        }
+    }
+}
+
 /// Prints `$0.004500`; negative amounts print `-$0.004500`.
 impl fmt::Display for MicroUsd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -112,6 +129,26 @@ mod tests {
         assert_eq!(MicroUsd(250_000_000).to_string(), "$250.000000");
         assert_eq!(MicroUsd(-4500).to_string(), "-$0.004500");
         assert_eq!(MicroUsd(i64::MIN).to_string(), "-$9223372036854.775808");
+    }
+
+    #[test]
+    fn usd_decimal_strings_are_exact_and_short() {
+        for (micro, text) in [
+            (0, "0"),
+            (1, "0.000001"),
+            (4_500, "0.0045"),
+            (1_250_000, "1.25"),
+            (15_000_000, "15"),
+            (-4_500, "-0.0045"),
+        ] {
+            assert_eq!(MicroUsd(micro).to_usd_string(), text);
+            assert_eq!(
+                MicroUsd::from_usd_str(text.trim_start_matches('-'))
+                    .unwrap()
+                    .0,
+                micro.abs()
+            );
+        }
     }
 
     #[test]

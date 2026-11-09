@@ -18,5 +18,5 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-testcontainers = { workspace = true }
+sekisho-testkit = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

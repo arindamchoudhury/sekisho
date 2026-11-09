@@ -221,6 +221,15 @@ impl Store {
             .collect()
     }
 
+    pub async fn get_budget(&self, id: Uuid) -> Result<Budget> {
+        let row = sqlx::query(concat!(select_budgets!(), " where b.id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        from_row(&row)
+    }
+
     /// Deletes a budget and its spend history.
     pub async fn delete_budget(&self, id: Uuid) -> Result<()> {
         let mut tx = self.pool.begin().await?;

@@ -11,11 +11,17 @@ repository = "https://github.com/arindamchoudhury/sekisho"
 
 [workspace.dependencies]
 sekisho-core = { path = "crates/sekisho-core" }
+sekisho-gateway = { path = "crates/sekisho-gateway" }
 sekisho-store = { path = "crates/sekisho-store" }
+sekisho-testkit = { path = "crates/sekisho-testkit" }
 aes-gcm = "0.11.1"
+anyhow = "1.0.104"
+axum = "0.8.9"
 base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive"] }
 jsonschema = { version = "0.60.1", default-features = false }
 rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_yaml_ng = "0.10.0"
@@ -27,4 +33,5 @@ time = "0.3.55"
 tokio = "1.54.1"
 tokio-stream = "0.1.19"
 tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 uuid = "1.29.0"
