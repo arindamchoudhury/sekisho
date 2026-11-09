@@ -1,0 +1,70 @@
+config:
+  modelCatalog:
+  - inline:
+      providers:
+        mock:
+          models:
+            mock-model:
+              rates:
+                input: '3'
+                output: '15'
+binds:
+- port: 3000
+  listeners:
+  - name: sekisho
+    protocol: HTTP
+    routes:
+    - name: data-team-openai
+      matches:
+      - path:
+          pathPrefix: /env/data-team/openai
+      policies:
+        requestHeaderModifier:
+          remove:
+          - x-api-key
+          - api-key
+          - x-goog-api-key
+        urlRewrite:
+          path:
+            prefix: /
+        extAuthz:
+          host: sekisho:9080
+          protocol:
+            http: {}
+          includeRequestHeaders:
+          - authorization
+          failureMode: deny
+        remoteRateLimit:
+          host: sekisho:9081
+          domain: sekisho
+          failureMode: failClosed
+          descriptors:
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: credential
+              value: request.headers["authorization"]
+            cost: int(llm.cost.total * 1000000.0)
+        extProc:
+          host: sekisho:9081
+          failureMode: failClosed
+          processingOptions:
+            requestBodyMode: none
+            responseBodyMode: fullDuplexStreamed
+      backends:
+      - ai:
+          name: mock
+          provider:
+            custom:
+              providerOverride: mock
+              formats:
+              - type: completions
+          hostOverride: mock:8000
+          pathPrefix: /v1
+        policies:
+          backendAuth:
+            key: mock-key
+          authorization:
+            rules:
+            - require: llm.requestModel in ["mock-model"]
