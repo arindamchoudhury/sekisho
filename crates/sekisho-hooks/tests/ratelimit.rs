@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
@@ -225,6 +226,61 @@ async fn always_ok_but_charges_only_known_keys() {
 async fn a_revoked_key_is_still_charged_for_its_last_request() {
     let mut rig = rig().await;
     rig.store.revoke_key(&rig.key).await.unwrap();
+    rig.rls
+        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .await
+        .unwrap();
+    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
+}
+
+/// A brief database failure while charging must not lose the spend: the
+/// charge is tried again. Here the spend table is missing for 50 ms.
+#[tokio::test]
+async fn a_brief_database_failure_does_not_lose_spend() {
+    let mut rig = rig().await;
+    sqlx::query("alter table spend rename to spend_away")
+        .execute(rig.store.pool())
+        .await
+        .unwrap();
+    let pool = rig.store.pool().clone();
+    let restore = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        sqlx::query("alter table spend_away rename to spend")
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    let resp = rig
+        .rls
+        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .await
+        .unwrap()
+        .into_inner();
+    restore.await.unwrap();
+    assert_eq!(resp.overall_code, Code::Ok as i32);
+    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
+}
+
+/// Each budget's spend is its own upsert, so a retry after one budget fails
+/// must not charge the others again. A trigger fails the first write to the
+/// budget with the highest id, which the store charges last.
+#[tokio::test]
+async fn a_retry_never_charges_a_budget_twice() {
+    let mut rig = rig().await;
+    let last = rig.budgets.iter().map(|b| b.id).max().unwrap();
+    for sql in [
+        "create sequence spend_failures".to_owned(),
+        format!(
+            "create function fail_once() returns trigger language plpgsql as $$ begin              if new.budget_id = '{last}' and nextval('spend_failures') = 1 then              raise exception 'injected failure'; end if; return new; end $$"
+        ),
+        "create trigger fail_once before insert or update on spend          for each row execute function fail_once()"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(rig.store.pool())
+            .await
+            .unwrap();
+    }
     rig.rls
         .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await

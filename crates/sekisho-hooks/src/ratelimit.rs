@@ -7,6 +7,7 @@
 //! the `key` id that `extAuthz` verified.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use sekisho_core::keys::{EnvKeyId, verify_secret};
 use sekisho_core::money::MicroUsd;
@@ -14,11 +15,17 @@ use sekisho_core::names::EnvName;
 use sekisho_proto::ratelimit::rate_limit_response::Code;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitService;
 use sekisho_proto::ratelimit::{RateLimitDescriptor, RateLimitRequest, RateLimitResponse};
-use sekisho_store::Store;
+use sekisho_store::{Store, StoreError};
 use time::OffsetDateTime;
 use tonic::{Request, Response, Status};
 
 use crate::cache::AuthCache;
+
+/// The pauses before each new attempt at recording spend after a database
+/// error, so a brief outage doesn't lose spend. A charge that committed but
+/// whose answer was lost is counted twice; for a budget, over-counting is the
+/// safer side.
+const CHARGE_RETRIES: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(400)];
 
 pub struct Charger {
     pub cache: Arc<AuthCache>,
@@ -87,9 +94,7 @@ impl Charger {
         let env = entry("env")
             .and_then(|e| EnvName::parse(e).ok())
             .unwrap_or_else(|| key.environment.clone());
-        let budgets = match self
-            .store
-            .applicable_budgets(&env, &key.id, &key.owner)
+        let budgets = match retried(|| self.store.applicable_budgets(&env, &key.id, &key.owner))
             .await
         {
             Ok(budgets) => budgets,
@@ -98,13 +103,43 @@ impl Charger {
                 return;
             }
         };
-        let ids: Vec<_> = budgets.iter().map(|b| b.id).collect();
-        if let Err(error) = self
-            .store
-            .charge(&ids, MicroUsd(cost), (self.clock)())
-            .await
-        {
-            tracing::error!(key = %key.id, cost, %error, "spend not recorded: charging failed");
+        let now = (self.clock)(); // every attempt charges the request's window
+        // One budget at a time: each is its own upsert, so retrying several
+        // together would charge again the ones that already succeeded.
+        for budget in &budgets {
+            let charged = retried(|| {
+                self.store
+                    .charge(std::slice::from_ref(&budget.id), MicroUsd(cost), now)
+            })
+            .await;
+            if let Err(error) = charged {
+                tracing::error!(
+                    key = %key.id, budget = %budget.name, cost, %error,
+                    "spend not recorded for this budget: the database kept failing"
+                );
+            }
+        }
+    }
+}
+
+/// Runs `attempt` until it succeeds, pausing as [`CHARGE_RETRIES`] says after
+/// each failure. Returns the last error when every attempt failed.
+async fn retried<T, F, Fut>(mut attempt: F) -> Result<T, StoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, StoreError>>,
+{
+    let mut pauses = CHARGE_RETRIES.iter();
+    loop {
+        match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(error) => match pauses.next() {
+                Some(pause) => {
+                    tracing::warn!(%error, "database error while recording spend; trying again");
+                    tokio::time::sleep(*pause).await;
+                }
+                None => return Err(error),
+            },
         }
     }
 }
