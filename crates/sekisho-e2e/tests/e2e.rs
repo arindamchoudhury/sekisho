@@ -527,6 +527,54 @@ async fn unrelated_config_change_keeps_stream() {
     assert!(text.contains("[DONE]"));
 }
 
+/// Changing the environment a stream belongs to (here: allowing a second
+/// model) re-renders that stream's own route. The change goes live while the
+/// stream runs, and the stream still finishes.
+#[tokio::test]
+#[ignore]
+async fn a_change_to_the_streams_own_environment_keeps_it() {
+    let (env, _, token) = fresh_env("own-change").await;
+    ensure(
+        "/api/v1/models",
+        json!({ "name": MODEL_B, "provider": "mock", "input_price": "3", "output_price": "15" }),
+    )
+    .await;
+    let route = format!("/env/{env}/openai");
+    let mut resp = chat_request(&http(), &route, Some(&token), MODEL, 10, 300, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    let mut changed = false;
+    while let Some(bytes) = resp.chunk().await.unwrap() {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        if !changed && text.contains("\"content\"") {
+            put_env_models(&env, &[MODEL, MODEL_B]).await;
+            let start = Instant::now();
+            loop {
+                let status = chat_request(&http(), &route, Some(&token), MODEL_B, 1, 0, false)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                if status == StatusCode::OK {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(2),
+                    "{env}'s change not live within 2 s (last {status})"
+                );
+                sleep(Duration::from_millis(50)).await;
+            }
+            changed = true;
+        }
+    }
+    assert!(changed);
+    assert_eq!(text.matches("\"content\"").count(), 10, "{text}");
+    assert!(text.contains("[DONE]"));
+}
+
 #[tokio::test]
 #[ignore]
 async fn sekisho_down_requests_refused() {
