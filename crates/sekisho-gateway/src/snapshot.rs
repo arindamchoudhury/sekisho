@@ -7,7 +7,7 @@ use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
-use sekisho_store::{Store, StoreError};
+use sekisho_store::{ProviderCredential, Store, StoreError};
 
 /// Where agentgateway reaches Sekisho's hooks, each as `host:port`, and the
 /// secret its rate-limit calls carry.
@@ -84,8 +84,8 @@ pub struct GatewaySnapshot {
     pub hooks: HookTargets,
 }
 
-/// Reads providers, models and environments, decrypting each provider key
-/// that a route needs.
+/// Reads providers, models and environments, decrypting each provider
+/// credential that a route needs.
 ///
 /// The three reads are separate, so a change committed between them can
 /// leave a model that the environment list names but the model list lacks.
@@ -102,7 +102,7 @@ pub async fn build_snapshot(
     let provider_by_name: HashMap<&str, _> =
         providers.iter().map(|p| (p.name.as_str(), p)).collect();
     let model_by_name: HashMap<&str, _> = models.iter().map(|m| (m.name.as_str(), m)).collect();
-    let mut api_keys = HashMap::new();
+    let mut credentials: HashMap<_, ProviderCredential> = HashMap::new();
 
     let mut snapshot_envs = Vec::with_capacity(environments.len());
     for env in &environments {
@@ -115,7 +115,7 @@ pub async fn build_snapshot(
                 tracing::warn!(env = %env.spec.name, model = %name, "model changed while rendering; skipped");
                 continue;
             };
-            let format = provider.kind.api_format();
+            let format = provider.format;
             match routes.iter_mut().find(|r| r.format == format) {
                 Some(route) if route.provider == provider.name => route.models.push(name.clone()),
                 // The store refuses this on save; skip rather than route to two providers.
@@ -124,13 +124,32 @@ pub async fn build_snapshot(
                     route_provider = %route.provider, "two providers for one API format; model skipped"
                 ),
                 None => {
-                    let api_key = match api_keys.get(&provider.id) {
-                        Some(key) => String::clone(key),
+                    // Their backends need the region or endpoint and cloud
+                    // auth, which plan 1b's Task 3 renders. Until then they
+                    // get no route: a config agentgateway's schema refuses
+                    // would stop every environment's from publishing.
+                    if matches!(provider.kind, ProviderKind::Bedrock | ProviderKind::Azure) {
+                        tracing::warn!(
+                            env = %env.spec.name, model = %name, provider = %provider.name,
+                            "Bedrock and Azure providers aren't rendered yet; model skipped"
+                        );
+                        continue;
+                    }
+                    let credential = match credentials.get(&provider.id) {
+                        Some(credential) => credential.clone(),
                         None => {
-                            let key = store.provider_api_key(secret_box, provider.id).await?;
-                            api_keys.insert(provider.id, key.clone());
-                            key
+                            let credential =
+                                store.provider_credential(secret_box, provider.id).await?;
+                            credentials.insert(provider.id, credential.clone());
+                            credential
                         }
+                    };
+                    let ProviderCredential::Key(api_key) = credential else {
+                        tracing::warn!(
+                            env = %env.spec.name, model = %name, provider = %provider.name,
+                            "only API keys are rendered yet; model skipped"
+                        );
+                        continue;
                     };
                     routes.push(ModelRoute {
                         format,

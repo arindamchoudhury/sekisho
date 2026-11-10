@@ -4,9 +4,10 @@ use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_gateway::{
-    EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, build_snapshot,
+    EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
+    build_snapshot, render, validate,
 };
-use sekisho_store::{EnvironmentSpec, NewModel, NewProvider};
+use sekisho_store::{EnvironmentSpec, NewModel, NewProvider, ProviderOptions};
 
 fn hooks() -> HookTargets {
     HookTargets {
@@ -40,10 +41,9 @@ async fn snapshot_reflects_the_store() {
             .create_provider(
                 &sb,
                 NewProvider {
-                    name: provider(name),
-                    kind,
-                    base_url: base_url.map(String::from),
-                    api_key: key.into(),
+                    // `mock` doesn't resolve.
+                    allow_private_network: base_url.is_some(),
+                    ..NewProvider::keyed(provider(name), kind, base_url.map(String::from), key)
                 },
             )
             .await
@@ -144,4 +144,71 @@ async fn snapshot_reflects_the_store() {
         hooks: hooks(),
     };
     assert_eq!(snapshot, want);
+}
+
+/// Until Bedrock and Azure backends are rendered (plan 1b, Task 3), their
+/// models get no route, so they can't stop every other environment's config
+/// from publishing.
+#[tokio::test]
+async fn bedrock_and_azure_wait_for_their_backends() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(
+            &sb,
+            NewProvider {
+                options: ProviderOptions::Bedrock {
+                    region: "us-east-1".into(),
+                },
+                ..NewProvider::keyed(
+                    provider("bedrock"),
+                    ProviderKind::Bedrock,
+                    None,
+                    "bedrock-key",
+                )
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .create_provider(
+            &sb,
+            NewProvider::keyed(provider("openai"), ProviderKind::OpenAi, None, "sk-openai"),
+        )
+        .await
+        .unwrap();
+    for (name, provider_name) in [
+        ("us.anthropic.claude-mock-v1:0", "bedrock"),
+        ("gpt-5", "openai"),
+    ] {
+        store
+            .create_model(NewModel {
+                name: model(name),
+                provider: provider(provider_name),
+                input_price: Some(MicroUsd(3_000_000)),
+                output_price: Some(MicroUsd(15_000_000)),
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_environment(EnvironmentSpec {
+            name: EnvName::parse("cloud").unwrap(),
+            description: String::new(),
+            notice: String::new(),
+            access_groups: Vec::new(),
+            models: vec![model("us.anthropic.claude-mock-v1:0"), model("gpt-5")],
+        })
+        .await
+        .unwrap();
+
+    let snapshot = build_snapshot(&store, &sb, &hooks()).await.unwrap();
+    let routes: Vec<_> = snapshot.environments[0]
+        .routes
+        .iter()
+        .map(|r| (r.format, r.provider.as_str()))
+        .collect();
+    assert_eq!(routes, [(ApiFormat::OpenAi, "openai")]);
+    let yaml = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&yaml), Ok(()));
+    assert!(!yaml.contains("bedrock-key"));
 }

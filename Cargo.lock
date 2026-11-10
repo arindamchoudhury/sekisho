@@ -2608,6 +2608,8 @@ version = "0.1.0"
 dependencies = [
  "sekisho-core",
  "sekisho-testkit",
+ "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
  "time",

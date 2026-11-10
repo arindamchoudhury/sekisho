@@ -3,6 +3,7 @@
 //! Each write that changes what the gateway or the hooks see announces a
 //! [`ChangeKind`] in the same transaction (see [`notify`]).
 
+pub mod address;
 mod budgets;
 mod environments;
 mod error;
@@ -21,7 +22,9 @@ pub use error::{FieldError, StoreError};
 pub use keys::{AuthSnapshot, EnvKey};
 pub use models::{Model, NewModel};
 pub use notify::ChangeKind;
-pub use providers::{NewProvider, Provider, ProviderUpdate};
+pub use providers::{
+    CredentialKind, NewProvider, Provider, ProviderCredential, ProviderOptions, ProviderUpdate,
+};
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 

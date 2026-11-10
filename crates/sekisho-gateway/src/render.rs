@@ -168,6 +168,10 @@ fn backend(route: &ModelRoute) -> Value {
             "providerOverride": route.provider.as_str(),
             "formats": [{ "type": "completions" }],
         } }),
+        // build_snapshot gives these no route until plan 1b's Task 3 renders
+        // them with their region or endpoint; the schema refuses these blocks.
+        ProviderKind::Bedrock => json!({ "bedrock": {} }),
+        ProviderKind::Azure => json!({ "azure": {} }),
     };
     let mut ai = Map::new();
     ai.insert("name".into(), json!(route.provider.as_str()));
@@ -211,8 +215,9 @@ fn backend(route: &ModelRoute) -> Value {
 fn default_path_prefix(kind: ProviderKind) -> Option<String> {
     match kind {
         ProviderKind::Anthropic | ProviderKind::OpenAi => Some("/v1".into()),
-        // Gemini's paths are absolute (`/v1beta/…`).
-        ProviderKind::Gemini => Some("/".into()),
+        // Gemini's, Bedrock's and Azure's paths are absolute (`/v1beta/…`,
+        // `/model/{id}/converse`, `/openai/v1/…`).
+        ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Azure => Some("/".into()),
         ProviderKind::OpenAiCompatible => None,
     }
 }
@@ -291,6 +296,8 @@ fn catalog(priced: &[PricedModel]) -> Value {
             ProviderKind::Anthropic => "anthropic".to_owned(),
             ProviderKind::OpenAi => "openai".to_owned(),
             ProviderKind::Gemini => "gcp.gemini".to_owned(),
+            ProviderKind::Bedrock => "aws.bedrock".to_owned(),
+            ProviderKind::Azure => "azure".to_owned(),
             ProviderKind::OpenAiCompatible => m.provider.as_str().to_owned(),
         };
         providers.entry(key).or_default().insert(

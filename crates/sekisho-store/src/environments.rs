@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::formats::ApiFormat;
 use sekisho_core::names::{EnvName, ModelName};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -131,7 +131,7 @@ impl Store {
         // The share lock makes a concurrent delete_model of a listed model
         // wait, then find this environment and refuse.
         let rows = sqlx::query(
-            "select m.id, m.name, p.name as provider, p.kind from models m \
+            "select m.id, m.name, p.name as provider, p.api_format from models m \
              join providers p on p.id = m.provider_id \
              where m.name = any($1) for key share of m",
         )
@@ -140,15 +140,15 @@ impl Store {
         .await?;
         let mut known = HashMap::new();
         for row in rows {
-            let kind: String = row.try_get("kind")?;
-            let kind =
-                ProviderKind::parse(&kind).ok_or_else(|| bad_column("provider kind", &kind))?;
+            let format: String = row.try_get("api_format")?;
+            let format =
+                ApiFormat::parse(&format).ok_or_else(|| bad_column("API format", &format))?;
             known.insert(
                 row.try_get::<String, _>("name")?,
                 KnownModel {
                     id: row.try_get("id")?,
                     provider: row.try_get("provider")?,
-                    format: kind.api_format(),
+                    format,
                 },
             );
         }

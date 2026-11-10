@@ -7,12 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Lets cloud credentials (the gateway's cloud identity, AWS access keys, Entra
+# service principals) go to any base URL, so the end-to-end tests can point
+# them at the mock model. Only the e2e image is built with it, through
+# sekisho-server/e2e.
+e2e = []
+
 [dependencies]
 sekisho-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

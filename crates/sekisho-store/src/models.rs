@@ -1,4 +1,4 @@
-use sekisho_core::formats::ProviderKind;
+use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
 use sqlx::Row;
@@ -88,8 +88,8 @@ impl Store {
             )])
         };
         let mut tx = self.pool.begin().await?;
-        let (provider_id, kind): (Uuid, String) =
-            sqlx::query_as("select id, kind from providers where name = $1")
+        let (provider_id, kind, format): (Uuid, String, String) =
+            sqlx::query_as("select id, kind, api_format from providers where name = $1")
                 .bind(new.provider.as_str())
                 .fetch_optional(&mut *tx)
                 .await?
@@ -100,6 +100,17 @@ impl Store {
                 FieldError::new("input_price", NEEDED),
                 FieldError::new("output_price", NEEDED),
             ]));
+        }
+        // agentgateway sends an Azure deployment to Foundry's
+        // /anthropic/v1/messages only when its name starts with "claude".
+        if kind == ProviderKind::Azure.as_str()
+            && format == ApiFormat::Anthropic.as_str()
+            && !new.name.as_str().to_ascii_lowercase().starts_with("claude")
+        {
+            return Err(StoreError::Validation(vec![FieldError::new(
+                "name",
+                "Claude on Azure is served by deployments whose names start with claude",
+            )]));
         }
         let id: Uuid = sqlx::query_scalar(
             "insert into models (name, provider_id, input_price_micro_usd, output_price_micro_usd) \

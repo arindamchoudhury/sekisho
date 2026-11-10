@@ -3,7 +3,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use sekisho_core::formats::ProviderKind;
 use sekisho_core::names::ProviderName;
-use sekisho_store::{NewProvider, Provider, ProviderUpdate};
+use sekisho_store::{NewProvider, Provider, ProviderCredential, ProviderUpdate};
 use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -20,6 +20,10 @@ pub struct NewProviderBody {
     base_url: Option<String>,
     /// Write-only: never returned.
     api_key: String,
+    /// Lets `base_url` be on a loopback or private network address, or a
+    /// host only the gateway's network resolves.
+    #[serde(default)]
+    allow_private_network: bool,
 }
 
 /// Rotates the key or changes the base URL. Absent fields stay as they are;
@@ -32,6 +36,8 @@ pub struct ProviderUpdateBody {
     api_key: Option<String>,
     #[serde(default, deserialize_with = "present")]
     base_url: Option<Option<String>>,
+    #[serde(default)]
+    allow_private_network: Option<bool>,
 }
 
 /// Tells a present `null` (`Some(None)`) from an absent field (`None`).
@@ -69,7 +75,8 @@ pub async fn create(
     let name = fields.check("name", ProviderName::parse(&body.name));
     let kind = fields.check(
         "kind",
-        ProviderKind::parse(&body.kind).ok_or("use anthropic, openai, gemini or openai_compatible"),
+        ProviderKind::parse(&body.kind)
+            .ok_or("use anthropic, openai, gemini, openai_compatible, bedrock or azure"),
     );
     let (Some(name), Some(kind)) = (name, kind) else {
         return Err(fields.fail());
@@ -79,10 +86,8 @@ pub async fn create(
         .create_provider(
             state.secret_box(),
             NewProvider {
-                name,
-                kind,
-                base_url: body.base_url,
-                api_key: body.api_key,
+                allow_private_network: body.allow_private_network,
+                ..NewProvider::keyed(name, kind, body.base_url, body.api_key)
             },
         )
         .await?;
@@ -106,8 +111,10 @@ pub async fn update(
             state.secret_box(),
             &name,
             ProviderUpdate {
-                api_key: body.api_key,
+                credential: body.api_key.map(ProviderCredential::Key),
                 base_url: body.base_url,
+                options: None,
+                allow_private_network: body.allow_private_network,
             },
         )
         .await?;

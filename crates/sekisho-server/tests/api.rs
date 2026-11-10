@@ -114,7 +114,9 @@ impl TestApp {
     async fn provider_and_model(&self) {
         let p = self
             .admin("POST", "/api/v1/providers", Some(json!({
-                "name": "mock", "kind": "openai_compatible", "base_url": "http://mock:8000/v1", "api_key": "mock-secret-key"
+                "name": "mock", "kind": "openai_compatible", "base_url": "http://mock:8000/v1", "api_key": "mock-secret-key",
+                // `mock` doesn't resolve.
+                "allow_private_network": true
             })))
             .await;
         assert_eq!(p.status, 201, "{}", p.text);

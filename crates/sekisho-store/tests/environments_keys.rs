@@ -3,13 +3,14 @@ mod common;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use sekisho_core::formats::ProviderKind;
+use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::keys::{EnvKeyId, KeyState, hash_secret, parse_token};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{
-    ChangeKind, EnvironmentSpec, FieldError, NewModel, NewProvider, Store, StoreError,
+    ChangeKind, EnvironmentSpec, FieldError, NewModel, NewProvider, ProviderOptions, Store,
+    StoreError,
 };
 use time::OffsetDateTime;
 use tokio_stream::StreamExt;
@@ -43,11 +44,14 @@ async fn provider_with_models(
         .create_provider(
             sb,
             NewProvider {
-                name: ProviderName::parse(name).unwrap(),
-                kind,
-                base_url: (kind == ProviderKind::OpenAiCompatible)
-                    .then(|| "http://mock:8000/v1".into()),
-                api_key: "k".into(),
+                // `mock` doesn't resolve.
+                allow_private_network: kind == ProviderKind::OpenAiCompatible,
+                ..NewProvider::keyed(
+                    ProviderName::parse(name).unwrap(),
+                    kind,
+                    (kind == ProviderKind::OpenAiCompatible).then(|| "http://mock:8000/v1".into()),
+                    "k",
+                )
             },
         )
         .await
@@ -230,6 +234,69 @@ async fn two_providers_same_format_rejected() {
         .upsert_environment(spec("data-team", &["m-a", "gpt-5"]))
         .await
         .unwrap();
+}
+
+/// A Bedrock provider serves the format it was added with, so two Bedrock
+/// providers can share an environment, one per format.
+#[tokio::test]
+async fn bedrock_formats_count_per_provider() {
+    let (store, sb) = common::store().await;
+    for (name, format, model) in [
+        (
+            "bedrock-claude",
+            ApiFormat::Anthropic,
+            "us.anthropic.claude-mock-v1:0",
+        ),
+        ("bedrock-oss", ApiFormat::OpenAi, "gpt-oss-mock"),
+    ] {
+        store
+            .create_provider(
+                &sb,
+                NewProvider {
+                    format,
+                    options: ProviderOptions::Bedrock {
+                        region: "us-east-1".into(),
+                    },
+                    ..NewProvider::keyed(
+                        ProviderName::parse(name).unwrap(),
+                        ProviderKind::Bedrock,
+                        None,
+                        "bedrock-api-key",
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_model(NewModel {
+                name: ModelName::parse(model).unwrap(),
+                provider: ProviderName::parse(name).unwrap(),
+                input_price: Some(MicroUsd(3_000_000)),
+                output_price: Some(MicroUsd(15_000_000)),
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_environment(spec(
+            "cloud",
+            &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock"],
+        ))
+        .await
+        .unwrap();
+
+    provider_with_models(&store, &sb, "openai", ProviderKind::OpenAi, &["gpt-5"]).await;
+    let err = store
+        .upsert_environment(spec(
+            "cloud",
+            &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock", "gpt-5"],
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Validation(ref f) if f.len() == 1 && f[0].field == "models" && f[0].message.contains("bedrock-oss") && f[0].message.contains("openai")),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
