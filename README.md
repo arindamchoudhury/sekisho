@@ -2,15 +2,21 @@
 
 Sekisho is an open-source control plane for coding agents such as Claude Code,
 Codex, Gemini CLI and OpenCode. It decides which models, MCP servers, skills
-and plugins each team's agents get, keeps the provider keys, caps spend in
-dollars, and records what happened.
+and plugins each team's agents get, keeps the provider keys, caps spend, and
+records what happened.
 
 The name comes from the *sekisho* (関所), the checkpoints on Japan's Edo-period
 highways, where guards checked each traveller's papers and decided who passed
 and what they carried.
 
-> **Status:** release 1 is designed, and building it has just started. Nothing
-> works yet; everything below describes what release 1 will do.
+> **Status:** release 1 is being built, and isn't ready to use yet. Its first
+> part, the model gateway, works and is tested end to end against agentgateway
+> v1.7.0: an admin API for providers, models, environments, environment keys
+> and dollar budgets; gateway configuration live in under a second; key and
+> budget checks on every request, with spend recorded at the catalog price; and
+> running streams cut about a second after a key is revoked. Sign-in, the web
+> UI, the CLI, MCP servers and catalogs come next. Everything below describes
+> what release 1 will do.
 
 ## What release 1 will do
 
@@ -35,10 +41,13 @@ and what they carried.
 - **Fail-closed.** Unknown, expired and revoked keys are always refused. If
   the gateway can't reach Sekisho's checks, requests are refused too, unless an
   admin chooses to let that check fail open.
-- **Dollar budgets** per person (in one environment or across all), per
+- **Budgets** per person (in one environment or across all), per
   environment and per key, over a day, week or month, priced from the
   gateway's model catalog. When a budget runs out, the next request is refused
   with a message naming the budget and when it resets.
+  - Budgets and spend are shown in your currency: an admin picks the
+    display currency and sets its exchange rate. Underneath, Sekisho records
+    spend in US dollars, the currency providers price in.
   - Budgets send alerts to signed webhooks, at 50%, 80% and 100% by default.
   - Spend exports as CSV, JSON or [FOCUS](https://focus.finops.org/), the
     FinOps cost format, so it can sit beside the rest of the company's cloud

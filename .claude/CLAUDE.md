@@ -6,8 +6,10 @@ each team's agents get, keeps provider keys, caps spend in USD and records what
 happened. It is built in Rust on an unmodified agentgateway, shaped like Obot,
 and aims for all of ACH's features over time.
 
-**Status:** release 1 design approved; plan 1 of the release written; no code
-yet.
+**Status:** release 1 design approved. Plan 1 (the governed gateway core:
+store, admin API, agentgateway config and gateway agent, hooks, e2e tests) is
+built and merged; plans 1b and 2–8 are next, each written just before it
+starts.
 
 ## Maintainers' private notes (not in Git)
 
@@ -59,7 +61,7 @@ truth. Where a maintainer has them:
 | Environment variables | `SEKISHO_*` |
 | HTTP headers | `x-sekisho-*` |
 | Environment key tokens | `sek_<id>_<secret>`. Never `sk_`, which OpenAI and Stripe use |
-| Money | Integer micro-USD; prices per 1,000,000 tokens |
+| Money | Integer micro-USD; prices per 1,000,000 tokens. Budgets are entered and shown in a per-install display currency with an admin-set rate (plan 6); spend stays USD |
 | Line endings | LF, even where Git has `core.autocrlf=true`; `.gitattributes` sets `* text=auto eol=lf` |
 
 ## Pins

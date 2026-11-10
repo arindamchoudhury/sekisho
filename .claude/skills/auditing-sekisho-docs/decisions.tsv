@@ -58,3 +58,5 @@ D56	Spend descriptors carry a charge secret derived from the gateway token; with
 D57	An OpenAI-compatible provider's models must have prices	models must have prices|models need prices	design plan1
 D58	Provider keys rotate in place (PATCH /api/v1/providers/{name}); name and kind never change	patch /api/v1/providers	design plan1
 D59	A key reaches only its provider's model endpoints: POST-only routes, ai.routes per format, default path prefix for built-in kinds	only its provider.s model endpoints|only the provider.s model endpoints|reaches only its provider	design plan1
+D60	Spend recorded in USD; one display currency per install with an admin-set exchange rate; budgets entered and shown in it	display currency	design plans README claude
+D61	Exchange rates are set by hand in release 1; an opt-in automatic daily rate comes after release 1	fetched automatically|fetching rates automatically	design
