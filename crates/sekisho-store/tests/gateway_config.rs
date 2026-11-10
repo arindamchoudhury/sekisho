@@ -40,6 +40,11 @@ async fn versions_change_only_with_content() {
         latest
     ); // newest, not next
     assert_eq!(store.gateway_config_after(&sb, latest).await.unwrap(), None);
+    // An agent ahead of the database (re-created since) gets the newest too.
+    assert_eq!(
+        store.gateway_config_after(&sb, latest + 5).await.unwrap(),
+        Some((latest, "binds: []\n".into()))
+    );
 }
 
 /// Rendered configs carry decrypted provider keys, so they are sealed like

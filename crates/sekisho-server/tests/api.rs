@@ -759,3 +759,28 @@ async fn missed_changes_are_published_by_the_timer() {
             .contains("pathPrefix: /env/quiet-team/openai")
     );
 }
+
+/// An agent that applied a version this database never had (it was
+/// re-created, so versions started again) gets the newest config at once
+/// instead of waiting for a version above its own.
+#[tokio::test]
+async fn an_agent_ahead_of_the_database_gets_the_newest() {
+    let app = app().await;
+    app.provider_and_model().await;
+    let settled = app.settled_version().await;
+    let started = Instant::now();
+    let r = app
+        .call(
+            "GET",
+            &format!("/internal/gateway/config?after={}", settled + 100),
+            Some(GATEWAY),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["version"], settled);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "it long-polled"
+    );
+}

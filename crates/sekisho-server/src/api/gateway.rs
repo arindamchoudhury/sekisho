@@ -29,8 +29,9 @@ fn after(query: Option<&str>) -> Result<i64, ApiError> {
     }
 }
 
-/// `200 {version, yaml}` with the newest config once it is newer than
-/// `after`; `204` when none appears within the long-poll time.
+/// `200 {version, yaml}` with the newest config once it is not `after`, the
+/// version the agent has (it is older after the database was re-created);
+/// `204` when none appears within the long-poll time.
 pub async fn config(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,

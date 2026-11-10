@@ -24,7 +24,9 @@ pub struct AgentConfig {
     pub gateway_token: String,
     /// The file agentgateway reads (`-f`).
     pub config_path: PathBuf,
-    /// The wait after a failed poll or write.
+    /// The wait after a failed poll or write, and the least time between
+    /// two polls, so a server that answers "unchanged" at once can't make
+    /// the agent spin.
     pub retry: Duration,
 }
 
@@ -91,8 +93,10 @@ pub async fn run_agent(config: AgentConfig) -> Result<(), AgentError> {
     // The newest version applied or skipped. 0 fetches the latest on start.
     let mut after = 0;
     loop {
+        let polled = tokio::time::Instant::now();
         match poll(&client, &endpoint, &config.gateway_token, after).await {
-            Ok(Poll::Unchanged) => {}
+            // A long poll returns after a while; an instant answer waits.
+            Ok(Poll::Unchanged) => tokio::time::sleep_until(polled + config.retry).await,
             Ok(Poll::Newer(published)) => {
                 if let Err(errors) = crate::validate(&published.yaml) {
                     tracing::error!(

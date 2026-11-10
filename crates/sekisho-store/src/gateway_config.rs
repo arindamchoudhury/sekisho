@@ -55,15 +55,17 @@ impl Store {
         Ok(version)
     }
 
-    /// The newest config if it is newer than `after`.
+    /// The newest config, unless `after` (the version the caller has) is
+    /// it. Usually the newest is newer; an older one means the database was
+    /// re-created and versions started again, and the caller must take it.
     pub async fn gateway_config_after(
         &self,
         secret_box: &SecretBox,
         after: i64,
     ) -> Result<Option<(i64, String)>> {
         let newest: Option<(i64, Vec<u8>)> = sqlx::query_as(
-            "select version, yaml_ciphertext from gateway_config where version > $1 \
-             order by version desc limit 1",
+            "select version, yaml_ciphertext from gateway_config where version <> $1 \
+             and version = (select max(version) from gateway_config)",
         )
         .bind(after)
         .fetch_optional(&self.pool)

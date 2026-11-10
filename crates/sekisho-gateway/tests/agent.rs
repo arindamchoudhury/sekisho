@@ -177,6 +177,39 @@ async fn wrong_token_writes_nothing_and_retries() {
     task.abort();
 }
 
+/// A server that answers "unchanged" at once (no long poll) must not make
+/// the agent poll in a tight loop.
+#[tokio::test]
+async fn an_instant_unchanged_answer_does_not_spin() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_path(&dir);
+    let script = (0..10_000).map(|_| Scripted::Status(204)).collect();
+    let (fake, url) = fake_server(script).await;
+    tokio::spawn(run_agent(agent(url, &path, TOKEN))); // retry is 50 ms
+    sleep(Duration::from_millis(500)).await;
+    let polls = fake.seen.lock().unwrap().len();
+    assert!((2..=15).contains(&polls), "{polls} polls in 500 ms");
+}
+
+/// After the server's database is re-created its versions start again, lower
+/// than the agent's. The agent takes whatever the server says is newest.
+#[tokio::test]
+async fn follows_a_server_whose_versions_went_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_path(&dir);
+    let (fake, url) = fake_server(vec![Scripted::Config(57, V1), Scripted::Config(2, V2)]).await;
+    tokio::spawn(run_agent(agent(url, &path, TOKEN)));
+    eventually(Duration::from_secs(2), "v2 on disk", || {
+        read(&path).as_deref() == Some(V2)
+    })
+    .await;
+    eventually(Duration::from_secs(2), "the poll after v2", || {
+        fake.seen.lock().unwrap().len() >= 3
+    })
+    .await;
+    assert_eq!(fake.seen.lock().unwrap()[..3], [0, 57, 2]);
+}
+
 #[tokio::test]
 async fn https_is_refused_at_start() {
     let dir = tempfile::tempdir().unwrap();
