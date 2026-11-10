@@ -11,6 +11,9 @@ x-sekisho: &sekisho
   build:
     context: ..
     dockerfile: Dockerfile
+    args:
+      # Allows SEKISHO_E2E_BARE_ROUTE below; release images are built without it.
+      SEKISHO_FEATURES: sekisho-server/e2e
 
 services:
   postgres:

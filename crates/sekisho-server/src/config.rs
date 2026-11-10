@@ -125,7 +125,16 @@ impl ServerConfig {
         }
         render.bare_route = match var("SEKISHO_E2E_BARE_ROUTE").as_deref() {
             None | Some("0") => false,
-            Some("1") => true,
+            Some("1") if cfg!(feature = "e2e") => true,
+            Some("1") => {
+                return Err(invalid(
+                    "SEKISHO_E2E_BARE_ROUTE",
+                    "the bare route is only for the end-to-end tests: it serves a provider \
+                     with its key and no key or budget checks, so only a build with the \
+                     e2e feature can turn it on"
+                        .to_owned(),
+                ));
+            }
             Some(other) => {
                 return Err(invalid(
                     "SEKISHO_E2E_BARE_ROUTE",
@@ -207,7 +216,6 @@ mod tests {
     fn fail_open_and_bare_route_map_to_render_options() {
         let mut vars = required();
         vars.insert("SEKISHO_HOOKS_FAIL_OPEN", "authz, extproc");
-        vars.insert("SEKISHO_E2E_BARE_ROUTE", "1");
         let render = load(&vars).unwrap().settings.render;
         assert_eq!(
             render,
@@ -215,7 +223,7 @@ mod tests {
                 fail_open_authz: true,
                 fail_open_ratelimit: false,
                 fail_open_extproc: true,
-                bare_route: true
+                bare_route: false
             }
         );
         vars.insert("SEKISHO_HOOKS_FAIL_OPEN", "ratelimit");
@@ -228,6 +236,28 @@ mod tests {
         vars.insert("SEKISHO_HOOKS_FAIL_OPEN", "");
         vars.insert("SEKISHO_E2E_BARE_ROUTE", "yes");
         assert!(error(&vars).contains("SEKISHO_E2E_BARE_ROUTE"));
+    }
+
+    /// The bare route serves a provider with its key and no checks, so only a
+    /// build for the end-to-end tests (`--features e2e`) can turn it on.
+    #[test]
+    #[cfg(not(feature = "e2e"))]
+    fn the_bare_route_needs_an_e2e_build() {
+        let mut vars = required();
+        vars.insert("SEKISHO_E2E_BARE_ROUTE", "1");
+        let message = error(&vars);
+        assert!(
+            message.contains("SEKISHO_E2E_BARE_ROUTE") && message.contains("e2e"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "e2e")]
+    fn an_e2e_build_can_turn_on_the_bare_route() {
+        let mut vars = required();
+        vars.insert("SEKISHO_E2E_BARE_ROUTE", "1");
+        assert!(load(&vars).unwrap().settings.render.bare_route);
     }
 
     #[test]

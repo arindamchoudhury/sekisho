@@ -11,6 +11,12 @@ repository.workspace = true
 name = "sekisho"
 path = "src/main.rs"
 
+[features]
+# Lets SEKISHO_E2E_BARE_ROUTE=1 add the hook-free /bare/openai route that the
+# end-to-end latency test compares against. Only the e2e image is built with
+# it: that route serves a provider with its key and no checks.
+e2e = []
+
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }

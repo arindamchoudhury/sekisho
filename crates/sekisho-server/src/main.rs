@@ -95,6 +95,12 @@ async fn serve() -> anyhow::Result<()> {
         charge_secret_sha256: hash_secret(&config.settings.hooks.charge_secret),
     };
     let guard = StreamGuard { cache, clock };
+    if config.settings.render.bare_route {
+        tracing::warn!(
+            "SEKISHO_E2E_BARE_ROUTE is on: /bare/openai serves a provider with no key or \
+             budget checks; never use this outside the end-to-end tests"
+        );
+    }
     let state = AppState::new(store, config.secret_box, config.settings);
     start_publisher(&state)
         .await
