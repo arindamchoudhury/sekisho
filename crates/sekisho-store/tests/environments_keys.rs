@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::{EnvKeyId, KeyState, hash_secret, parse_token};
+use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{
@@ -51,13 +52,15 @@ async fn provider_with_models(
         )
         .await
         .unwrap();
+    // OpenAI-compatible models need prices; others use the catalog's.
+    let price = (kind == ProviderKind::OpenAiCompatible).then_some(MicroUsd(1_000_000));
     for model in models {
         store
             .create_model(NewModel {
                 name: ModelName::parse(model).unwrap(),
                 provider: ProviderName::parse(name).unwrap(),
-                input_price: None,
-                output_price: None,
+                input_price: price,
+                output_price: price,
             })
             .await
             .unwrap();

@@ -24,6 +24,9 @@ pub struct Settings {
     pub render: RenderOptions,
     /// How long a gateway config long poll waits before answering 204.
     pub long_poll: Duration,
+    /// How often the publisher re-renders even without a change, so a lost
+    /// notification or a failed publish is caught up.
+    pub republish: Duration,
 }
 
 impl fmt::Debug for Settings {
@@ -32,6 +35,7 @@ impl fmt::Debug for Settings {
             .field("hooks", &self.hooks)
             .field("render", &self.render)
             .field("long_poll", &self.long_poll)
+            .field("republish", &self.republish)
             .finish_non_exhaustive()
     }
 }
@@ -51,6 +55,7 @@ struct Inner {
     hooks: HookTargets,
     render: RenderOptions,
     long_poll: Duration,
+    republish: Duration,
     /// The newest gateway config version this replica has seen saved.
     published: watch::Sender<i64>,
 }
@@ -66,6 +71,7 @@ impl AppState {
                 hooks: settings.hooks,
                 render: settings.render,
                 long_poll: settings.long_poll,
+                republish: settings.republish,
                 published: watch::channel(0).0,
             }),
         }
@@ -110,20 +116,35 @@ fn changes_config(kind: ChangeKind) -> bool {
     )
 }
 
+/// How soon a failed publish is tried again.
+const PUBLISH_RETRY: Duration = Duration::from_secs(1);
+
 /// Publishes the current config, then again after every change that alters
-/// it. Subscribes before the first publish, so no change is missed.
+/// it, every `republish` regardless (saves are de-duplicated, so this costs a
+/// render and a compare), and [`PUBLISH_RETRY`] after a failure. Subscribes
+/// before the first publish, so no change is missed.
 pub async fn start_publisher(state: &AppState) -> Result<JoinHandle<()>, StoreError> {
     let mut changes = state.store().listen().await?;
-    publish(state).await;
+    let mut failed = publish(state).await.is_none();
     let state = state.clone();
     Ok(tokio::spawn(async move {
-        while let Some(kind) = changes.next().await {
-            if !changes_config(kind) {
-                continue;
+        let mut timer = tokio::time::interval(state.inner.republish);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        timer.tick().await; // the first tick is immediate
+        loop {
+            tokio::select! {
+                change = changes.next() => match change {
+                    Some(kind) if changes_config(kind) => {
+                        // Take whatever else is already queued, so a burst renders once.
+                        while let Ok(Some(_)) = tokio::time::timeout(Duration::ZERO, changes.next()).await {}
+                    }
+                    Some(_) => continue,
+                    None => break,
+                },
+                _ = timer.tick() => {}
+                () = tokio::time::sleep(PUBLISH_RETRY), if failed => {}
             }
-            // Take whatever else is already queued, so a burst renders once.
-            while let Ok(Some(_)) = tokio::time::timeout(Duration::ZERO, changes.next()).await {}
-            publish(&state).await;
+            failed = publish(&state).await.is_none();
         }
         tracing::warn!("change notifications ended; gateway config publishing stopped");
     }))
@@ -148,7 +169,11 @@ pub async fn publish(state: &AppState) -> Option<i64> {
         );
         return None;
     }
-    match inner.store.save_gateway_config(&yaml).await {
+    match inner
+        .store
+        .save_gateway_config(&inner.secret_box, &yaml)
+        .await
+    {
         Ok(version) => {
             let newer = inner.published.send_if_modified(|current| {
                 let newer = version > *current;

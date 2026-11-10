@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use sekisho_core::keys::EnvKeyId;
+use sekisho_core::keys::{EnvKeyId, verify_secret};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::EnvName;
 use sekisho_proto::ratelimit::rate_limit_response::Code;
@@ -24,6 +24,9 @@ pub struct Charger {
     pub cache: Arc<AuthCache>,
     pub store: Store,
     pub clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    /// SHA-256 of the charge secret the rendered descriptors carry. Calls
+    /// without it are not from this install's agentgateway.
+    pub charge_secret_sha256: [u8; 32],
 }
 
 #[tonic::async_trait]
@@ -63,6 +66,14 @@ impl Charger {
                 .find(|e| e.key == key)
                 .map(|e| e.value.as_str())
         };
+        // Anyone who can reach this port could otherwise drain any budget.
+        if !entry("secret").is_some_and(|s| verify_secret(s, &self.charge_secret_sha256)) {
+            tracing::warn!(
+                cost,
+                "spend not recorded: the descriptor lacks this install's charge secret"
+            );
+            return;
+        }
         // The key id comes from Sekisho's own extAuthz answer (`extauthz.key`),
         // never from the client, so no secret is needed. Revoked or suspended
         // keys are still charged for what they used.

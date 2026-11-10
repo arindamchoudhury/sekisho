@@ -73,6 +73,7 @@ async fn rig() -> Rig {
         cache,
         store: store.clone(),
         clock: Arc::new(|| NOW),
+        charge_secret_sha256: sekisho_core::keys::hash_secret(CHARGE_SECRET),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -93,9 +94,12 @@ async fn rig() -> Rig {
     }
 }
 
+/// The install's charge secret, as the rendered descriptors carry it.
+const CHARGE_SECRET: &str = "test-charge-secret";
+
 /// A descriptor as agentgateway sends it for a Sekisho route: the route's
-/// environment and the key id Sekisho's extAuthz hook verified
-/// (`extauthz.key`).
+/// environment, the key id Sekisho's extAuthz hook verified
+/// (`extauthz.key`) and the charge secret.
 fn req(env: &str, key: &str, cost: u64) -> RateLimitRequest {
     RateLimitRequest {
         domain: "sekisho".into(),
@@ -108,6 +112,10 @@ fn req(env: &str, key: &str, cost: u64) -> RateLimitRequest {
                 Entry {
                     key: "key".into(),
                     value: key.into(),
+                },
+                Entry {
+                    key: "secret".into(),
+                    value: CHARGE_SECRET.into(),
                 },
             ],
             hits_addend: Some(cost),
@@ -180,6 +188,15 @@ async fn always_ok_but_charges_only_known_keys() {
     let mut no_key = req("data-team", rig.key.as_str(), 4500);
     no_key.descriptors[0].entries.retain(|e| e.key != "key");
     odd.push(no_key);
+    // Without the charge secret, or with a wrong one: not from our agentgateway.
+    let mut no_secret = req("data-team", rig.key.as_str(), 4500);
+    no_secret.descriptors[0]
+        .entries
+        .retain(|e| e.key != "secret");
+    odd.push(no_secret);
+    let mut wrong_secret = req("data-team", rig.key.as_str(), 4500);
+    wrong_secret.descriptors[0].entries[2].value = "guessed-secret".into();
+    odd.push(wrong_secret);
     // The old descriptor shape: a bearer token is not accepted as a key id.
     let mut credential = req("data-team", rig.key.as_str(), 4500);
     credential.descriptors[0].entries[1] = Entry {

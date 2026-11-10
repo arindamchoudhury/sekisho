@@ -6,8 +6,14 @@
 //! `"stream": true` it streams server-sent events ending in `[DONE]`;
 //! otherwise it answers one JSON body with the same usage.
 //!
-//! `GET /_last_headers` returns the headers of the last model request, so a
-//! test can check what reached the provider. Listens on `MOCK_LISTEN`
+//! `POST /v1/messages` answers like Anthropic's Messages API (not streamed),
+//! with the same usage.
+//!
+//! Every other path answers 200 `{"mock": "unrouted"}`, so a request that
+//! should never have reached the provider is visible. Every request except
+//! `/_…` and `/healthz` is recorded: `GET /_requests` lists them (method, raw
+//! path and headers) and `GET /_last_headers` returns the last one's headers,
+//! so a test can check what reached the provider. Listens on `MOCK_LISTEN`
 //! (default `0.0.0.0:8000`) with `TCP_NODELAY` on.
 
 use std::collections::BTreeMap;
@@ -16,8 +22,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::serve::ListenerExt;
@@ -26,17 +33,22 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-type LastHeaders = Arc<Mutex<BTreeMap<String, String>>>;
+/// Every request received, oldest first.
+type Seen = Arc<Mutex<Vec<Value>>>;
 
 #[tokio::main]
 async fn main() {
     let addr = std::env::var("MOCK_LISTEN").unwrap_or_else(|_| "0.0.0.0:8000".into());
-    let last: LastHeaders = Arc::default();
+    let seen: Seen = Arc::default();
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
+        .route("/v1/messages", post(messages))
+        .route("/_requests", get(requests))
         .route("/_last_headers", get(last_headers))
         .route("/healthz", get(|| async { "ok" }))
-        .with_state(last);
+        .fallback(unrouted)
+        .layer(middleware::from_fn_with_state(seen.clone(), record))
+        .with_state(seen);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("cannot listen on {addr}: {e}"))
@@ -56,24 +68,58 @@ fn header_number(headers: &HeaderMap, name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-async fn last_headers(State(last): State<LastHeaders>) -> Json<BTreeMap<String, String>> {
-    Json(last.lock().unwrap().clone())
+async fn record(State(seen): State<Seen>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if !path.starts_with("/_") && path != "/healthz" {
+        let headers: BTreeMap<String, String> = req
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_string(),
+                    String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        let path_and_query = req.uri().path_and_query().map_or(path, |p| p.as_str());
+        seen.lock().unwrap().push(json!({
+            "method": req.method().as_str(),
+            "path": path_and_query,
+            "headers": headers,
+        }));
+    }
+    next.run(req).await
 }
 
-async fn completions(
-    State(last): State<LastHeaders>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Response {
-    *last.lock().unwrap() = headers
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.to_string(),
-                String::from_utf8_lossy(v.as_bytes()).into_owned(),
-            )
-        })
-        .collect();
+async fn requests(State(seen): State<Seen>) -> Json<Vec<Value>> {
+    Json(seen.lock().unwrap().clone())
+}
+
+async fn last_headers(State(seen): State<Seen>) -> Json<Value> {
+    let seen = seen.lock().unwrap();
+    Json(seen.last().map_or(json!({}), |r| r["headers"].clone()))
+}
+
+async fn unrouted() -> Json<Value> {
+    Json(json!({ "mock": "unrouted" }))
+}
+
+async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+    Json(json!({
+        "id": "msg_mock",
+        "type": "message",
+        "role": "assistant",
+        "model": body["model"].as_str().unwrap_or("mock-model"),
+        "content": [{ "type": "text", "text": text }],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": { "input_tokens": 1000, "output_tokens": chunks },
+    }))
+}
+
+async fn completions(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let chunks = header_number(&headers, "x-mock-chunks", 20);
     let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
     let model = body["model"].as_str().unwrap_or("mock-model").to_owned();

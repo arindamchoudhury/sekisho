@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
+use sekisho_core::keys::hash_secret;
 use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
@@ -91,6 +92,7 @@ async fn serve() -> anyhow::Result<()> {
         cache: Arc::clone(&cache),
         store: store.clone(),
         clock: Arc::clone(&clock),
+        charge_secret_sha256: hash_secret(&config.settings.hooks.charge_secret),
     };
     let guard = StreamGuard { cache, clock };
     let state = AppState::new(store, config.secret_box, config.settings);

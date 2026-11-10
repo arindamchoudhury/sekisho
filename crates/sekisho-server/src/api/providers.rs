@@ -3,8 +3,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use sekisho_core::formats::ProviderKind;
 use sekisho_core::names::ProviderName;
-use sekisho_store::{NewProvider, Provider};
-use serde::{Deserialize, Serialize};
+use sekisho_store::{NewProvider, Provider, ProviderUpdate};
+use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -20,6 +20,23 @@ pub struct NewProviderBody {
     base_url: Option<String>,
     /// Write-only: never returned.
     api_key: String,
+}
+
+/// Rotates the key or changes the base URL. Absent fields stay as they are;
+/// `"base_url": null` removes the override. The name and kind never change.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderUpdateBody {
+    /// Write-only: never returned.
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    base_url: Option<Option<String>>,
+}
+
+/// Tells a present `null` (`Some(None)`) from an absent field (`None`).
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }
 
 #[derive(Serialize)]
@@ -75,6 +92,26 @@ pub async fn create(
 pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<ProviderBody>>, ApiError> {
     let providers = state.store().list_providers().await?;
     Ok(Json(providers.into_iter().map(Into::into).collect()))
+}
+
+pub async fn update(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ApiJson(body): ApiJson<ProviderUpdateBody>,
+) -> Result<Json<ProviderBody>, ApiError> {
+    let name = ProviderName::parse(&name).map_err(|_| ApiError::NotFound)?;
+    let provider = state
+        .store()
+        .update_provider(
+            state.secret_box(),
+            &name,
+            ProviderUpdate {
+                api_key: body.api_key,
+                base_url: body.base_url,
+            },
+        )
+        .await?;
+    Ok(Json(provider.into()))
 }
 
 pub async fn delete(

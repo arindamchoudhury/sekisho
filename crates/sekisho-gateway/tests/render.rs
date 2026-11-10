@@ -14,6 +14,7 @@ mod fixtures {
         HookTargets {
             authz_http: "sekisho:9080".into(),
             grpc: "sekisho:9081".into(),
+            charge_secret: "test-charge-secret".into(),
         }
     }
 
@@ -356,13 +357,37 @@ fn spend_is_charged_to_the_key_extauthz_verified() {
         policies["extAuthz"]["protocol"]["http"]["metadata"],
         serde_json::json!({ "key": "response.headers[\"x-sekisho-key\"]" })
     );
+    // The charge secret lets the charging hook refuse descriptors that
+    // didn't come from this install's agentgateway.
     assert_eq!(
         policies["remoteRateLimit"]["descriptors"][0]["entries"],
         serde_json::json!([
             { "key": "env", "value": "\"data-team\"" },
-            { "key": "key", "value": "extauthz.key" }
+            { "key": "key", "value": "extauthz.key" },
+            { "key": "secret", "value": "\"test-charge-secret\"" }
         ])
     );
+}
+
+/// The hook trusts the environment the route names, not the client's path.
+#[test]
+fn each_route_names_its_environment_to_the_hook() {
+    let doc = parse(&render(&fixtures::every_kind(), &RenderOptions::default()));
+    for route in routes(&doc) {
+        let env = route["name"]
+            .as_str()
+            .unwrap()
+            .rsplit_once('-')
+            .unwrap()
+            .0
+            .to_owned();
+        assert_eq!(
+            route["policies"]["extAuthz"]["protocol"]["http"]["addRequestHeaders"],
+            serde_json::json!({ "x-sekisho-env": format!("\"{env}\"") }),
+            "{}",
+            route["name"]
+        );
+    }
 }
 
 #[test]
@@ -419,6 +444,82 @@ fn bare_route_skips_the_hooks() {
     assert!(!render(&fixtures::every_kind(), &RenderOptions::default()).contains("/bare/"));
 }
 
+/// agentgateway keeps the client's method, so a GET on a model route would
+/// reach the provider (OpenAI lists stored chat completions at
+/// `GET /v1/chat/completions`). Model calls are POSTs.
+#[test]
+fn routes_match_only_posts() {
+    let doc = parse(&render(
+        &fixtures::every_kind(),
+        &RenderOptions {
+            bare_route: true,
+            ..Default::default()
+        },
+    ));
+    for route in routes(&doc) {
+        assert_eq!(route["matches"][0]["method"], "POST", "{}", route["name"]);
+    }
+}
+
+/// Without route types agentgateway handles every request as an OpenAI chat
+/// completion, so Anthropic and Gemini requests would be translated.
+#[test]
+fn each_format_names_its_model_endpoints() {
+    let doc = parse(&render(&fixtures::every_kind(), &RenderOptions::default()));
+    let endpoints = |name: &str| {
+        let route = routes(&doc).iter().find(|r| r["name"] == name).unwrap();
+        route["backends"][0]["policies"]["ai"]["routes"].clone()
+    };
+    assert_eq!(
+        endpoints("data-team-anthropic"),
+        serde_json::json!({
+            "/v1/messages": "messages",
+            "/v1/messages/count_tokens": "anthropicTokenCount",
+        })
+    );
+    let openai = serde_json::json!({
+        "/v1/chat/completions": "completions",
+        "/v1/responses": "responses",
+    });
+    assert_eq!(endpoints("data-team-openai"), openai);
+    assert_eq!(endpoints("ml-team-openai"), openai);
+    assert_eq!(
+        endpoints("data-team-gemini"),
+        serde_json::json!({
+            ":generateContent": "generateContent",
+            ":streamGenerateContent": "generateContent",
+            ":countTokens": "geminiCountTokens",
+        })
+    );
+}
+
+/// With a host override but no path prefix, agentgateway v1.7.0 sends a
+/// built-in kind the client's own path, so a key could reach any provider
+/// endpoint with the provider's key. Such kinds always get a prefix.
+#[test]
+fn built_in_kinds_with_a_base_url_always_get_a_path_prefix() {
+    let mut snapshot = fixtures::every_kind();
+    for route in &mut snapshot.environments[1].routes {
+        route.base_url = Some(match route.kind {
+            ProviderKind::Anthropic => "https://llm-proxy.example.com/anthropic/".into(),
+            _ => "https://llm-proxy.example.com".into(),
+        });
+    }
+    let y = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    let prefix = |name: &str| {
+        let route = routes(&doc).iter().find(|r| r["name"] == name).unwrap();
+        route["backends"][0]["ai"].get("pathPrefix").cloned()
+    };
+    // The base URL's own path wins; otherwise the provider's default base path.
+    assert_eq!(prefix("data-team-anthropic"), Some("/anthropic".into()));
+    assert_eq!(prefix("data-team-openai"), Some("/v1".into()));
+    assert_eq!(prefix("data-team-gemini"), Some("/".into())); // Gemini's paths are absolute
+    // OpenAI-compatible providers always choose their own path.
+    assert_eq!(prefix("ml-team-openai"), None);
+}
+
 #[test]
 fn render_is_deterministic() {
     let a = render(&fixtures::every_kind(), &RenderOptions::default());
@@ -448,5 +549,8 @@ fn usd_strings_are_exact() {
 #[test]
 fn debug_output_hides_provider_keys() {
     let shown = format!("{:?}", fixtures::basic());
-    assert!(!shown.contains("mock-key"), "{shown}");
+    assert!(
+        !shown.contains("mock-key") && !shown.contains("test-charge-secret"),
+        "{shown}"
+    );
 }

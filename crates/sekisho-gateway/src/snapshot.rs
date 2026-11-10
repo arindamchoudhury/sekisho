@@ -9,13 +9,27 @@ use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{Store, StoreError};
 
-/// Where agentgateway reaches Sekisho's hooks, each as `host:port`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where agentgateway reaches Sekisho's hooks, each as `host:port`, and the
+/// secret its rate-limit calls carry.
+#[derive(Clone, PartialEq, Eq)]
 pub struct HookTargets {
     /// The HTTP `extAuthz` service.
     pub authz_http: String,
     /// The gRPC rate-limit and `ext_proc` services.
     pub grpc: String,
+    /// Sent in every rate-limit descriptor, so the charging hook only
+    /// records spend that this install's agentgateway reports.
+    pub charge_secret: String,
+}
+
+/// Leaves out the charge secret.
+impl fmt::Debug for HookTargets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HookTargets")
+            .field("authz_http", &self.authz_http)
+            .field("grpc", &self.grpc)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One environment's route for one API format, served by one provider.

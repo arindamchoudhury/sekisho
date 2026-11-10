@@ -30,9 +30,11 @@ async fn app() -> TestApp {
         hooks: HookTargets {
             authz_http: "sekisho:9080".into(),
             grpc: "sekisho:9081".into(),
+            charge_secret: "test-charge-secret".into(),
         },
         render: RenderOptions::default(),
         long_poll: Duration::from_secs(1),
+        republish: Duration::from_millis(300),
     };
     let state = AppState::new(store.clone(), secret_box, settings);
     start_publisher(&state).await.unwrap();
@@ -224,6 +226,81 @@ async fn provider_key_never_returned() {
             "{text}"
         );
     }
+}
+
+/// Rotating a provider's key republishes the gateway config with the new
+/// key; the key is never echoed back.
+#[tokio::test]
+async fn provider_key_rotation_reaches_the_gateway() {
+    let app = app().await;
+    app.provider_and_model().await;
+    assert_eq!(app.put_env("data-team", &["mock-model"]).await.status, 200);
+    let settled = app.settled_version().await;
+
+    let r = app
+        .admin(
+            "PATCH",
+            "/api/v1/providers/mock",
+            Some(json!({ "api_key": "rotated-key-456" })),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(
+        (&r.body["name"], &r.body["base_url"]),
+        (&json!("mock"), &json!("http://mock:8000/v1"))
+    );
+    assert!(
+        !r.text.contains("api_key") && !r.text.contains("rotated-key-456"),
+        "{}",
+        r.text
+    );
+    let c = app
+        .call(
+            "GET",
+            &format!("/internal/gateway/config?after={settled}"),
+            Some(GATEWAY),
+            None,
+        )
+        .await;
+    assert_eq!(c.status, 200, "no new version after the rotation");
+    let yaml = c.body["yaml"].as_str().unwrap();
+    assert!(yaml.contains("rotated-key-456") && !yaml.contains("mock-secret-key"));
+
+    // A compatible provider keeps its URL; the kind and name never change.
+    let r = app
+        .admin(
+            "PATCH",
+            "/api/v1/providers/mock",
+            Some(json!({ "base_url": null })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["fields"][0]["field"]),
+        (422, &json!("base_url")),
+        "{}",
+        r.text
+    );
+    let r = app
+        .admin(
+            "PATCH",
+            "/api/v1/providers/mock",
+            Some(json!({ "kind": "openai" })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["error"]),
+        (400, &json!("bad_request")),
+        "{}",
+        r.text
+    );
+    let r = app
+        .admin(
+            "PATCH",
+            "/api/v1/providers/nope",
+            Some(json!({ "api_key": "k" })),
+        )
+        .await;
+    assert_eq!(r.status, 404, "{}", r.text);
 }
 
 #[tokio::test]
@@ -646,4 +723,39 @@ async fn long_poll_wakes_when_config_changes() {
     assert!(yaml.contains("pathPrefix: /env/data-team/openai"), "{yaml}");
     assert!(yaml.contains("key: mock-secret-key"));
     assert_eq!(sekisho_gateway::validate(yaml), Ok(()));
+}
+
+/// A change whose notification was lost (or whose publish failed) still
+/// reaches the gateway: the publisher also re-renders on a timer.
+#[tokio::test]
+async fn missed_changes_are_published_by_the_timer() {
+    let app = app().await;
+    app.provider_and_model().await;
+    let settled = app.settled_version().await;
+    // Written straight to the database: no notification is sent.
+    let env: uuid::Uuid =
+        sqlx::query_scalar("insert into environments (name) values ('quiet-team') returning id")
+            .fetch_one(app.store.pool())
+            .await
+            .unwrap();
+    sqlx::query("insert into environment_models (environment_id, model_id, position) select $1, id, 0 from models where name = 'mock-model'")
+        .bind(env)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    let r = app
+        .call(
+            "GET",
+            &format!("/internal/gateway/config?after={settled}"),
+            Some(GATEWAY),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 200, "no new version within the long poll");
+    assert!(
+        r.body["yaml"]
+            .as_str()
+            .unwrap()
+            .contains("pathPrefix: /env/quiet-team/openai")
+    );
 }

@@ -4,6 +4,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use sekisho_core::keys::hash_secret;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_gateway::{HookTargets, RenderOptions};
 
@@ -13,6 +14,8 @@ use crate::app::Settings;
 const MIN_TOKEN_CHARS: usize = 16;
 /// How long `GET /internal/gateway/config` waits for a newer version.
 pub const LONG_POLL: Duration = Duration::from_secs(30);
+/// How often the publisher re-renders without a change.
+pub const REPUBLISH: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -41,6 +44,19 @@ impl fmt::Debug for ServerConfig {
             .field("settings", &self.settings)
             .finish_non_exhaustive()
     }
+}
+
+/// The secret agentgateway's rate-limit calls carry (see `HookTargets`),
+/// derived from the gateway token so every replica agrees on it. Whoever has
+/// the gateway token can read the rendered config anyway.
+fn charge_secret(gateway_token: &str) -> String {
+    hash_secret(&format!(
+        "sekisho charge secret
+{gateway_token}"
+    ))
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect()
 }
 
 impl ServerConfig {
@@ -85,6 +101,7 @@ impl ServerConfig {
         let hooks = HookTargets {
             authz_http: required("SEKISHO_HOOKS_HTTP_TARGET")?,
             grpc: required("SEKISHO_HOOKS_GRPC_TARGET")?,
+            charge_secret: charge_secret(&gateway_token),
         };
 
         let mut render = RenderOptions::default();
@@ -129,6 +146,7 @@ impl ServerConfig {
                 hooks,
                 render,
                 long_poll: LONG_POLL,
+                republish: REPUBLISH,
             },
         })
     }
@@ -239,13 +257,31 @@ mod tests {
 
     #[test]
     fn debug_hides_secrets() {
-        let shown = format!("{:?}", load(&required()).unwrap());
+        let config = load(&required()).unwrap();
+        let shown = format!("{config:?}");
         for secret in [
             "bootstrap-token-0123456789",
             "gateway-token-0123456789",
             KEY,
+            config.settings.hooks.charge_secret.as_str(),
         ] {
             assert!(!shown.contains(secret), "{shown}");
         }
+    }
+
+    #[test]
+    fn charge_secret_is_derived_from_the_gateway_token() {
+        let secret = load(&required()).unwrap().settings.hooks.charge_secret;
+        assert_eq!(secret.len(), 64);
+        assert!(secret.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert!(!secret.contains("gateway-token"));
+        // Every replica derives the same one; another token, another secret.
+        assert_eq!(
+            load(&required()).unwrap().settings.hooks.charge_secret,
+            secret
+        );
+        let mut vars = required();
+        vars.insert("SEKISHO_GATEWAY_TOKEN", "another-gateway-token-0123456789");
+        assert_ne!(load(&vars).unwrap().settings.hooks.charge_secret, secret);
     }
 }

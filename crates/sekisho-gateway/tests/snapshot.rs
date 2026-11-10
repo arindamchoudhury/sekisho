@@ -12,6 +12,7 @@ fn hooks() -> HookTargets {
     HookTargets {
         authz_http: "sekisho:9080".into(),
         grpc: "sekisho:9081".into(),
+        charge_secret: "test-charge-secret".into(),
     }
 }
 

@@ -18,6 +18,7 @@ binds:
       matches:
       - path:
           pathPrefix: /env/data-team/openai
+        method: POST
       policies:
         requestHeaderModifier:
           remove:
@@ -31,6 +32,8 @@ binds:
           host: sekisho:9080
           protocol:
             http:
+              addRequestHeaders:
+                x-sekisho-env: '"data-team"'
               metadata:
                 key: response.headers["x-sekisho-key"]
           includeRequestHeaders:
@@ -47,6 +50,8 @@ binds:
               value: '"data-team"'
             - key: key
               value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
             cost: int(llm.cost.total * 1000000.0)
         extProc:
           host: sekisho:9081
@@ -65,6 +70,10 @@ binds:
           hostOverride: mock:8000
           pathPrefix: /v1
         policies:
+          ai:
+            routes:
+              /v1/chat/completions: completions
+              /v1/responses: responses
           backendAuth:
             key: mock-key
           authorization:

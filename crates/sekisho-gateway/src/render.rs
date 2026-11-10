@@ -46,7 +46,7 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
             policies.extend(hook_policies(&env.env.to_string(), snapshot, options));
             routes.push(json!({
                 "name": format!("{}-{segment}", env.env),
-                "matches": [{ "path": { "pathPrefix": format!("/env/{}/{segment}", env.env) } }],
+                "matches": [route_match(&format!("/env/{}/{segment}", env.env))],
                 "policies": policies,
                 "backends": [backend(route)],
             }));
@@ -59,7 +59,7 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
     {
         routes.push(json!({
             "name": "bare-openai",
-            "matches": [{ "path": { "pathPrefix": "/bare/openai" } }],
+            "matches": [route_match("/bare/openai")],
             "policies": forwarding_policies(),
             "backends": [backend(route)],
         }));
@@ -80,6 +80,13 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
         }]),
     );
     serde_yaml_ng::to_string(&Value::Object(doc)).expect("a JSON value always serialises to YAML")
+}
+
+/// Model calls are POSTs. agentgateway sends the client's method upstream, so
+/// a GET would reach the provider (OpenAI lists stored chat completions at
+/// `GET /v1/chat/completions`).
+fn route_match(prefix: &str) -> Value {
+    json!({ "path": { "pathPrefix": prefix }, "method": "POST" })
 }
 
 /// Strips client credentials and drops the `/env/<name>/<format>` prefix.
@@ -106,8 +113,13 @@ fn hook_policies(
         "extAuthz".into(),
         json!({
             "host": hooks.authz_http,
-            // Exposes the key id the hook verified as `extauthz.key`.
-            "protocol": { "http": { "metadata": { "key": "response.headers[\"x-sekisho-key\"]" } } },
+            "protocol": { "http": {
+                // Names the route's environment to the hook; the client's
+                // path is not trusted for it.
+                "addRequestHeaders": { "x-sekisho-env": cel_string(env) },
+                // Exposes the key id the hook verified as `extauthz.key`.
+                "metadata": { "key": "response.headers[\"x-sekisho-key\"]" },
+            } },
             "includeRequestHeaders": ["authorization"],
             "failureMode": if options.fail_open_authz { "allow" } else { "deny" },
         }),
@@ -125,6 +137,7 @@ fn hook_policies(
                     // Not the Authorization header: agentgateway evaluates these
                     // after backendAuth has put the provider key there.
                     { "key": "key", "value": "extauthz.key" },
+                    { "key": "secret", "value": cel_string(&hooks.charge_secret) },
                 ],
                 // The catalog price of the finished request, in micro-USD.
                 "cost": "int(llm.cost.total * 1000000.0)",
@@ -163,13 +176,23 @@ fn backend(route: &ModelRoute) -> Value {
     if let Some(url) = &route.base_url {
         let upstream = Upstream::parse(url);
         ai.insert("hostOverride".into(), json!(upstream.host_port));
-        if let Some(prefix) = upstream.path_prefix {
+        // With a host override and no prefix, agentgateway v1.7.0 sends a
+        // built-in kind the client's own path, which could be any of the
+        // provider's endpoints. A prefix makes it choose the model endpoint.
+        if let Some(prefix) = upstream
+            .path_prefix
+            .or_else(|| default_path_prefix(route.kind))
+        {
             ai.insert("pathPrefix".into(), json!(prefix));
         }
         if upstream.tls {
             policies.insert("backendTLS".into(), json!({}));
         }
     }
+    policies.insert(
+        "ai".into(),
+        json!({ "routes": model_endpoints(route.format) }),
+    );
     policies.insert("backendAuth".into(), json!({ "key": route.api_key }));
     let models: Vec<String> = route
         .models
@@ -181,6 +204,39 @@ fn backend(route: &ModelRoute) -> Value {
         json!({ "rules": [{ "require": format!("llm.requestModel in [{}]", models.join(", ")) }] }),
     );
     json!({ "ai": ai, "policies": policies })
+}
+
+/// The provider's default base path, which a `pathPrefix` replaces. `None`
+/// for OpenAI-compatible providers, which always choose their own path.
+fn default_path_prefix(kind: ProviderKind) -> Option<String> {
+    match kind {
+        ProviderKind::Anthropic | ProviderKind::OpenAi => Some("/v1".into()),
+        // Gemini's paths are absolute (`/v1beta/…`).
+        ProviderKind::Gemini => Some("/".into()),
+        ProviderKind::OpenAiCompatible => None,
+    }
+}
+
+/// Each format's model endpoints, by path suffix, and how agentgateway
+/// handles them. Without these it handles every request as an OpenAI chat
+/// completion; any other path still is, and goes to the provider's chat
+/// endpoint.
+fn model_endpoints(format: ApiFormat) -> Value {
+    match format {
+        ApiFormat::Anthropic => json!({
+            "/v1/messages": "messages",
+            "/v1/messages/count_tokens": "anthropicTokenCount",
+        }),
+        ApiFormat::OpenAi => json!({
+            "/v1/chat/completions": "completions",
+            "/v1/responses": "responses",
+        }),
+        ApiFormat::Gemini => json!({
+            ":generateContent": "generateContent",
+            ":streamGenerateContent": "generateContent",
+            ":countTokens": "geminiCountTokens",
+        }),
+    }
 }
 
 /// A CEL string literal. Names are limited to `[A-Za-z0-9._:/-]`, which need

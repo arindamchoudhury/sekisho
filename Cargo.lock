@@ -2591,6 +2591,7 @@ dependencies = [
  "sekisho-testkit",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "time",
  "tokio",

@@ -34,3 +34,4 @@ uuid = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
 sekisho-testkit = { workspace = true }
+sqlx = { workspace = true }

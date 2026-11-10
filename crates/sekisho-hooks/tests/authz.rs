@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -12,11 +12,17 @@ use sekisho_store::{BudgetScope, EnvironmentSpec, NewBudget, Store};
 use sekisho_testkit::TestStore;
 use serde_json::Value;
 use time::OffsetDateTime;
-use time::macros::datetime;
+use time::format_description::well_known::Rfc3339;
 use tokio::time::{Instant, sleep};
 
 /// The hook's clock. Keys may expire exactly now.
-const NOW: OffsetDateTime = datetime!(2026-11-20 12:00 UTC);
+/// The hook's clock: a day after the real now (whole seconds), so a key can
+/// be created to expire exactly at it. Fixed for the whole test run.
+static NOW: LazyLock<OffsetDateTime> = LazyLock::new(|| {
+    (OffsetDateTime::now_utc() + time::Duration::DAY)
+        .replace_nanosecond(0)
+        .unwrap()
+});
 const PATH: &str = "/env/data-team/openai/v1/chat/completions";
 
 struct Hook {
@@ -63,7 +69,7 @@ async fn hook() -> Hook {
         .await
         .unwrap();
     let (_, expiring_now_token) = store
-        .create_key(&data, "bob@example.com", "short", Some(NOW))
+        .create_key(&data, "bob@example.com", "short", Some(*NOW))
         .await
         .unwrap();
 
@@ -72,7 +78,7 @@ async fn hook() -> Hook {
     let state = HooksState {
         cache: Arc::clone(&cache),
         store: store.clone(),
-        clock: Arc::new(|| NOW),
+        clock: Arc::new(|| *NOW),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -89,12 +95,36 @@ async fn hook() -> Hook {
     }
 }
 
-/// Calls the hook as agentgateway does: the client's method and path, an
-/// empty body, and only the Authorization header.
+/// The environment of the route a well-formed `/env/<name>/…` path matches.
+fn route_env(path: &str) -> Option<&str> {
+    path.strip_prefix("/env/")?.split('/').next()
+}
+
+/// Calls the hook as agentgateway's route for the path does: the client's
+/// method and path, an empty body, the Authorization header, and the
+/// route's `x-sekisho-env`.
 async fn call_with(app: &Hook, method: &str, path: &str, authorization: &[HeaderValue]) -> Reply {
+    let env: Vec<HeaderValue> = route_env(path)
+        .map(|e| HeaderValue::from_str(e).unwrap())
+        .into_iter()
+        .collect();
+    call_route(app, method, path, &env, authorization).await
+}
+
+/// Calls the hook with explicit `x-sekisho-env` values.
+async fn call_route(
+    app: &Hook,
+    method: &str,
+    path: &str,
+    env: &[HeaderValue],
+    authorization: &[HeaderValue],
+) -> Reply {
     let mut headers = HeaderMap::new();
     for value in authorization {
         headers.append(AUTHORIZATION, value.clone());
+    }
+    for value in env {
+        headers.append("x-sekisho-env", value.clone());
     }
     let resp = app
         .http
@@ -221,7 +251,7 @@ async fn authz_rejects_malformed_and_foreign_credentials() {
             assert_eq!(r.json["reason"], reason, "{values:?}");
         }
     }
-    // The right key on a path outside its environment.
+    // The right key on a route of no or another environment.
     for path in [
         "/v1/chat/completions",
         "/env/ml-team/openai/v1/chat/completions",
@@ -298,25 +328,32 @@ async fn budget_exhausted_is_429_with_message() {
     .await;
     assert_eq!(call(&app, path, Some(&token)).await.status, 200); // not used up yet
     app.store
-        .charge(&[team], MicroUsd(13_500), NOW)
+        .charge(&[team], MicroUsd(13_500), *NOW)
         .await
         .unwrap();
     let r = call(&app, path, Some(&token)).await;
     assert_eq!(r.status, 429);
     assert_eq!(r.json["error"], "budget_exhausted");
+    // The calendar month after NOW starts at UTC midnight on the 1st.
+    let month = BudgetWindow {
+        kind: WindowKind::Month,
+        calendar: true,
+    };
+    let resets_at = month.current(*NOW, *NOW).1.format(&Rfc3339).unwrap();
+    assert!(resets_at.ends_with("-01T00:00:00Z"), "{resets_at}");
     assert_eq!(
         (&r.json["budget"], &r.json["resets_at"]),
-        (&Value::from("team"), &Value::from("2026-12-01T00:00:00Z"))
+        (&Value::from("team"), &Value::from(resets_at.as_str()))
     );
     assert!(
         r.json["message"]
             .as_str()
             .unwrap()
-            .contains("until 2026-12-01T00:00:00Z")
+            .contains(&format!("until {resets_at}"))
     );
     assert_eq!(
         r.json["message"],
-        "Budget 'team' is used up until 2026-12-01T00:00:00Z."
+        format!("Budget 'team' is used up until {resets_at}.")
     );
 }
 
@@ -382,4 +419,44 @@ async fn budget_check_failure_fails_closed() {
     let r = call(&app, PATH, Some(&bearer(&app.token))).await;
     assert_eq!(r.status, 503);
     assert_eq!(r.json["error"], "unavailable");
+}
+
+/// agentgateway may match routes on a normalised path while forwarding the
+/// original one, so the hook trusts the environment the route adds
+/// (`x-sekisho-env`), never the path.
+#[tokio::test]
+async fn environment_comes_from_the_route_not_the_path() {
+    let app = hook().await;
+    let key = [HeaderValue::from_str(&bearer(&app.token)).unwrap()];
+    let data = [HeaderValue::from_static("data-team")];
+    let ml = [HeaderValue::from_static("ml-team")];
+    // data-team's route, whatever the path says.
+    let r = call_route(
+        &app,
+        "POST",
+        "/env/ml-team/../data-team/openai/v1/chat/completions",
+        &data,
+        &key,
+    )
+    .await;
+    assert_eq!(r.status, 200);
+    // ml-team's route with a path that claims data-team.
+    let r = call_route(&app, "POST", PATH, &ml, &key).await;
+    assert_eq!(
+        (r.status, &r.json["reason"]),
+        (403, &Value::from("wrong_environment"))
+    );
+    // No route environment, or two of them: refused.
+    for env in [
+        &[][..],
+        &[data[0].clone(), ml[0].clone()][..],
+        &[data[0].clone(), data[0].clone()][..],
+    ] {
+        let r = call_route(&app, "POST", PATH, env, &key).await;
+        assert_eq!(
+            (r.status, &r.json["reason"]),
+            (403, &Value::from("wrong_environment")),
+            "{env:?}"
+        );
+    }
 }

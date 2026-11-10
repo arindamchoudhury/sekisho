@@ -6,7 +6,7 @@ use std::time::Duration;
 use sekisho_core::formats::ProviderKind;
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
-use sekisho_store::{ChangeKind, FieldError, NewModel, NewProvider, StoreError};
+use sekisho_store::{ChangeKind, FieldError, NewModel, NewProvider, ProviderUpdate, StoreError};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
@@ -104,6 +104,96 @@ async fn provider_round_trip_and_lookups() {
     ));
 }
 
+fn update(api_key: Option<&str>, base_url: Option<Option<&str>>) -> ProviderUpdate {
+    ProviderUpdate {
+        api_key: api_key.map(Into::into),
+        base_url: base_url.map(|url| url.map(Into::into)),
+    }
+}
+
+/// A provider's key rotates (and its URL changes) in place, without touching
+/// the models and environments that use it.
+#[tokio::test]
+async fn provider_key_and_url_can_be_changed() {
+    let (store, sb) = common::store().await;
+    let p = store
+        .create_provider(
+            &sb,
+            new_provider("anthropic", ProviderKind::Anthropic, "old-key"),
+        )
+        .await
+        .unwrap();
+    store
+        .create_model(new_model("claude-sonnet-5-5", "anthropic", None))
+        .await
+        .unwrap();
+    let mut rx = store.listen().await.unwrap();
+
+    let rotated = store
+        .update_provider(&sb, &p.name, update(Some("new-key"), None))
+        .await
+        .unwrap();
+    assert_eq!(rotated, p); // nothing listed changed
+    assert_eq!(store.provider_api_key(&sb, p.id).await.unwrap(), "new-key");
+    assert_eq!(next_change(&mut rx).await, ChangeKind::Providers);
+
+    let proxied = store
+        .update_provider(
+            &sb,
+            &p.name,
+            update(None, Some(Some("https://proxy.example/v1"))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        proxied.base_url.as_deref(),
+        Some("https://proxy.example/v1")
+    );
+    assert_eq!(store.provider_api_key(&sb, p.id).await.unwrap(), "new-key"); // kept
+    assert_eq!(next_change(&mut rx).await, ChangeKind::Providers);
+    let cleared = store
+        .update_provider(&sb, &p.name, update(None, Some(None)))
+        .await
+        .unwrap();
+    assert_eq!(cleared.base_url, None);
+    assert_eq!(store.list_models().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn provider_updates_are_validated() {
+    let (store, sb) = common::store().await;
+    let mut compat = new_provider("mock", ProviderKind::OpenAiCompatible, "k");
+    compat.base_url = Some("http://mock:8000/v1".into());
+    let mock = store.create_provider(&sb, compat).await.unwrap();
+    let mut rx = store.listen().await.unwrap();
+    for (refused, field) in [
+        (update(Some(""), None), "api_key"),
+        (update(None, Some(None)), "base_url"), // a compatible provider needs one
+        (update(None, Some(Some("ftp://mock"))), "base_url"),
+    ] {
+        let err = store
+            .update_provider(&sb, &mock.name, refused)
+            .await
+            .unwrap_err();
+        assert_eq!(fields(err), [field]);
+    }
+    let unknown = ProviderName::parse("nope").unwrap();
+    assert!(matches!(
+        store
+            .update_provider(&sb, &unknown, update(Some("k2"), None))
+            .await,
+        Err(StoreError::NotFound)
+    ));
+    assert_eq!(store.get_provider(&mock.name).await.unwrap(), mock);
+    assert_eq!(store.provider_api_key(&sb, mock.id).await.unwrap(), "k");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), rx.next())
+            .await
+            .is_err(),
+        "refused updates notify nothing"
+    );
+}
+
 #[tokio::test]
 async fn duplicate_provider_is_conflict() {
     let (store, sb) = common::store().await;
@@ -153,6 +243,31 @@ async fn inputs_are_validated() {
         ["input_price"]
     );
     assert!(store.list_models().await.unwrap().is_empty());
+}
+
+/// agentgateway's catalog has no prices for an OpenAI-compatible provider's
+/// models, so without Sekisho prices their spend would never be charged.
+#[tokio::test]
+async fn openai_compatible_models_need_prices() {
+    let (store, sb) = common::store().await;
+    let mut compat = new_provider("mock", ProviderKind::OpenAiCompatible, "k");
+    compat.base_url = Some("http://mock:8000/v1".into());
+    store.create_provider(&sb, compat).await.unwrap();
+    assert_eq!(
+        fields(
+            store
+                .create_model(new_model("local", "mock", None))
+                .await
+                .unwrap_err()
+        ),
+        ["input_price", "output_price"]
+    );
+    assert!(store.list_models().await.unwrap().is_empty());
+    let priced = store
+        .create_model(new_model("local", "mock", Some((0, 0))))
+        .await
+        .unwrap();
+    assert_eq!(priced.input_price, Some(MicroUsd(0))); // free is a price
 }
 
 #[tokio::test]

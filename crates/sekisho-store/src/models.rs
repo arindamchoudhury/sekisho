@@ -10,7 +10,8 @@ use crate::notify::{ChangeKind, notify};
 use crate::{Result, Store, StoreError};
 
 /// A model to add. Prices are micro-USD per 1,000,000 tokens; leave both
-/// `None` to use agentgateway's catalog prices.
+/// `None` to use agentgateway's catalog prices. An OpenAI-compatible
+/// provider's models need prices: the catalog has none for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewModel {
     pub name: ModelName,
@@ -87,11 +88,19 @@ impl Store {
             )])
         };
         let mut tx = self.pool.begin().await?;
-        let provider_id: Uuid = sqlx::query_scalar("select id from providers where name = $1")
-            .bind(new.provider.as_str())
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(unknown_provider)?;
+        let (provider_id, kind): (Uuid, String) =
+            sqlx::query_as("select id, kind from providers where name = $1")
+                .bind(new.provider.as_str())
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(unknown_provider)?;
+        if kind == ProviderKind::OpenAiCompatible.as_str() && new.input_price.is_none() {
+            const NEEDED: &str = "an OpenAI-compatible provider's models need prices:                                   agentgateway's catalog has none for them";
+            return Err(StoreError::Validation(vec![
+                FieldError::new("input_price", NEEDED),
+                FieldError::new("output_price", NEEDED),
+            ]));
+        }
         let id: Uuid = sqlx::query_scalar(
             "insert into models (name, provider_id, input_price_micro_usd, output_price_micro_usd) \
              values ($1, $2, $3, $4) returning id",

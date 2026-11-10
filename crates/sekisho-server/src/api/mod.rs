@@ -15,7 +15,7 @@ use std::fmt::Display;
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router, middleware};
 use sekisho_store::{FieldError, StoreError};
 use serde::de::DeserializeOwned;
@@ -30,7 +30,10 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/providers",
             get(providers::list).post(providers::create),
         )
-        .route("/api/v1/providers/{name}", delete(providers::delete))
+        .route(
+            "/api/v1/providers/{name}",
+            patch(providers::update).delete(providers::delete),
+        )
         .route("/api/v1/models", get(models::list).post(models::create))
         .route("/api/v1/models/{name}", delete(models::delete))
         .route("/api/v1/environments", get(environments::list))

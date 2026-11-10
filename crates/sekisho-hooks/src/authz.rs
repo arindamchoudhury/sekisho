@@ -3,8 +3,9 @@
 //! any other answer goes back to the client as is.
 //!
 //! Checks, in order: a well-formed `Bearer sek_…` token (else 401); a known
-//! key with the right secret, for the path's environment, that is active
-//! (else 403 with a reason); no used-up budget (else 429).
+//! key with the right secret, for the calling route's environment
+//! (`x-sekisho-env`), that is active (else 403 with a reason); no used-up
+//! budget (else 429).
 
 use std::sync::Arc;
 
@@ -21,6 +22,9 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::cache::{AuthCache, CachedKey};
 use crate::credential::{Credential, refusal, resolve};
+
+/// The header each route adds to the hook request, naming its environment.
+pub const ROUTE_ENV_HEADER: &str = "x-sekisho-env";
 
 /// What every hook needs.
 #[derive(Clone)]
@@ -45,7 +49,7 @@ enum Decision {
 }
 
 async fn check(State(state): State<HooksState>, req: Request) -> Response {
-    let decision = decide(&state, req.uri().path(), req.headers()).await;
+    let decision = decide(&state, req.headers()).await;
     if !matches!(decision, Decision::Allow(_)) {
         tracing::debug!(path = req.uri().path(), status = ?decision.status(), "request refused");
     }
@@ -62,19 +66,26 @@ fn single_authorization(headers: &HeaderMap) -> Option<&str> {
     value.to_str().ok()
 }
 
-/// The environment of a `/env/<name>/…` path.
-fn path_environment(path: &str) -> Option<EnvName> {
-    let name = path.strip_prefix("/env/")?.split('/').next()?;
-    EnvName::parse(name).ok()
+/// The environment of the route that called the hook. Each route adds
+/// `x-sekisho-env` to the hook request (`addRequestHeaders`), so it comes
+/// from the config, not the client. The path is not used: agentgateway may
+/// match routes on a normalised path but forward the original one.
+fn route_environment(headers: &HeaderMap) -> Option<EnvName> {
+    let mut values = headers.get_all(ROUTE_ENV_HEADER).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    EnvName::parse(value.to_str().ok()?).ok()
 }
 
-async fn decide(state: &HooksState, path: &str, headers: &HeaderMap) -> Decision {
+async fn decide(state: &HooksState, headers: &HeaderMap) -> Decision {
     let key = match resolve(&state.cache, single_authorization(headers)) {
         Credential::Malformed => return Decision::Unauthorized,
         Credential::Unknown => return Decision::Forbidden("unknown_key"),
         Credential::Known(key) => key,
     };
-    match path_environment(path) {
+    match route_environment(headers) {
         Some(env) if env == key.environment && state.cache.environment_exists(&env) => {}
         _ => return Decision::Forbidden("wrong_environment"),
     }

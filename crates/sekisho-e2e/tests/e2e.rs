@@ -16,6 +16,13 @@ const MOCK: &str = "http://127.0.0.1:18000";
 const BOOTSTRAP: &str = "e2e-bootstrap-token-0123456789";
 const MOCK_PROVIDER_KEY: &str = "mock-provider-key-e2e";
 const MODEL: &str = "mock-model";
+/// A second model on the mock provider, for environments that must differ.
+const MODEL_B: &str = "mock-model-b";
+/// Built-in provider kinds pointed at the mock: their keys and models.
+const ANTHROPIC_KEY: &str = "mock-anthropic-key-e2e";
+const OPENAI_KEY: &str = "mock-openai-key-e2e";
+const CLAUDE_MODEL: &str = "claude-mock";
+const GPT_MODEL: &str = "gpt-mock";
 
 fn http() -> Client {
     Client::builder()
@@ -77,13 +84,73 @@ async fn seed() {
 }
 
 async fn put_env(name: &str) {
+    put_env_models(name, &[MODEL]).await;
+}
+
+async fn put_env_models(name: &str, models: &[&str]) {
     let (s, body) = admin(
         "PUT",
         &format!("/api/v1/environments/{name}"),
-        Some(json!({ "models": [MODEL] })),
+        Some(json!({ "models": models })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+/// Creates a provider or model unless an earlier run did.
+async fn ensure(path: &str, body: Value) {
+    let (s, answer) = admin("POST", path, Some(body)).await;
+    assert!(
+        s == StatusCode::CREATED || s == StatusCode::CONFLICT,
+        "{path}: {s} {answer}"
+    );
+}
+
+/// Every request the mock model has received, oldest first.
+async fn mock_requests() -> Vec<Value> {
+    http()
+        .get(format!("{MOCK}/_requests"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+fn chat_body(model: &str) -> Value {
+    json!({ "model": model, "messages": [{ "role": "user", "content": "hi" }] })
+}
+
+/// Sends one HTTP/1.1 request to the gateway byte for byte, so the path
+/// reaches agentgateway exactly as written (reqwest resolves `%2e%2e`), and
+/// returns the status.
+async fn raw_status(method: &str, path: &str, token: &str, body: &Value) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = body.to_string();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1:3000\r\nauthorization: Bearer {token}\r\n\
+         content-type: application/json\r\nx-mock-chunks: 1\r\nx-mock-interval-ms: 0\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let exchange = async {
+        let mut tcp = tokio::net::TcpStream::connect("127.0.0.1:3000")
+            .await
+            .unwrap();
+        tcp.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tcp.read_to_end(&mut response).await.unwrap();
+        response
+    };
+    let response = tokio::time::timeout(Duration::from_secs(30), exchange)
+        .await
+        .expect("an answer within 30 s");
+    let text = String::from_utf8_lossy(&response);
+    text.split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no status line: {text}"))
 }
 
 /// A fresh key for `env`: (id, token).
@@ -482,5 +549,212 @@ async fn sekisho_down_requests_refused() {
             "sekisho did not come back"
         );
         sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// A model the environment doesn't list is refused before the provider.
+#[tokio::test]
+#[ignore]
+async fn unlisted_model_never_reaches_the_provider() {
+    let (env, _, token) = fresh_env("listed").await;
+    let before = mock_requests().await.len();
+    let resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        "gpt-not-listed",
+        1,
+        0,
+        false,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        mock_requests().await.len(),
+        before,
+        "the provider was called"
+    );
+}
+
+/// Whatever path or method a client uses under a model route, the provider
+/// sees only a POST to its model endpoint: a key can't reach the provider's
+/// other endpoints (files, stored completions, fine-tuning) with its key.
+#[tokio::test]
+#[ignore]
+async fn only_model_calls_reach_the_provider() {
+    let (env, _, token) = fresh_env("paths").await;
+    let before = mock_requests().await.len();
+    for (method, path) in [
+        ("GET", "/v1/models"),
+        ("GET", "/v1/files"),
+        ("POST", "/v1/files"),
+        ("DELETE", "/v1/files/file-abc"),
+        ("GET", "/v1/chat/completions"),
+        ("POST", "/v1/fine_tuning/jobs"),
+    ] {
+        let status = raw_status(
+            method,
+            &format!("/env/{env}/openai{path}"),
+            &token,
+            &chat_body(MODEL),
+        )
+        .await;
+        println!("{method} {path} -> {status}");
+    }
+    for r in &mock_requests().await[before..] {
+        assert_eq!(
+            (r["method"].as_str(), r["path"].as_str()),
+            (Some("POST"), Some("/v1/chat/completions")),
+            "{r}"
+        );
+    }
+}
+
+/// A key for one environment never gets another environment's models, however
+/// the path is encoded. agentgateway v1.7.0 matches routes on the raw path;
+/// Sekisho takes the environment from the matched route, never the path.
+#[tokio::test]
+#[ignore]
+async fn encoded_paths_cannot_cross_environments() {
+    let (a, _, token_a) = fresh_env("cross-a").await;
+    ensure(
+        "/api/v1/models",
+        json!({ "name": MODEL_B, "provider": "mock", "input_price": "3", "output_price": "15" }),
+    )
+    .await;
+    let b = unique("cross-b");
+    put_env_models(&b, &[MODEL_B]).await;
+    let (_, token_b) = new_key(&b).await;
+    wait_route(&b, &token_b).await;
+    let body = chat_body(MODEL_B);
+    assert_eq!(
+        raw_status(
+            "POST",
+            &format!("/env/{b}/openai/v1/chat/completions"),
+            &token_b,
+            &body
+        )
+        .await,
+        200,
+        "b's own key works"
+    );
+    for path in [
+        format!("/env/{b}/openai/v1/chat/completions"),
+        format!("/env/{a}/openai/%2e%2e/%2e%2e/{b}/openai/v1/chat/completions"),
+        format!("/env/{a}/openai/%2E%2E/%2E%2E/{b}/openai/v1/chat/completions"),
+        format!("/env/{a}/openai/..%2f..%2f{b}/openai/v1/chat/completions"),
+        format!("/env/{a}/openai/../../{b}/openai/v1/chat/completions"),
+        format!("/env/{a}/openai//../../{b}/openai/v1/chat/completions"),
+    ] {
+        let status = raw_status("POST", &path, &token_a, &body).await;
+        println!("{path} -> {status}");
+        assert_ne!(status, 200, "{path}");
+    }
+}
+
+/// Built-in provider kinds (here Anthropic and OpenAI, pointed at the mock
+/// by a base URL without a path) get only their own key, never a client
+/// credential, and only on their model endpoint. Anthropic-format requests
+/// stay in Anthropic format.
+#[tokio::test]
+#[ignore]
+async fn built_in_providers_get_their_key_on_their_model_endpoint() {
+    seed().await;
+    for (name, kind, key) in [
+        ("mock-anthropic", "anthropic", ANTHROPIC_KEY),
+        ("mock-openai", "openai", OPENAI_KEY),
+    ] {
+        ensure(
+            "/api/v1/providers",
+            json!({ "name": name, "kind": kind, "base_url": "http://mock-model:8000", "api_key": key }),
+        )
+        .await;
+    }
+    for (model, provider) in [(CLAUDE_MODEL, "mock-anthropic"), (GPT_MODEL, "mock-openai")] {
+        ensure(
+            "/api/v1/models",
+            json!({ "name": model, "provider": provider, "input_price": "3", "output_price": "15" }),
+        )
+        .await;
+    }
+    let env = unique("builtin");
+    put_env_models(&env, &[CLAUDE_MODEL, GPT_MODEL]).await;
+    let (_, token) = new_key(&env).await;
+    wait_route(&env, &token).await;
+    let before = mock_requests().await.len();
+
+    // Claude Code sends its token as both Authorization and x-api-key.
+    let messages = json!({ "model": CLAUDE_MODEL, "max_tokens": 16, "messages": [{ "role": "user", "content": "hi" }] });
+    let resp = http()
+        .post(format!("{GATEWAY}/env/{env}/anthropic/v1/messages"))
+        .bearer_auth(&token)
+        .header("x-api-key", &token)
+        .header("anthropic-version", "2023-06-01")
+        .header("x-mock-chunks", "1")
+        .json(&messages)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(
+        answer["type"], "message",
+        "not an Anthropic answer: {answer}"
+    );
+
+    let resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        GPT_MODEL,
+        1,
+        0,
+        false,
+    )
+    .header("x-api-key", &token)
+    .header("api-key", &token)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Other paths under the routes still go only to the model endpoints.
+    for (route, body) in [("anthropic", &messages), ("openai", &chat_body(GPT_MODEL))] {
+        let status = raw_status(
+            "POST",
+            &format!("/env/{env}/{route}/v1/files"),
+            &token,
+            body,
+        )
+        .await;
+        println!("POST /{route}/v1/files -> {status}");
+    }
+
+    for r in &mock_requests().await[before..] {
+        let headers = r["headers"].as_object().unwrap();
+        assert!(
+            headers
+                .values()
+                .all(|v| !v.as_str().unwrap().contains("sek_")),
+            "{r}"
+        );
+        match (r["method"].as_str(), r["path"].as_str()) {
+            (Some("POST"), Some("/v1/messages")) => {
+                assert_eq!(headers.get("x-api-key"), Some(&json!(ANTHROPIC_KEY)), "{r}");
+                assert_eq!(headers.get("authorization"), None, "{r}");
+            }
+            (Some("POST"), Some("/v1/chat/completions")) => {
+                assert_eq!(
+                    headers.get("authorization"),
+                    Some(&json!(format!("Bearer {OPENAI_KEY}"))),
+                    "{r}"
+                );
+                assert_eq!(headers.get("x-api-key"), None, "{r}");
+            }
+            _ => panic!("reached the provider: {r}"),
+        }
     }
 }

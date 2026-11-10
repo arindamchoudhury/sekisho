@@ -40,7 +40,11 @@ pub async fn config(
     let mut published = state.published();
     loop {
         published.borrow_and_update();
-        if let Some((version, yaml)) = state.store().gateway_config_after(after).await? {
+        if let Some((version, yaml)) = state
+            .store()
+            .gateway_config_after(state.secret_box(), after)
+            .await?
+        {
             return Ok(Json(json!({ "version": version, "yaml": yaml })).into_response());
         }
         let now = Instant::now();

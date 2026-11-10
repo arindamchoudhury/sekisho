@@ -32,6 +32,24 @@ impl fmt::Debug for NewProvider {
     }
 }
 
+/// Changes to a provider; `None` leaves a field as it is. The name and kind
+/// never change.
+pub struct ProviderUpdate {
+    /// A new key, replacing the old one (rotation).
+    pub api_key: Option<String>,
+    /// `Some(None)` removes the override (not allowed for `OpenAiCompatible`).
+    pub base_url: Option<Option<String>>,
+}
+
+impl fmt::Debug for ProviderUpdate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderUpdate")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<new key>"))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
 /// A provider as listed. The API key is read only through
 /// [`Store::provider_api_key`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,10 +68,11 @@ macro_rules! columns {
     };
 }
 
-fn validate(p: &NewProvider) -> Vec<FieldError> {
+/// `api_key` is `None` when it isn't being set.
+fn validate(kind: ProviderKind, base_url: Option<&str>, api_key: Option<&str>) -> Vec<FieldError> {
     let mut errors = Vec::new();
-    match &p.base_url {
-        None if p.kind == ProviderKind::OpenAiCompatible => errors.push(FieldError::new(
+    match base_url {
+        None if kind == ProviderKind::OpenAiCompatible => errors.push(FieldError::new(
             "base_url",
             "an OpenAI-compatible provider needs a base URL",
         )),
@@ -63,7 +82,7 @@ fn validate(p: &NewProvider) -> Vec<FieldError> {
         )),
         _ => {}
     }
-    if p.api_key.is_empty() {
+    if api_key.is_some_and(str::is_empty) {
         errors.push(FieldError::new("api_key", "must not be empty"));
     }
     errors
@@ -96,7 +115,11 @@ impl Store {
         secret_box: &SecretBox,
         new: NewProvider,
     ) -> Result<Provider> {
-        check(validate(&new))?;
+        check(validate(
+            new.kind,
+            new.base_url.as_deref(),
+            Some(&new.api_key),
+        ))?;
         let ciphertext = secret_box.seal(new.api_key.as_bytes());
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(concat!(
@@ -146,6 +169,43 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?
         .ok_or(StoreError::NotFound)?;
+        from_row(&row)
+    }
+
+    /// Rotates a provider's key or changes its base URL. Its models and
+    /// environments keep using it; the gateway config is re-rendered.
+    pub async fn update_provider(
+        &self,
+        secret_box: &SecretBox,
+        name: &ProviderName,
+        update: ProviderUpdate,
+    ) -> Result<Provider> {
+        let mut tx = self.pool.begin().await?;
+        let (id, kind, base_url): (Uuid, String, Option<String>) =
+            sqlx::query_as("select id, kind, base_url from providers where name = $1 for update")
+                .bind(name.as_str())
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(StoreError::NotFound)?;
+        let kind = ProviderKind::parse(&kind).ok_or_else(|| bad_column("provider kind", &kind))?;
+        let base_url = update.base_url.unwrap_or(base_url);
+        check(validate(
+            kind,
+            base_url.as_deref(),
+            update.api_key.as_deref(),
+        ))?;
+        let ciphertext = update.api_key.map(|key| secret_box.seal(key.as_bytes()));
+        let row = sqlx::query(concat!(
+            "update providers set base_url = $2,              api_key_ciphertext = coalesce($3, api_key_ciphertext)              where id = $1 returning ",
+            columns!()
+        ))
+        .bind(id)
+        .bind(&base_url)
+        .bind(&ciphertext)
+        .fetch_one(&mut *tx)
+        .await?;
+        notify(&mut tx, ChangeKind::Providers).await?;
+        tx.commit().await?;
         from_row(&row)
     }
 

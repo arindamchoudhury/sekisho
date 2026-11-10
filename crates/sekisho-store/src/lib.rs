@@ -21,7 +21,7 @@ pub use error::{FieldError, StoreError};
 pub use keys::{AuthSnapshot, EnvKey};
 pub use models::{Model, NewModel};
 pub use notify::ChangeKind;
-pub use providers::{NewProvider, Provider};
+pub use providers::{NewProvider, Provider, ProviderUpdate};
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 

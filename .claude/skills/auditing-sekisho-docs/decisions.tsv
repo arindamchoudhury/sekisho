@@ -50,3 +50,11 @@ D48	Spend export in FOCUS format	\bfocus\b	design plans README
 D49	sekisho status reports unmanaged MCP servers and marketplaces, kept on the machine	unmanaged config|config sekisho didn.t install	design plans README
 D50	Market-research gaps placed in releases 2 and 3 (enforced settings, MCP Registry API, ID-JAG, lifecycle, scanners, risk signals; rug-pull detection, session rules, analytics)	enforced settings	design README
 D51	agentgateway-only formats stay in the rendered config and ext_mcp; hooks use standard protocols; each bump checks for features leaving open source (risk 13)	commercial edition|envoy.s standard protocols	design agw plan1
+D52	Rendered gateway configs stored encrypted; newest 10 versions kept	newest 10	design plan1
+D53	Controller retries a failed publish after 1 s and re-renders every 30 s	re-renders? every 30 s	design plan1
+D54	Each route names its environment to extAuthz (x-sekisho-env); the request path is never trusted for it	names its environment	design plan1
+D55	Spend descriptor names the key extAuthz verified (extauthz.key), not the Authorization header	extauthz\.key	design plan1
+D56	Spend descriptors carry a charge secret derived from the gateway token; without it nothing is charged	charge secret	design plan1
+D57	An OpenAI-compatible provider's models must have prices	models must have prices|models need prices	design plan1
+D58	Provider keys rotate in place (PATCH /api/v1/providers/{name}); name and kind never change	patch /api/v1/providers	design plan1
+D59	A key reaches only its provider's model endpoints: POST-only routes, ai.routes per format, default path prefix for built-in kinds	only its provider.s model endpoints|only the provider.s model endpoints|reaches only its provider	design plan1
