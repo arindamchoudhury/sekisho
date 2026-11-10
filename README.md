@@ -72,7 +72,8 @@ and what they carried.
     its owner is alerted. `sekisho status` warns developers who still have it
     installed, and their next `sekisho use` removes it.
 - **Delivery.** `sekisho use <environment>` installs an environment into Claude
-  Code, Codex, Gemini CLI or OpenCode, for one project or globally:
+  Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code or Kilo
+  CLI, for one project or globally:
   - model and MCP endpoints, the environment's default model, local MCP
     servers, skills, plugins and prompts;
   - a lock file, with checks for hidden Unicode characters and for paths that
@@ -158,9 +159,9 @@ Each environment gets its own routes on the gateway:
 
 | Route | For |
 |---|---|
-| `/env/<name>/anthropic` | Anthropic Messages API, for Claude Code |
+| `/env/<name>/anthropic` | Anthropic Messages API, for Claude Code and others |
 | `/env/<name>/openai` | OpenAI-compatible API, for Codex, OpenCode and others |
-| `/env/<name>/gemini` | Gemini API, for Gemini CLI |
+| `/env/<name>/gemini` | Gemini API, for Gemini CLI and others |
 | `/env/<name>/mcp` | The environment's MCP servers, combined |
 | `/env/<name>/a2a/<agent>` | Each A2A agent |
 

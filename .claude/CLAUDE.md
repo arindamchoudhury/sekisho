@@ -1,7 +1,8 @@
 # Sekisho: project notes for Claude
 
-Sekisho is an open-source control plane for coding agents (Claude Code, Codex,
-Gemini CLI, OpenCode). It decides which models, MCP servers, skills and plugins
+Sekisho is an open-source control plane for coding agents (release 1: Claude
+Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code, Kilo
+CLI). It decides which models, MCP servers, skills and plugins
 each team's agents get, keeps provider keys, caps spend in USD and records what
 happened. It is built in Rust on an unmodified agentgateway, shaped like Obot,
 and aims for all of ACH's features over time.
