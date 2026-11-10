@@ -22,9 +22,11 @@ and what they carried.
 
 - **Environments.** Each team gets one bundle:
   - who may use it, and an owner;
-  - its models, MCP servers (each with a tool allow-list) and A2A agents;
+  - its models and its default model, MCP servers (each with a tool
+    allow-list) and A2A agents;
   - its skills, plugins and prompts;
-  - its budgets.
+  - its budgets;
+  - labels, such as a cost centre, which travel with its spend exports.
 
   Environments are edited in the web UI or through the API, exported and
   imported as YAML, or kept in Git, where UI edits become pull requests
@@ -71,7 +73,8 @@ and what they carried.
     installed, and their next `sekisho use` removes it.
 - **Delivery.** `sekisho use <environment>` installs an environment into Claude
   Code, Codex, Gemini CLI or OpenCode, for one project or globally:
-  - model and MCP endpoints, local MCP servers, skills, plugins and prompts;
+  - model and MCP endpoints, the environment's default model, local MCP
+    servers, skills, plugins and prompts;
   - a lock file, with checks for hidden Unicode characters and for paths that
     escape the target folder;
   - a diff of what changed.
@@ -192,8 +195,8 @@ Plans for after release 1, which can change:
 
 | Release | Adds |
 |---|---|
-| 2 | Hosted MCP servers; importing Obot profiles, budgets and access policies; model routing and fallbacks; more coding tools; enforced settings for each coding tool; an MCP Registry API endpoint; MCP's Enterprise-Managed Authorization (ID-JAG); SCIM; email invites and password resets; catalog entry lifecycle, access requests and scanners; a webhook for risk signals from other security tools |
-| 3 | Human approval of tool calls; guardrails; detecting changed MCP tool definitions; rules that depend on earlier actions in a session; adoption analytics; tamper-evident audit; a compliance mapping |
+| 2 | Hosted MCP servers, with egress rules; importing Obot profiles, budgets and access policies; rate limits on requests and tokens; model routing and fallbacks; more coding tools; enforced settings for each coding tool, including sandbox and approval modes; an MCP Registry API endpoint, and the official MCP Registry as a catalog source; MCP's Enterprise-Managed Authorization (ID-JAG); Kubernetes pods and CI jobs signing in with their own identity tokens; SCIM; email invites and password resets; catalog entry lifecycle, access requests, scanners and signature checks; a webhook for risk signals from other security tools |
+| 3 | Human approval of tool calls, including on a phone; guardrails; audit streamed to a SIEM; detecting changed MCP tool definitions; rules that depend on earlier actions in a session; adoption analytics, with usage per catalog entry; tamper-evident audit; a compliance mapping, with a dated inventory export |
 | 4 | A device agent: an inventory of each machine's AI tools, and per-action rules |
 
 ## Licence

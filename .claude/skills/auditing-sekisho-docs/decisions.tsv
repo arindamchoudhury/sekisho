@@ -60,3 +60,6 @@ D58	Provider keys rotate in place (PATCH /api/v1/providers/{name}); name and kin
 D59	A key reaches only its provider's model endpoints: POST-only routes, ai.routes per format, default path prefix for built-in kinds	only its provider.s model endpoints|only the provider.s model endpoints|reaches only its provider	design plan1
 D60	Spend recorded in USD; one display currency per install with an admin-set exchange rate; budgets entered and shown in it	display currency	design plans README claude
 D61	Exchange rates are set by hand in release 1; an opt-in automatic daily rate comes after release 1	fetched automatically|fetching rates automatically	design
+D62	Each environment names default models (one per API format, optional small model); sekisho use writes them	default model	design plans README
+D63	Environment labels, such as a cost centre, travel with spend exports (FOCUS tags), kept per spend record	labels	design plans README
+D64	Remaining market-research items placed: R1 default model and labels; R2 rate limits, CI OIDC, egress, sandbox and approval modes, review diff and signatures, MCP Registry source; R3 inventory export, usage per entry, SIEM, CIBA; not planned: forecasts, tool search, Agent Trace	egress	design README
