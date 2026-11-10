@@ -22,6 +22,7 @@ declare -A F=(
   [README]=README.md
   [design]=.private/superpowers/specs/2026-11-08-sekisho-release-1-design.md
   [plan1]=.private/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md
+  [plan1b]=.private/superpowers/plans/2026-11-10-plan-1b-bedrock-and-azure.md
   [plans]=.private/superpowers/plans/README.md
   [comparison]=.private/comparison.md
   [inventory]=.private/research/feature-inventory.md

@@ -63,3 +63,11 @@ D61	Exchange rates are set by hand in release 1; an opt-in automatic daily rate 
 D62	Each environment names default models (one per API format, optional small model); sekisho use writes them	default model	design plans README
 D63	Environment labels, such as a cost centre, travel with spend exports (FOCUS tags), kept per spend record	labels	design plans README
 D64	Remaining market-research items placed: R1 default model and labels; R2 rate limits, CI OIDC, egress, sandbox and approval modes, review diff and signatures, MCP Registry source; R3 inventory export, usage per entry, SIEM, CIBA; not planned: forecasts, tool search, Agent Trace	egress	design README
+D65	Bedrock and Azure providers serve the Anthropic or the OpenAI route, chosen per provider; Claude on Azure Foundry needs Entra credentials (plan 1b)	chosen per provider	design plan1b plans
+D66	Bedrock and Azure credentials: API key, AWS access keys (Bedrock), an Entra service principal (Azure) or the gateway's own cloud identity	service principal	design plan1b plans
+D67	Refusing built-in-provider models the catalog can't price stays in plan 6	can.t price|doesn.t price	design plans plan1b
+D68	The gateway's cloud identity, AWS access keys and Entra service principals only go to AWS or Azure hosts	only go to AWS or Azure hosts	design plan1b
+D69	Changing where a provider's requests go (base URL, region, endpoint) needs its credential again	credential again	design plan1b
+D70	Azure providers are set up by the endpoint URL the Azure portal shows	endpoint URL	design plan1b
+D71	Provider base URLs are checked for private, loopback, link-local and metadata addresses when saved; private ones need allow_private_network	allow_private_network	design plan1b plans
+D72	Plan 8's Helm chart blocks cloud metadata addresses from agentgateway	metadata addresses	design plans
