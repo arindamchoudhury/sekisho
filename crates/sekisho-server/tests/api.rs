@@ -1163,7 +1163,6 @@ async fn private_addresses_need_the_setting() {
 /// Switching a provider's credential to the gateway's cloud identity drops
 /// its key from the next published config.
 #[tokio::test]
-#[ignore = "needs Bedrock routes, which the gateway renders from plan 1b's Task 3 on"]
 async fn switching_to_cloud_identity_republishes_without_the_key() {
     let app = app().await;
     let r = app

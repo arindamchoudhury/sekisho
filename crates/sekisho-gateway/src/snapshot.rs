@@ -7,7 +7,7 @@ use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
-use sekisho_store::{ProviderCredential, Store, StoreError};
+use sekisho_store::{ProviderCredential, ProviderOptions, Store, StoreError};
 
 /// Where agentgateway reaches Sekisho's hooks, each as `host:port`, and the
 /// secret its rate-limit calls carry.
@@ -39,13 +39,15 @@ pub struct ModelRoute {
     pub provider: ProviderName,
     pub kind: ProviderKind,
     pub base_url: Option<String>,
-    /// The decrypted provider key, written into the gateway config.
-    pub api_key: String,
+    /// The kind's settings: Bedrock's region, Azure's endpoint.
+    pub options: ProviderOptions,
+    /// The decrypted credential, written into the gateway config.
+    pub credential: ProviderCredential,
     /// The models this route allows, in the environment's order.
     pub models: Vec<ModelName>,
 }
 
-/// Leaves out the API key, so snapshots can be logged.
+/// Shows only the credential's shape, so snapshots can be logged.
 impl fmt::Debug for ModelRoute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ModelRoute")
@@ -53,8 +55,10 @@ impl fmt::Debug for ModelRoute {
             .field("provider", &self.provider)
             .field("kind", &self.kind)
             .field("base_url", &self.base_url)
+            .field("options", &self.options)
+            .field("credential", &self.credential.kind())
             .field("models", &self.models)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
@@ -124,17 +128,6 @@ pub async fn build_snapshot(
                     route_provider = %route.provider, "two providers for one API format; model skipped"
                 ),
                 None => {
-                    // Their backends need the region or endpoint and cloud
-                    // auth, which plan 1b's Task 3 renders. Until then they
-                    // get no route: a config agentgateway's schema refuses
-                    // would stop every environment's from publishing.
-                    if matches!(provider.kind, ProviderKind::Bedrock | ProviderKind::Azure) {
-                        tracing::warn!(
-                            env = %env.spec.name, model = %name, provider = %provider.name,
-                            "Bedrock and Azure providers aren't rendered yet; model skipped"
-                        );
-                        continue;
-                    }
                     let credential = match credentials.get(&provider.id) {
                         Some(credential) => credential.clone(),
                         None => {
@@ -144,19 +137,13 @@ pub async fn build_snapshot(
                             credential
                         }
                     };
-                    let ProviderCredential::Key(api_key) = credential else {
-                        tracing::warn!(
-                            env = %env.spec.name, model = %name, provider = %provider.name,
-                            "only API keys are rendered yet; model skipped"
-                        );
-                        continue;
-                    };
                     routes.push(ModelRoute {
                         format,
                         provider: provider.name.clone(),
                         kind: provider.kind,
                         base_url: provider.base_url.clone(),
-                        api_key,
+                        options: provider.options.clone(),
+                        credential,
                         models: vec![name.clone()],
                     });
                 }

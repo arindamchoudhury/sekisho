@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
 use sekisho_core::money::MicroUsd;
+use sekisho_store::{ProviderCredential, ProviderOptions};
 use serde_json::{Map, Value, json};
 
 use crate::snapshot::{EnvRoutes, GatewaySnapshot, ModelRoute, PricedModel};
@@ -168,10 +169,16 @@ fn backend(route: &ModelRoute) -> Value {
             "providerOverride": route.provider.as_str(),
             "formats": [{ "type": "completions" }],
         } }),
-        // build_snapshot gives these no route until plan 1b's Task 3 renders
-        // them with their region or endpoint; the schema refuses these blocks.
-        ProviderKind::Bedrock => json!({ "bedrock": {} }),
-        ProviderKind::Azure => json!({ "azure": {} }),
+        // The store always gives these their setting. Without it the
+        // schema refuses the block, so such a config is never published.
+        ProviderKind::Bedrock => match &route.options {
+            ProviderOptions::Bedrock { region } => json!({ "bedrock": { "region": region } }),
+            _ => json!({ "bedrock": {} }),
+        },
+        ProviderKind::Azure => match &route.options {
+            ProviderOptions::Azure { endpoint } => json!({ "azure": azure_provider(endpoint) }),
+            _ => json!({ "azure": {} }),
+        },
     };
     let mut ai = Map::new();
     ai.insert("name".into(), json!(route.provider.as_str()));
@@ -197,7 +204,7 @@ fn backend(route: &ModelRoute) -> Value {
         "ai".into(),
         json!({ "routes": model_endpoints(route.format) }),
     );
-    policies.insert("backendAuth".into(), json!({ "key": route.api_key }));
+    policies.insert("backendAuth".into(), backend_auth(route));
     let models: Vec<String> = route
         .models
         .iter()
@@ -208,6 +215,73 @@ fn backend(route: &ModelRoute) -> Value {
         json!({ "rules": [{ "require": format!("llm.requestModel in [{}]", models.join(", ")) }] }),
     );
     json!({ "ai": ai, "policies": policies })
+}
+
+/// agentgateway's Azure provider, which builds the upstream host from the
+/// resource name and type.
+fn azure_provider(endpoint: &AzureEndpoint) -> Value {
+    let mut azure = json!({
+        "resourceName": endpoint.resource_name,
+        "resourceType": match endpoint.resource_type {
+            AzureResourceType::OpenAi => "openAI",
+            AzureResourceType::Foundry => "foundry",
+        },
+    });
+    if let Some(project) = &endpoint.project_name {
+        azure["projectName"] = json!(project);
+    }
+    azure
+}
+
+/// How agentgateway authenticates to the provider. Always explicit: with a
+/// `hostOverride`, agentgateway v1.7.0 skips Bedrock's and Azure's default
+/// cloud auth (`proxy/httpproxy.rs`), so a request would go out unsigned.
+/// A cloud credential on a kind that doesn't take it (the store refuses
+/// such providers) renders a block the schema refuses, so it is never sent.
+fn backend_auth(route: &ModelRoute) -> Value {
+    match (&route.credential, route.kind) {
+        (ProviderCredential::Key(key), _) => json!({ "key": key }),
+        (
+            ProviderCredential::AwsAccessKeys {
+                access_key_id,
+                secret_access_key,
+                session_token,
+            },
+            ProviderKind::Bedrock,
+        ) => {
+            let mut aws = json!({
+                "accessKeyId": access_key_id,
+                "secretAccessKey": secret_access_key,
+            });
+            if let Some(token) = session_token {
+                aws["sessionToken"] = json!(token);
+            }
+            json!({ "aws": aws })
+        }
+        (
+            ProviderCredential::AzureClientSecret {
+                tenant_id,
+                client_id,
+                client_secret,
+            },
+            ProviderKind::Azure,
+        ) => json!({ "azure": { "explicitConfig": { "clientSecret": {
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        } } } }),
+        // agentgateway signs with the gateway's own AWS credentials, for the
+        // region the Bedrock provider names, host override or not.
+        (ProviderCredential::CloudIdentity, ProviderKind::Bedrock) => json!({ "aws": {} }),
+        (ProviderCredential::CloudIdentity, ProviderKind::Azure) => {
+            json!({ "azure": { "implicit": {} } })
+        }
+        (credential, kind) => json!({ "unsupported": format!(
+            "{} credentials don't go to {} providers",
+            credential.kind().as_str(),
+            kind.as_str()
+        ) }),
+    }
 }
 
 /// The provider's default base path, which a `pathPrefix` replaces. `None`

@@ -1,11 +1,12 @@
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions, render, usd,
     validate,
 };
-use serde_json::Value;
+use sekisho_store::{ProviderCredential, ProviderOptions};
+use serde_json::{Value, json};
 
 mod fixtures {
     use super::*;
@@ -30,11 +31,56 @@ mod fixtures {
             provider: ProviderName::parse(provider).unwrap(),
             kind,
             base_url: base_url.map(String::from),
-            api_key: format!("{provider}-key"),
+            options: ProviderOptions::None,
+            credential: ProviderCredential::Key(format!("{provider}-key")),
             models: models
                 .iter()
                 .map(|m| ModelName::parse(m).unwrap())
                 .collect(),
+        }
+    }
+
+    pub fn bedrock_options(region: &str) -> ProviderOptions {
+        ProviderOptions::Bedrock {
+            region: region.into(),
+        }
+    }
+
+    pub fn azure_options(endpoint: &str) -> ProviderOptions {
+        ProviderOptions::Azure {
+            endpoint: AzureEndpoint::parse(endpoint).unwrap(),
+        }
+    }
+
+    pub fn aws_keys() -> ProviderCredential {
+        ProviderCredential::AwsAccessKeys {
+            access_key_id: "AKIAEXAMPLE0000001".into(),
+            secret_access_key: "bedrock-secret".into(),
+            session_token: Some("bedrock-session".into()),
+        }
+    }
+
+    pub fn entra() -> ProviderCredential {
+        ProviderCredential::AzureClientSecret {
+            tenant_id: "11111111-2222-3333-4444-555555555555".into(),
+            client_id: "66666666-7777-8888-9999-000000000000".into(),
+            client_secret: "sp-secret".into(),
+        }
+    }
+
+    /// A Bedrock or Azure route with its settings and credential.
+    pub fn cloud_route(
+        format: ApiFormat,
+        provider: &str,
+        kind: ProviderKind,
+        options: ProviderOptions,
+        credential: ProviderCredential,
+        models: &[&str],
+    ) -> ModelRoute {
+        ModelRoute {
+            options,
+            credential,
+            ..route(format, provider, kind, None, models)
         }
     }
 
@@ -131,6 +177,29 @@ mod fixtures {
                         ),
                     ],
                 ),
+                // Bedrock on the Anthropic route with AWS keys, Azure OpenAI
+                // on the OpenAI route with the gateway's cloud identity.
+                env(
+                    "cloud-team",
+                    vec![
+                        cloud_route(
+                            ApiFormat::OpenAi,
+                            "azure",
+                            ProviderKind::Azure,
+                            azure_options("https://my-resource.openai.azure.com"),
+                            ProviderCredential::CloudIdentity,
+                            &["gpt-deployment"],
+                        ),
+                        cloud_route(
+                            ApiFormat::Anthropic,
+                            "bedrock",
+                            ProviderKind::Bedrock,
+                            bedrock_options("us-east-1"),
+                            aws_keys(),
+                            &["us.anthropic.claude-sonnet-4-6-v1:0"],
+                        ),
+                    ],
+                ),
             ],
             priced_models: vec![
                 priced(
@@ -158,6 +227,20 @@ mod fixtures {
                     "openai",
                     ProviderKind::OpenAi,
                     "gpt-5",
+                    1_250_000,
+                    10_000_000,
+                ),
+                priced(
+                    "bedrock",
+                    ProviderKind::Bedrock,
+                    "us.anthropic.claude-sonnet-4-6-v1:0",
+                    3_000_000,
+                    15_000_000,
+                ),
+                priced(
+                    "azure",
+                    ProviderKind::Azure,
+                    "gpt-deployment",
                     1_250_000,
                     10_000_000,
                 ),
@@ -340,13 +423,15 @@ fn every_kind_renders_sorted_and_valid() {
     assert_eq!(
         names,
         [
+            "cloud-team-anthropic",
+            "cloud-team-openai",
             "data-team-anthropic",
             "data-team-gemini",
             "data-team-openai",
             "ml-team-openai"
         ]
     );
-    let backend = |i: usize| routes(&doc)[i]["backends"][0].clone();
+    let backend = |i: usize| routes(&doc)[i + 2]["backends"][0].clone(); // after cloud-team's
     assert_eq!(
         backend(0)["ai"]["provider"],
         serde_json::json!({ "anthropic": {} })
@@ -371,11 +456,21 @@ fn every_kind_renders_sorted_and_valid() {
     assert_eq!(vllm["policies"]["backendTLS"], serde_json::json!({}));
     assert_eq!(vllm["ai"]["provider"]["custom"]["providerOverride"], "vllm");
 
-    // Catalog entries sit under agentgateway's provider names: gcp.gemini for Gemini, the
-    // provider's own name for OpenAI-compatible ones.
+    // Catalog entries sit under agentgateway's provider names: gcp.gemini for Gemini,
+    // aws.bedrock for Bedrock, the provider's own name for OpenAI-compatible ones.
     let catalog = &doc["config"]["modelCatalog"][0]["inline"]["providers"];
     let keys: Vec<&String> = catalog.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["anthropic", "gcp.gemini", "openai", "vllm"]);
+    assert_eq!(
+        keys,
+        [
+            "anthropic",
+            "aws.bedrock",
+            "azure",
+            "gcp.gemini",
+            "openai",
+            "vllm"
+        ]
+    );
     assert_eq!(
         catalog["vllm"]["models"]["qwen3"]["rates"],
         serde_json::json!({ "input": "0.1", "output": "0.4" })
@@ -476,11 +571,11 @@ fn bare_route_skips_the_hooks() {
         assert!(bare[0]["policies"].get(hook).is_none(), "{hook}");
     }
     // The first environment's openai backend, unchanged.
-    let data_openai = routes(&doc)
+    let first_openai = routes(&doc)
         .iter()
-        .find(|r| r["name"] == "data-team-openai")
+        .find(|r| r["name"] == "cloud-team-openai")
         .unwrap();
-    assert_eq!(bare[0]["backends"], data_openai["backends"]);
+    assert_eq!(bare[0]["backends"], first_openai["backends"]);
     assert!(!render(&fixtures::every_kind(), &RenderOptions::default()).contains("/bare/"));
 }
 
@@ -592,5 +687,295 @@ fn debug_output_hides_provider_keys() {
     assert!(
         !shown.contains("mock-key") && !shown.contains("test-charge-secret"),
         "{shown}"
+    );
+    let mut every = fixtures::every_kind();
+    every.environments[2].routes[0].credential = fixtures::entra();
+    let shown = format!("{every:?}");
+    for secret in [
+        "openai-key",
+        "AKIAEXAMPLE0000001",
+        "bedrock-secret",
+        "bedrock-session",
+        "66666666-7777-8888-9999-000000000000",
+        "sp-secret",
+    ] {
+        assert!(!shown.contains(secret), "{secret} in {shown}");
+    }
+}
+
+/// The backend of the route named `name`.
+fn backend_of(doc: &Value, name: &str) -> Value {
+    routes(doc)
+        .iter()
+        .find(|r| r["name"] == name)
+        .unwrap_or_else(|| panic!("no route {name}"))["backends"][0]
+        .clone()
+}
+
+#[test]
+fn bedrock_and_azure_render_their_provider_blocks() {
+    let y = render(&fixtures::every_kind(), &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    assert_eq!(
+        backend_of(&doc, "cloud-team-anthropic")["ai"]["provider"],
+        json!({ "bedrock": { "region": "us-east-1" } })
+    );
+    assert_eq!(
+        backend_of(&doc, "cloud-team-openai")["ai"]["provider"],
+        json!({ "azure": { "resourceName": "my-resource", "resourceType": "openAI" } })
+    );
+    // agentgateway looks prices up under its own provider names.
+    let catalog = &doc["config"]["modelCatalog"][0]["inline"]["providers"];
+    assert_eq!(
+        catalog["aws.bedrock"]["models"]["us.anthropic.claude-sonnet-4-6-v1:0"]["rates"],
+        json!({ "input": "3", "output": "15" })
+    );
+    assert_eq!(
+        catalog["azure"]["models"]["gpt-deployment"]["rates"],
+        json!({ "input": "1.25", "output": "10" })
+    );
+
+    let mut foundry = fixtures::every_kind();
+    foundry.environments[2].routes[0].options = fixtures::azure_options(
+        "https://my-foundry.services.ai.azure.com/api/projects/team-project",
+    );
+    let y = render(&foundry, &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()));
+    assert_eq!(
+        backend_of(&parse(&y), "cloud-team-openai")["ai"]["provider"],
+        json!({ "azure": {
+            "resourceName": "my-foundry", "resourceType": "foundry", "projectName": "team-project"
+        } })
+    );
+}
+
+/// A one-route snapshot for `route`, rendered, validated and parsed.
+fn rendered(route: ModelRoute) -> Value {
+    let snapshot = GatewaySnapshot {
+        environments: vec![fixtures::env("team", vec![route])],
+        priced_models: vec![],
+        hooks: fixtures::hooks(),
+    };
+    let y = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()), "{y}");
+    parse(&y)
+}
+
+#[test]
+fn each_credential_renders_its_backend_auth() {
+    use fixtures::{aws_keys, azure_options, bedrock_options, cloud_route, entra};
+    let bedrock = |credential| {
+        cloud_route(
+            ApiFormat::Anthropic,
+            "bedrock",
+            ProviderKind::Bedrock,
+            bedrock_options("us-east-1"),
+            credential,
+            &["m"],
+        )
+    };
+    let azure = |credential| {
+        cloud_route(
+            ApiFormat::OpenAi,
+            "azure",
+            ProviderKind::Azure,
+            azure_options("https://my-resource.openai.azure.com"),
+            credential,
+            &["m"],
+        )
+    };
+    for (route, name, auth) in [
+        (
+            bedrock(ProviderCredential::Key("bedrock-api-key".into())),
+            "team-anthropic",
+            json!({ "key": "bedrock-api-key" }),
+        ),
+        (
+            bedrock(aws_keys()),
+            "team-anthropic",
+            json!({ "aws": {
+                "accessKeyId": "AKIAEXAMPLE0000001",
+                "secretAccessKey": "bedrock-secret",
+                "sessionToken": "bedrock-session",
+            } }),
+        ),
+        (
+            bedrock(ProviderCredential::AwsAccessKeys {
+                access_key_id: "AKIAEXAMPLE0000001".into(),
+                secret_access_key: "bedrock-secret".into(),
+                session_token: None,
+            }),
+            "team-anthropic",
+            json!({ "aws": {
+                "accessKeyId": "AKIAEXAMPLE0000001",
+                "secretAccessKey": "bedrock-secret",
+            } }),
+        ),
+        (
+            bedrock(ProviderCredential::CloudIdentity),
+            "team-anthropic",
+            json!({ "aws": {} }),
+        ),
+        (
+            azure(ProviderCredential::Key("azure-api-key".into())),
+            "team-openai",
+            json!({ "key": "azure-api-key" }),
+        ),
+        (
+            azure(entra()),
+            "team-openai",
+            json!({ "azure": { "explicitConfig": { "clientSecret": {
+                "tenant_id": "11111111-2222-3333-4444-555555555555",
+                "client_id": "66666666-7777-8888-9999-000000000000",
+                "client_secret": "sp-secret",
+            } } } }),
+        ),
+        (
+            azure(ProviderCredential::CloudIdentity),
+            "team-openai",
+            json!({ "azure": { "implicit": {} } }),
+        ),
+    ] {
+        let doc = rendered(route);
+        assert_eq!(
+            backend_of(&doc, name)["policies"]["backendAuth"],
+            auth,
+            "{name}"
+        );
+    }
+}
+
+/// A cloud credential never renders for a kind that doesn't take it (the
+/// store refuses such providers): the config fails validation instead, so
+/// it is never published.
+#[test]
+fn cloud_credentials_never_render_for_other_kinds() {
+    use fixtures::{aws_keys, entra, route};
+    for (kind, format, credential) in [
+        (
+            ProviderKind::Anthropic,
+            ApiFormat::Anthropic,
+            ProviderCredential::CloudIdentity,
+        ),
+        (ProviderKind::OpenAi, ApiFormat::OpenAi, aws_keys()),
+        (ProviderKind::Azure, ApiFormat::OpenAi, aws_keys()),
+        (ProviderKind::Bedrock, ApiFormat::Anthropic, entra()),
+    ] {
+        let mut r = route(format, "p", kind, None, &["m"]);
+        r.options = match kind {
+            ProviderKind::Bedrock => fixtures::bedrock_options("us-east-1"),
+            ProviderKind::Azure => fixtures::azure_options("https://my-resource.openai.azure.com"),
+            _ => ProviderOptions::None,
+        };
+        r.credential = credential;
+        let snapshot = GatewaySnapshot {
+            environments: vec![fixtures::env("team", vec![r])],
+            priced_models: vec![],
+            hooks: fixtures::hooks(),
+        };
+        let y = render(&snapshot, &RenderOptions::default());
+        assert!(validate(&y).is_err(), "{kind:?}: {y}");
+        for secret in ["bedrock-secret", "bedrock-session", "sp-secret"] {
+            assert!(!y.contains(secret), "{kind:?}: {y}");
+        }
+    }
+}
+
+/// With a host override agentgateway v1.7.0 skips the provider's default
+/// cloud auth (`proxy/httpproxy.rs`), so the cloud identity is always
+/// rendered explicitly; otherwise the request would go out unsigned.
+#[test]
+fn cloud_identity_gets_explicit_auth_even_with_a_base_url() {
+    use fixtures::{azure_options, bedrock_options, cloud_route};
+    for (route, name, auth) in [
+        (
+            cloud_route(
+                ApiFormat::Anthropic,
+                "bedrock",
+                ProviderKind::Bedrock,
+                bedrock_options("us-east-1"),
+                ProviderCredential::CloudIdentity,
+                &["m"],
+            ),
+            "team-anthropic",
+            json!({ "aws": {} }),
+        ),
+        (
+            cloud_route(
+                ApiFormat::OpenAi,
+                "azure",
+                ProviderKind::Azure,
+                azure_options("https://my-resource.openai.azure.com"),
+                ProviderCredential::CloudIdentity,
+                &["m"],
+            ),
+            "team-openai",
+            json!({ "azure": { "implicit": {} } }),
+        ),
+    ] {
+        let doc = rendered(ModelRoute {
+            base_url: Some("http://mock:8000".into()),
+            ..route
+        });
+        let backend = backend_of(&doc, name);
+        assert_eq!(backend["ai"]["hostOverride"], "mock:8000", "{name}");
+        // Their upstream paths are absolute: /model/{id}/converse, /openai/v1/...
+        assert_eq!(backend["ai"]["pathPrefix"], "/", "{name}");
+        assert_eq!(backend["policies"]["backendAuth"], auth, "{name}");
+        assert!(backend["policies"].get("backendTLS").is_none(), "{name}");
+    }
+}
+
+/// A Bedrock or Azure provider serves the format it was added with.
+#[test]
+fn routes_follow_the_provider_format() {
+    use fixtures::{azure_options, bedrock_options, cloud_route, entra};
+    let doc = rendered(cloud_route(
+        ApiFormat::OpenAi,
+        "bedrock",
+        ProviderKind::Bedrock,
+        bedrock_options("eu-central-1"),
+        ProviderCredential::Key("bedrock-api-key".into()),
+        &["openai.gpt-oss-120b-1:0"],
+    ));
+    let route = &routes(&doc)[0];
+    assert_eq!(route["name"], "team-openai");
+    assert_eq!(
+        route["matches"][0]["path"]["pathPrefix"],
+        "/env/team/openai"
+    );
+    assert_eq!(
+        route["backends"][0]["policies"]["ai"]["routes"],
+        json!({ "/v1/chat/completions": "completions", "/v1/responses": "responses" })
+    );
+    assert_eq!(
+        route["backends"][0]["ai"]["provider"],
+        json!({ "bedrock": { "region": "eu-central-1" } })
+    );
+
+    let doc = rendered(cloud_route(
+        ApiFormat::Anthropic,
+        "foundry",
+        ProviderKind::Azure,
+        azure_options("https://my-foundry.services.ai.azure.com/api/projects/team-project"),
+        entra(),
+        &["claude-sonnet-deployment"],
+    ));
+    let route = &routes(&doc)[0];
+    assert_eq!(route["name"], "team-anthropic");
+    assert_eq!(
+        route["matches"][0]["path"]["pathPrefix"],
+        "/env/team/anthropic"
+    );
+    assert_eq!(
+        route["backends"][0]["policies"]["ai"]["routes"],
+        json!({ "/v1/messages": "messages", "/v1/messages/count_tokens": "anthropicTokenCount" })
+    );
+    assert_eq!(
+        route["backends"][0]["ai"]["provider"],
+        json!({ "azure": {
+            "resourceName": "my-foundry", "resourceType": "foundry", "projectName": "team-project"
+        } })
     );
 }

@@ -7,7 +7,7 @@ use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
     build_snapshot, render, validate,
 };
-use sekisho_store::{EnvironmentSpec, NewModel, NewProvider, ProviderOptions};
+use sekisho_store::{EnvironmentSpec, NewModel, NewProvider, ProviderCredential, ProviderOptions};
 
 fn hooks() -> HookTargets {
     HookTargets {
@@ -99,7 +99,8 @@ async fn snapshot_reflects_the_store() {
                         provider: provider("anthropic"),
                         kind: ProviderKind::Anthropic,
                         base_url: None,
-                        api_key: "sk-ant-secret".into(),
+                        options: ProviderOptions::None,
+                        credential: ProviderCredential::Key("sk-ant-secret".into()),
                         models: vec![model("claude-sonnet-5-5"), model("claude-haiku-5-5")], // environment order
                     },
                     ModelRoute {
@@ -107,7 +108,8 @@ async fn snapshot_reflects_the_store() {
                         provider: provider("mock"),
                         kind: ProviderKind::OpenAiCompatible,
                         base_url: Some("http://mock:8000/v1".into()),
-                        api_key: "mock-secret".into(),
+                        options: ProviderOptions::None,
+                        credential: ProviderCredential::Key("mock-secret".into()),
                         models: vec![model("mock-model")],
                     },
                 ],
@@ -146,25 +148,29 @@ async fn snapshot_reflects_the_store() {
     assert_eq!(snapshot, want);
 }
 
-/// Until Bedrock and Azure backends are rendered (plan 1b, Task 3), their
-/// models get no route, so they can't stop every other environment's config
-/// from publishing.
+/// A Bedrock route carries the stored credential, read once per provider,
+/// and the format the provider was added with, not its kind's first one.
 #[tokio::test]
-async fn bedrock_and_azure_wait_for_their_backends() {
+async fn bedrock_routes_carry_their_credential_and_format() {
     let (store, sb) = common::store().await;
+    let aws = ProviderCredential::AwsAccessKeys {
+        access_key_id: "AKIAEXAMPLE0000001".into(),
+        secret_access_key: "bedrock-secret".into(),
+        session_token: Some("bedrock-session".into()),
+    };
     store
         .create_provider(
             &sb,
             NewProvider {
+                name: provider("bedrock"),
+                kind: ProviderKind::Bedrock,
+                format: ApiFormat::OpenAi,
+                base_url: None,
                 options: ProviderOptions::Bedrock {
                     region: "us-east-1".into(),
                 },
-                ..NewProvider::keyed(
-                    provider("bedrock"),
-                    ProviderKind::Bedrock,
-                    None,
-                    "bedrock-key",
-                )
+                credential: aws.clone(),
+                allow_private_network: false,
             },
         )
         .await
@@ -172,13 +178,19 @@ async fn bedrock_and_azure_wait_for_their_backends() {
     store
         .create_provider(
             &sb,
-            NewProvider::keyed(provider("openai"), ProviderKind::OpenAi, None, "sk-openai"),
+            NewProvider::keyed(
+                provider("anthropic"),
+                ProviderKind::Anthropic,
+                None,
+                "sk-ant",
+            ),
         )
         .await
         .unwrap();
     for (name, provider_name) in [
-        ("us.anthropic.claude-mock-v1:0", "bedrock"),
-        ("gpt-5", "openai"),
+        ("openai.gpt-oss-120b-1:0", "bedrock"),
+        ("openai.gpt-oss-20b-1:0", "bedrock"),
+        ("claude-sonnet-5-5", "anthropic"),
     ] {
         store
             .create_model(NewModel {
@@ -196,19 +208,45 @@ async fn bedrock_and_azure_wait_for_their_backends() {
             description: String::new(),
             notice: String::new(),
             access_groups: Vec::new(),
-            models: vec![model("us.anthropic.claude-mock-v1:0"), model("gpt-5")],
+            models: vec![
+                model("openai.gpt-oss-120b-1:0"),
+                model("claude-sonnet-5-5"),
+                model("openai.gpt-oss-20b-1:0"),
+            ],
         })
         .await
         .unwrap();
 
     let snapshot = build_snapshot(&store, &sb, &hooks()).await.unwrap();
-    let routes: Vec<_> = snapshot.environments[0]
-        .routes
-        .iter()
-        .map(|r| (r.format, r.provider.as_str()))
-        .collect();
-    assert_eq!(routes, [(ApiFormat::OpenAi, "openai")]);
+    assert_eq!(
+        snapshot.environments[0].routes,
+        [
+            ModelRoute {
+                format: ApiFormat::Anthropic,
+                provider: provider("anthropic"),
+                kind: ProviderKind::Anthropic,
+                base_url: None,
+                options: ProviderOptions::None,
+                credential: ProviderCredential::Key("sk-ant".into()),
+                models: vec![model("claude-sonnet-5-5")],
+            },
+            ModelRoute {
+                format: ApiFormat::OpenAi,
+                provider: provider("bedrock"),
+                kind: ProviderKind::Bedrock,
+                base_url: None,
+                options: ProviderOptions::Bedrock {
+                    region: "us-east-1".into()
+                },
+                credential: aws,
+                models: vec![
+                    model("openai.gpt-oss-120b-1:0"),
+                    model("openai.gpt-oss-20b-1:0")
+                ],
+            },
+        ]
+    );
     let yaml = render(&snapshot, &RenderOptions::default());
     assert_eq!(validate(&yaml), Ok(()));
-    assert!(!yaml.contains("bedrock-key"));
+    assert!(yaml.contains("bedrock-secret") && yaml.contains("bedrock-session"));
 }
