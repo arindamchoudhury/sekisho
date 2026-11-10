@@ -288,6 +288,46 @@ fn mutation_is_rejected_by_schema() {
     assert!(validate("binds: [").is_err()); // not YAML at all
 }
 
+/// A rendered config holds decrypted provider keys, and validation errors go
+/// to the logs, so they say where and which rule failed, never a value.
+#[test]
+fn validation_errors_never_echo_config_values() {
+    let y = render(&fixtures::basic(), &RenderOptions::default());
+    let key_line = "            key: mock-key\n";
+    assert!(y.contains(key_line) && y.contains("- port: 3000\n"));
+    let cases = [
+        // Backend policies are a choice of shapes (anyOf), so a bad one
+        // fails as a whole, and the message used to print it whole.
+        (
+            y.replace(key_line, "            key: [mock-key]\n"),
+            "/binds/0/listeners/0/routes/0/backends/0/policies",
+        ),
+        (
+            y.replace("      - ai:\n", "      - aj:\n"),
+            "/binds/0/listeners/0/routes/0/backends/0",
+        ),
+        // A wrong type, carrying a secret.
+        (
+            y.replace("- port: 3000\n", "- port: sk-secret-in-port\n"),
+            "/binds/0/port",
+        ),
+    ];
+    for (broken, location) in cases {
+        let errors = validate(&broken).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains(location)), "{errors:?}");
+        for e in &errors {
+            assert!(!e.contains("mock-key") && !e.contains("sk-secret"), "{e}");
+        }
+    }
+    // A misspelled field is still named, since field names are not secrets.
+    let typo = y.replace("processingOptions:", "processingOption:");
+    let errors = validate(&typo).unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.contains("processingOption")),
+        "{errors:?}"
+    );
+}
+
 #[test]
 fn every_kind_renders_sorted_and_valid() {
     let y = render(&fixtures::every_kind(), &RenderOptions::default());

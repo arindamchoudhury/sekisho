@@ -315,6 +315,46 @@ pub fn usd(amount: MicroUsd) -> String {
     amount.to_usd_string()
 }
 
+/// One violation without the offending value: the config path, the schema
+/// keyword and where it sits in the schema. Unexpected field names are kept,
+/// including those inside `anyOf`/`oneOf` branches: names are not secret, and
+/// they make typos easy to find.
+fn describe(e: &jsonschema::ValidationError<'_>) -> String {
+    let path = e.instance_path().to_string();
+    let mut message = format!(
+        "{}: fails the schema's `{}` rule at {}",
+        if path.is_empty() { "/" } else { &path },
+        e.kind().keyword(),
+        e.schema_path(),
+    );
+    let mut unexpected = Vec::new();
+    unexpected_fields(e, &mut unexpected);
+    unexpected.sort_unstable();
+    unexpected.dedup();
+    if !unexpected.is_empty() {
+        message.push_str(&format!(" (unexpected: {})", unexpected.join(", ")));
+    }
+    message
+}
+
+/// Field names the schema didn't expect, at `e` or in its branches.
+fn unexpected_fields(e: &jsonschema::ValidationError<'_>, out: &mut Vec<String>) {
+    use jsonschema::error::ValidationErrorKind as Kind;
+    match e.kind() {
+        Kind::AdditionalProperties { unexpected } | Kind::UnevaluatedProperties { unexpected } => {
+            out.extend(unexpected.iter().cloned());
+        }
+        Kind::AnyOf { context }
+        | Kind::OneOfNotValid { context }
+        | Kind::OneOfMultipleValid { context } => {
+            for branch in context.iter().flatten() {
+                unexpected_fields(branch, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema: Value = serde_json::from_str(include_str!(
         "../schema/agentgateway-v1.7.0.config.schema.json"
@@ -325,15 +365,18 @@ static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
 
 /// Checks a config against agentgateway v1.7.0's published schema (draft
 /// 2020-12), vendored at build time. Returns one message per violation.
+///
+/// A config holds decrypted provider keys and the messages are logged, so
+/// they say where the violation is and which rule failed, but never quote a
+/// value from the config.
 pub fn validate(yaml: &str) -> Result<(), Vec<String>> {
-    let doc: Value = serde_yaml_ng::from_str(yaml).map_err(|e| vec![format!("not YAML: {e}")])?;
-    let errors: Vec<String> = SCHEMA
-        .iter_errors(&doc)
-        .map(|e| {
-            let path = e.instance_path().to_string();
-            format!("{}: {e}", if path.is_empty() { "/" } else { &path })
-        })
-        .collect();
+    let doc: Value = serde_yaml_ng::from_str(yaml).map_err(|e| {
+        vec![match e.location() {
+            Some(at) => format!("not YAML (line {}, column {})", at.line(), at.column()),
+            None => "not YAML".to_owned(),
+        }]
+    })?;
+    let errors: Vec<String> = SCHEMA.iter_errors(&doc).map(|e| describe(&e)).collect();
     if errors.is_empty() {
         Ok(())
     } else {
