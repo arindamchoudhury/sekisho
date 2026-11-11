@@ -1,19 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
-use sekisho_core::names::EnvName;
+use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::ratelimit::Charger;
+use sekisho_hooks::tally::Tallies;
 use sekisho_proto::ratelimit::RateLimitDescriptor;
 use sekisho_proto::ratelimit::RateLimitRequest;
 use sekisho_proto::ratelimit::rate_limit_descriptor::Entry;
 use sekisho_proto::ratelimit::rate_limit_response::Code;
 use sekisho_proto::ratelimit::rate_limit_service_client::RateLimitServiceClient;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitServiceServer;
-use sekisho_store::{Budget, BudgetScope, EnvironmentSpec, NewBudget};
+use sekisho_store::{Budget, BudgetScope, EnvironmentSpec, NewBudget, NewModel, NewProvider};
 use sekisho_testkit::TestStore;
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -28,10 +30,48 @@ struct Rig {
     key: EnvKeyId,
     /// Environment, key and person budgets, all applicable to `token`.
     budgets: Vec<Budget>,
+    /// The stream hook's tallies, shared with the charger.
+    tallies: Tallies,
 }
 
 async fn rig() -> Rig {
-    let (store, _) = sekisho_testkit::store().await;
+    rig_waiting(Duration::from_secs(5)).await
+}
+
+/// A rig whose charger waits `tally_wait` for a stream's tally. Its models:
+/// `claude-priced` (Anthropic, 3 / 15 USD per million tokens), `gpt-priced`
+/// (OpenAI, 3 / 15) and `claude-fable-5` (Anthropic, no admin price; 10 /
+/// 50 in the catalog).
+async fn rig_waiting(tally_wait: Duration) -> Rig {
+    let (store, secret_box) = sekisho_testkit::store().await;
+    for (provider, kind) in [
+        ("anthropic", ProviderKind::Anthropic),
+        ("openai", ProviderKind::OpenAi),
+    ] {
+        let name = ProviderName::parse(provider).unwrap();
+        store
+            .create_provider(&secret_box, NewProvider::keyed(name, kind, None, "k"))
+            .await
+            .unwrap();
+    }
+    for (model, provider, prices) in [
+        ("claude-priced", "anthropic", Some((3, 15))),
+        ("gpt-priced", "openai", Some((3, 15))),
+        ("claude-fable-5", "anthropic", None),
+    ] {
+        let usd = |n: i64| MicroUsd(n * 1_000_000);
+        store
+            .create_model(NewModel {
+                name: ModelName::parse(model).unwrap(),
+                provider: ProviderName::parse(provider).unwrap(),
+                input_price: prices.map(|(input, _)| usd(input)),
+                output_price: prices.map(|(_, output)| usd(output)),
+                cache_read_price: None,
+                cache_write_price: None,
+            })
+            .await
+            .unwrap();
+    }
     let spec = EnvironmentSpec {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
@@ -70,11 +110,14 @@ async fn rig() -> Rig {
 
     let cache = AuthCache::load(&store).await.unwrap();
     cache.spawn_refresh(store.clone());
+    let tallies = Tallies::new();
     let charger = Charger {
         cache,
         store: store.clone(),
         clock: Arc::new(|| NOW),
         charge_secret_sha256: sekisho_core::keys::hash_secret(CHARGE_SECRET),
+        tallies: tallies.clone(),
+        tally_wait,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -92,38 +135,74 @@ async fn rig() -> Rig {
         token,
         key: key.id,
         budgets,
+        tallies,
     }
 }
 
 /// The install's charge secret, as the rendered descriptors carry it.
 const CHARGE_SECRET: &str = "test-charge-secret";
 
-/// A descriptor as agentgateway sends it for a Sekisho route: the route's
+/// One call as agentgateway sends it when a request on a Sekisho route
+/// ends: a descriptor per measure it could evaluate, each with the route's
 /// environment, the key id Sekisho's extAuthz hook verified
-/// (`extauthz.key`) and the charge secret.
-fn req(env: &str, key: &str, cost: u64) -> RateLimitRequest {
+/// (`extauthz.key`), the charge secret, the requested model and the stream
+/// hook's request ID.
+fn req(key: &str, model: &str, request: &str, measures: &[(&str, u64)]) -> RateLimitRequest {
+    let descriptor = |measure: &str, count: u64| RateLimitDescriptor {
+        entries: [
+            ("env", "data-team"),
+            ("key", key),
+            ("secret", CHARGE_SECRET),
+            ("model", model),
+            ("request", request),
+            ("measure", measure),
+        ]
+        .into_iter()
+        .map(|(key, value)| Entry {
+            key: key.into(),
+            value: value.into(),
+        })
+        .collect(),
+        hits_addend: Some(count),
+        ..Default::default()
+    };
     RateLimitRequest {
         domain: "sekisho".into(),
-        descriptors: vec![RateLimitDescriptor {
-            entries: vec![
-                Entry {
-                    key: "env".into(),
-                    value: env.into(),
-                },
-                Entry {
-                    key: "key".into(),
-                    value: key.into(),
-                },
-                Entry {
-                    key: "secret".into(),
-                    value: CHARGE_SECRET.into(),
-                },
-            ],
-            hits_addend: Some(cost),
-            ..Default::default()
-        }],
+        descriptors: measures
+            .iter()
+            .map(|&(measure, count)| descriptor(measure, count))
+            .collect(),
         hits_addend: 0,
     }
+}
+
+/// A finished request on a model without an admin price, which is charged
+/// agentgateway's catalog cost.
+fn catalog(key: &str, cost: u64) -> RateLimitRequest {
+    req(
+        key,
+        "claude-fable-5",
+        "",
+        &[("input", 1_000), ("output", 10), ("catalog", cost)],
+    )
+}
+
+/// Changes every descriptor of `request`.
+fn each(
+    mut request: RateLimitRequest,
+    change: impl Fn(&mut RateLimitDescriptor),
+) -> RateLimitRequest {
+    request.descriptors.iter_mut().for_each(change);
+    request
+}
+
+/// A tally as the stream hook leaves it: status and answer tokens, not yet
+/// finished.
+fn tally(rig: &Rig, status: u16, answer_o200k: u64) -> String {
+    let id = rig.tallies.open();
+    rig.tallies.set_status(&id, status);
+    rig.tallies.add(&id, answer_o200k);
+    id
 }
 
 async fn spent(rig: &Rig) -> Vec<MicroUsd> {
@@ -155,13 +234,14 @@ async fn settled(rig: &Rig) -> Vec<MicroUsd> {
     spent(rig).await
 }
 
+/// A finished request without an admin price: agentgateway's catalog cost.
 #[tokio::test]
 async fn charge_records_exact_cost() {
     let mut rig = rig().await;
     let (store, budgets, now) = (&rig.store, rig.budgets.clone(), NOW);
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .should_rate_limit(catalog(rig.key.as_str(), 4500))
         .await
         .unwrap()
         .into_inner();
@@ -173,7 +253,7 @@ async fn charge_records_exact_cost() {
         MicroUsd(4500)
     );
     rig.rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 500))
+        .should_rate_limit(catalog(rig.key.as_str(), 500))
         .await
         .unwrap();
     spent_becomes(&rig, MicroUsd(5000)).await;
@@ -184,7 +264,18 @@ async fn precheck_with_zero_cost_charges_nothing() {
     let mut rig = rig().await;
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 0))
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "gpt-priced",
+            "",
+            &[
+                ("input", 0),
+                ("cache_read", 0),
+                ("cache_write", 0),
+                ("output", 0),
+                ("catalog", 0),
+            ],
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -195,8 +286,7 @@ async fn precheck_with_zero_cost_charges_nothing() {
 #[tokio::test]
 async fn request_level_hits_addend_is_the_fallback() {
     let mut rig = rig().await;
-    let mut request = req("data-team", rig.key.as_str(), 0);
-    request.descriptors[0].hits_addend = None;
+    let mut request = each(catalog(rig.key.as_str(), 0), |d| d.hits_addend = None);
     request.hits_addend = 1234;
     rig.rls.should_rate_limit(request).await.unwrap();
     spent_becomes(&rig, MicroUsd(1234)).await;
@@ -205,29 +295,32 @@ async fn request_level_hits_addend_is_the_fallback() {
 #[tokio::test]
 async fn always_ok_but_charges_only_known_keys() {
     let mut rig = rig().await;
+    let key = rig.key.as_str();
     let mut odd = vec![
-        req("data-team", "garbage", 4500),
-        req("data-team", "aaaaaaaaaaaa", 4500), // well-formed, unknown
+        catalog("garbage", 4500),
+        catalog("aaaaaaaaaaaa", 4500), // well-formed, unknown
+        each(catalog(key, 4500), |d| d.entries.retain(|e| e.key != "key")),
+        // Without the charge secret, or with a wrong one: not from our agentgateway.
+        each(catalog(key, 4500), |d| {
+            d.entries.retain(|e| e.key != "secret")
+        }),
+        each(catalog(key, 4500), |d| {
+            d.entries[2].value = "guessed-secret".into()
+        }),
+        // One descriptor without it voids the whole call.
+        {
+            let mut request = catalog(key, 4500);
+            request.descriptors[2].entries[2].value = "guessed-secret".into();
+            request
+        },
+        // Plan 1's descriptor shape: a bearer token is not accepted as a key id.
+        each(catalog(key, 4500), |d| {
+            d.entries[1] = Entry {
+                key: "credential".into(),
+                value: format!("Bearer {}", rig.token),
+            }
+        }),
     ];
-    let mut no_key = req("data-team", rig.key.as_str(), 4500);
-    no_key.descriptors[0].entries.retain(|e| e.key != "key");
-    odd.push(no_key);
-    // Without the charge secret, or with a wrong one: not from our agentgateway.
-    let mut no_secret = req("data-team", rig.key.as_str(), 4500);
-    no_secret.descriptors[0]
-        .entries
-        .retain(|e| e.key != "secret");
-    odd.push(no_secret);
-    let mut wrong_secret = req("data-team", rig.key.as_str(), 4500);
-    wrong_secret.descriptors[0].entries[2].value = "guessed-secret".into();
-    odd.push(wrong_secret);
-    // The old descriptor shape: a bearer token is not accepted as a key id.
-    let mut credential = req("data-team", rig.key.as_str(), 4500);
-    credential.descriptors[0].entries[1] = Entry {
-        key: "credential".into(),
-        value: format!("Bearer {}", rig.token),
-    };
-    odd.push(credential);
     odd.push(RateLimitRequest {
         domain: "sekisho".into(),
         descriptors: vec![],
@@ -250,7 +343,7 @@ async fn a_revoked_key_is_still_charged_for_its_last_request() {
     let mut rig = rig().await;
     rig.store.revoke_key(&rig.key).await.unwrap();
     rig.rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .should_rate_limit(catalog(rig.key.as_str(), 4500))
         .await
         .unwrap();
     spent_becomes(&rig, MicroUsd(4500)).await;
@@ -275,7 +368,7 @@ async fn a_brief_database_failure_does_not_lose_spend() {
     });
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .should_rate_limit(catalog(rig.key.as_str(), 4500))
         .await
         .unwrap()
         .into_inner();
@@ -305,7 +398,7 @@ async fn a_retry_never_charges_a_budget_twice() {
             .unwrap();
     }
     rig.rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .should_rate_limit(catalog(rig.key.as_str(), 4500))
         .await
         .unwrap();
     spent_becomes(&rig, MicroUsd(4500)).await;
@@ -333,8 +426,7 @@ async fn the_answer_never_waits_for_the_database() {
         .unwrap();
     let answer = tokio::time::timeout(
         Duration::from_secs(2),
-        rig.rls
-            .should_rate_limit(req("data-team", rig.key.as_str(), 4500)),
+        rig.rls.should_rate_limit(catalog(rig.key.as_str(), 4500)),
     )
     .await
     .expect("an answer while the database is held")
@@ -351,35 +443,207 @@ async fn store_failure_still_answers_ok() {
     rig.store.pool().close().await;
     let resp = rig
         .rls
-        .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
+        .should_rate_limit(catalog(rig.key.as_str(), 4500))
         .await
         .unwrap()
         .into_inner();
     assert_eq!(resp.overall_code, Code::Ok as i32);
 }
 
-/// From plan 1c's Task 3 the gateway reports each measure as its own
-/// descriptor; until Sekisho prices the token counts (Task 5), only the
-/// catalog cost is charged, as before.
 #[tokio::test]
-async fn only_the_catalog_measure_is_charged() {
+async fn a_complete_request_with_an_admin_price_is_priced_by_sekisho() {
     let mut rig = rig().await;
-    let measured = |measure: &str, cost: u64| {
-        let mut d = req("data-team", rig.key.as_str(), cost)
-            .descriptors
-            .remove(0);
-        d.entries.push(Entry {
-            key: "measure".into(),
-            value: measure.into(),
-        });
-        d
-    };
-    let request = RateLimitRequest {
-        domain: "sekisho".into(),
-        descriptors: vec![measured("input", 1_000), measured("catalog", 4_500)],
-        hits_addend: 0,
-    };
-    rig.rls.should_rate_limit(request).await.unwrap();
+    let measures = [
+        ("input", 10_000),
+        ("cache_read", 8_000),
+        ("cache_write", 1_000),
+        ("output", 500),
+        ("catalog", 999_999), // agentgateway's own price is ignored
+    ];
+    rig.rls
+        .should_rate_limit(req(rig.key.as_str(), "claude-priced", "", &measures))
+        .await
+        .unwrap();
+    // 1,000 uncached × 3 + 8,000 × 0.3 + 1,000 × 3.75 + 500 × 15 USD per
+    // million (Anthropic's cache ratios).
+    spent_becomes(&rig, MicroUsd(16_650)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(16_650); 3]);
+}
+
+#[tokio::test]
+async fn a_complete_request_without_an_admin_price_is_charged_the_catalog_cost() {
+    let mut rig = rig().await;
+    rig.rls
+        .should_rate_limit(catalog(rig.key.as_str(), 4_500))
+        .await
+        .unwrap();
     spent_becomes(&rig, MicroUsd(4_500)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(4_500); 3]);
+}
+
+#[tokio::test]
+async fn an_unpriced_request_is_not_charged() {
+    let mut rig = rig().await;
+    let key = rig.key.as_str();
+    // Finished, with neither an admin price nor a catalog cost.
+    for model in ["claude-fable-5", "not-a-sekisho-model"] {
+        rig.rls
+            .should_rate_limit(req(key, model, "", &[("input", 1_000), ("output", 10)]))
+            .await
+            .unwrap();
+    }
+    // Ended early on a model with no price anywhere.
+    let id = tally(&rig, 200, 10);
+    rig.tallies.finish(&id);
+    rig.rls
+        .should_rate_limit(req(key, "not-a-sekisho-model", &id, &[("input", 1_000)]))
+        .await
+        .unwrap();
+    assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
+}
+
+#[tokio::test]
+async fn a_stream_that_ends_early_is_charged_an_estimate() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 40);
+    // No output count: the provider's usage never arrived.
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "gpt-priced",
+            &id,
+            &[("input", 1_000)],
+        ))
+        .await
+        .unwrap();
+    // The stream hook finishes its tally a moment after agentgateway reports
+    // the request; the charge waits for it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(spent(&rig).await, [MicroUsd(0); 3], "waits for the tally");
+    rig.tallies.finish(&id);
+    // 1,000 × 3 + 40 × 15 USD per million.
+    spent_becomes(&rig, MicroUsd(3_600)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
+}
+
+#[tokio::test]
+async fn a_claude_estimate_scales_the_answer() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 100);
+    rig.tallies.finish(&id);
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "claude-priced",
+            &id,
+            &[("input", 1_000)],
+        ))
+        .await
+        .unwrap();
+    // 1,000 × 3 + 130 × 15: a Claude model without a version counts 1.3
+    // times o200k.
+    spent_becomes(&rig, MicroUsd(4_950)).await;
+}
+
+#[tokio::test]
+async fn an_estimate_without_an_admin_price_uses_the_catalog_copy() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 10);
+    rig.tallies.finish(&id);
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "claude-fable-5",
+            &id,
+            &[("input", 1_000)],
+        ))
+        .await
+        .unwrap();
+    // 1,000 × 10 + 16 × 50 at the catalog's prices: Claude 5 counts 1.6
+    // times o200k.
+    spent_becomes(&rig, MicroUsd(10_800)).await;
+}
+
+#[tokio::test]
+async fn a_stream_cut_before_any_text_is_charged_its_prompt() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 0);
+    rig.tallies.finish(&id);
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "gpt-priced",
+            &id,
+            &[("input", 1_000)],
+        ))
+        .await
+        .unwrap();
+    spent_becomes(&rig, MicroUsd(3_000)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(3_000); 3]);
+}
+
+#[tokio::test]
+async fn an_error_answer_is_not_charged() {
+    let mut rig = rig().await;
+    for status in [429, 500] {
+        let id = tally(&rig, status, 5);
+        rig.tallies.finish(&id);
+        rig.rls
+            .should_rate_limit(req(
+                rig.key.as_str(),
+                "gpt-priced",
+                &id,
+                &[("input", 1_000)],
+            ))
+            .await
+            .unwrap();
+    }
+    assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
+}
+
+#[tokio::test]
+async fn a_missing_tally_charges_the_prompt_after_the_wait() {
+    let mut rig = rig_waiting(Duration::from_millis(200)).await;
+    let key = rig.key.as_str();
+    // A stream hook that never finishes its tally: the prompt, after the wait.
+    let stuck = tally(&rig, 200, 40);
+    let start = tokio::time::Instant::now();
+    rig.rls
+        .should_rate_limit(req(key, "gpt-priced", &stuck, &[("input", 1_000)]))
+        .await
+        .unwrap();
+    spent_becomes(&rig, MicroUsd(3_000)).await;
+    assert!(start.elapsed() >= Duration::from_millis(200));
+    // No tally at all (another Sekisho's stream hook, or none): the prompt.
+    for request in ["0123456789abcdef0123456789abcdef", ""] {
+        rig.rls
+            .should_rate_limit(req(key, "gpt-priced", request, &[("input", 1_000)]))
+            .await
+            .unwrap();
+    }
+    spent_becomes(&rig, MicroUsd(9_000)).await;
+    // The stuck tally was dropped, so it is never charged again.
+    rig.tallies.finish(&stuck);
+    assert_eq!(rig.tallies.wait(&stuck, Duration::ZERO).await, None);
+    assert_eq!(settled(&rig).await, [MicroUsd(9_000); 3]);
+}
+
+#[tokio::test]
+async fn a_complete_request_drops_its_tally() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 999);
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "gpt-priced",
+            &id,
+            &[("input", 1_000), ("output", 10)],
+        ))
+        .await
+        .unwrap();
+    // The provider's counts, not the tally: 1,000 × 3 + 10 × 15.
+    spent_becomes(&rig, MicroUsd(3_150)).await;
+    rig.tallies.finish(&id);
+    assert_eq!(rig.tallies.wait(&id, Duration::ZERO).await, None);
+    assert_eq!(settled(&rig).await, [MicroUsd(3_150); 3]);
 }

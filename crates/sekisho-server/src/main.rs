@@ -13,7 +13,7 @@ use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
-use sekisho_hooks::ratelimit::Charger;
+use sekisho_hooks::ratelimit::{Charger, TALLY_WAIT};
 use sekisho_hooks::tally::Tallies;
 use sekisho_proto::ext_proc::external_processor_server::ExternalProcessorServer;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitServiceServer;
@@ -89,14 +89,17 @@ async fn serve() -> anyhow::Result<()> {
         store: store.clone(),
         clock: Arc::clone(&clock),
     };
+    // What each stream relayed, for the estimate when one ends early: the
+    // stream hook tallies, the rate-limit service reads.
+    let tallies = Tallies::new();
     let charger = Charger {
         cache: Arc::clone(&cache),
         store: store.clone(),
         clock: Arc::clone(&clock),
         charge_secret_sha256: hash_secret(&config.settings.hooks.charge_secret),
+        tallies: tallies.clone(),
+        tally_wait: TALLY_WAIT,
     };
-    // What each stream relayed, for the estimate when one ends early.
-    let tallies = Tallies::new();
     let guard = StreamGuard {
         cache,
         clock,
