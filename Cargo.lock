@@ -2624,6 +2624,7 @@ name = "sekisho-testkit"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "crc",
  "sekisho-core",
  "sekisho-store",
  "serde_json",

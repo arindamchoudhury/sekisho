@@ -9,6 +9,15 @@
 //! `POST /v1/messages` answers like Anthropic's Messages API (not streamed),
 //! with the same usage.
 //!
+//! Azure's `v1` path, `POST /openai/v1/chat/completions`, answers like
+//! `/v1/chat/completions`.
+//!
+//! Bedrock's Converse API: `POST /model/{model}/converse` answers one JSON
+//! body, and `POST /model/{model}/converse-stream` streams AWS event-stream
+//! messages (`messageStart`, one `contentBlockDelta` per chunk,
+//! `contentBlockStop`, `messageStop`, then `metadata` with the usage), with
+//! the same chunks, interval and usage.
+//!
 //! Every other path answers 200 `{"mock": "unrouted"}`, so a request that
 //! should never have reached the provider is visible. Every request except
 //! `/_…` and `/healthz` is recorded: `GET /_requests` lists them (method, raw
@@ -29,6 +38,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::serve::ListenerExt;
 use axum::{Json, Router};
+use sekisho_testkit::eventstream;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -43,6 +53,9 @@ async fn main() {
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
         .route("/v1/messages", post(messages))
+        .route("/openai/v1/chat/completions", post(completions))
+        .route("/model/{model}/converse", post(converse))
+        .route("/model/{model}/converse-stream", post(converse_stream))
         .route("/_requests", get(requests))
         .route("/_last_headers", get(last_headers))
         .route("/healthz", get(|| async { "ok" }))
@@ -182,6 +195,67 @@ async fn completions(headers: HeaderMap, Json(body): Json<Value>) -> Response {
             (header::CONTENT_TYPE, "text/event-stream"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
+}
+
+/// Converse's usage for 1000 input tokens and one output token per chunk.
+fn converse_usage(chunks: u64) -> Value {
+    json!({ "inputTokens": 1000, "outputTokens": chunks, "totalTokens": 1000 + chunks })
+}
+
+async fn converse(headers: HeaderMap) -> Json<Value> {
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+    Json(json!({
+        "output": { "message": { "role": "assistant", "content": [{ "text": text }] } },
+        "stopReason": "end_turn",
+        "usage": converse_usage(chunks),
+        "metrics": { "latencyMs": 1 },
+    }))
+}
+
+async fn converse_stream(headers: HeaderMap) -> Response {
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+    tokio::spawn(async move {
+        let event = |kind: &str, value: Value| {
+            Ok(Bytes::from(eventstream::frame(
+                kind,
+                value.to_string().as_bytes(),
+            )))
+        };
+        if tx
+            .send(event("messageStart", json!({ "role": "assistant" })))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        for i in 0..chunks {
+            tokio::time::sleep(interval).await;
+            let delta = json!({ "contentBlockIndex": 0, "delta": { "text": format!("t{i} ") } });
+            if tx.send(event("contentBlockDelta", delta)).await.is_err() {
+                return; // the client went away
+            }
+        }
+        for (kind, value) in [
+            ("contentBlockStop", json!({ "contentBlockIndex": 0 })),
+            ("messageStop", json!({ "stopReason": "end_turn" })),
+            (
+                "metadata",
+                json!({ "usage": converse_usage(chunks), "metrics": { "latencyMs": 1 } }),
+            ),
+        ] {
+            if tx.send(event(kind, value)).await.is_err() {
+                return;
+            }
+        }
+    });
+    (
+        [(header::CONTENT_TYPE, "application/vnd.amazon.eventstream")],
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response()

@@ -3,6 +3,8 @@
 //! [`store`] gives a migrated `Store` on a throwaway PostgreSQL 18 container.
 //! It needs Docker.
 
+pub mod eventstream;
+
 use std::ops::Deref;
 use std::time::Duration;
 
