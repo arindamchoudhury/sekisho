@@ -2558,6 +2558,8 @@ name = "sekisho-hooks"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "prost-types",
+ "rand",
  "reqwest",
  "sekisho-core",
  "sekisho-proto",

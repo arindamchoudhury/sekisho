@@ -8,4 +8,5 @@ pub mod catalog;
 mod credential;
 pub mod extproc;
 pub mod ratelimit;
+pub mod tally;
 pub mod tokens;

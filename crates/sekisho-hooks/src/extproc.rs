@@ -1,4 +1,5 @@
-//! The Envoy external processor, used to end running streams.
+//! The Envoy external processor, used to end running streams and to tally
+//! what they relayed.
 //!
 //! agentgateway sends the request headers, then each response chunk
 //! (`responseBodyMode: fullDuplexStreamed`). The guard echoes every chunk
@@ -6,9 +7,15 @@
 //! next message with a 403 `ImmediateResponse` and ends the stream; the
 //! client keeps its 200 but gets no more data, and the upstream connection
 //! closes.
+//!
+//! It also gives each request a [`Tallies`] ID, answered as dynamic metadata
+//! (`extproc.sekisho_request` in agentgateway's CEL), and counts the answer
+//! text of every chunk it relays, for the spend estimate when a stream ends
+//! before the provider reports its usage.
 
 use std::sync::Arc;
 
+use prost_types::value::Kind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_proto::common::{HeaderValue, HeaderValueOption, HttpStatus};
 use sekisho_proto::ext_proc::body_mutation::Mutation;
@@ -28,10 +35,16 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::cache::AuthCache;
 use crate::credential::{Credential, refusal, resolve};
+use crate::tally::{AnswerText, Tallies};
+
+/// The dynamic-metadata field holding the request's tally ID.
+const REQUEST_FIELD: &str = "sekisho_request";
 
 pub struct StreamGuard {
     pub cache: Arc<AuthCache>,
     pub clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    /// Shared with the rate-limit service, which reads each finished tally.
+    pub tallies: Tallies,
 }
 
 #[tonic::async_trait]
@@ -49,6 +62,7 @@ impl ExternalProcessor for StreamGuard {
             tx,
             Arc::clone(&self.cache),
             Arc::clone(&self.clock),
+            self.tallies.clone(),
         ));
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -59,8 +73,12 @@ async fn guard(
     tx: mpsc::Sender<Result<ProcessingResponse, Status>>,
     cache: Arc<AuthCache>,
     clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    tallies: Tallies,
 ) {
     let mut key: Option<EnvKeyId> = None;
+    // Finished when this function ends, however it ends.
+    let mut tally: Option<OpenTally> = None;
+    let mut text = AnswerText::default();
     while let Some(Ok(message)) = inbound.next().await {
         let Some(message) = message.request else {
             continue;
@@ -83,21 +101,71 @@ async fn guard(
             let _ = tx.send(Ok(refuse(reason))).await;
             return; // ending the stream tells agentgateway nothing more comes
         }
-        if tx.send(Ok(answer(message))).await.is_err() {
+        // Only what is relayed counts: a refused chunk never reaches the client.
+        let mut metadata = None;
+        match (&message, &tally) {
+            (Message::RequestHeaders(_), None) => {
+                let opened = OpenTally {
+                    id: tallies.open(),
+                    tallies: tallies.clone(),
+                };
+                metadata = Some(request_metadata(&opened.id));
+                tally = Some(opened);
+            }
+            (Message::ResponseHeaders(headers), Some(t)) => {
+                if let Some(status) = header(headers, ":status").and_then(|s| s.parse().ok()) {
+                    tallies.set_status(&t.id, status);
+                }
+            }
+            (Message::ResponseBody(body), Some(t)) => tallies.add(&t.id, text.push(&body.body)),
+            _ => {}
+        }
+        let mut response = answer(message);
+        response.dynamic_metadata = metadata;
+        if tx.send(Ok(response)).await.is_err() {
             return;
         }
     }
 }
 
-/// The `authorization` request header. Ordinary headers arrive as
-/// `raw_value` bytes; `value` is accepted too.
+/// A request's tally, finished when dropped: the stream ended, was refused,
+/// or the guard's task was cancelled.
+struct OpenTally {
+    id: String,
+    tallies: Tallies,
+}
+
+impl Drop for OpenTally {
+    fn drop(&mut self) {
+        self.tallies.finish(&self.id);
+    }
+}
+
+/// `{"sekisho_request": id}`, which agentgateway exposes to the spend
+/// descriptors as `extproc.sekisho_request`.
+fn request_metadata(id: &str) -> prost_types::Struct {
+    let value = prost_types::Value {
+        kind: Some(Kind::StringValue(id.to_owned())),
+    };
+    prost_types::Struct {
+        fields: [(REQUEST_FIELD.to_owned(), value)].into(),
+    }
+}
+
+/// The `authorization` request header.
 fn authorization(headers: &HttpHeaders) -> Option<String> {
+    header(headers, "authorization")
+}
+
+/// The one header called `name`. Ordinary headers arrive as `raw_value`
+/// bytes; `value` is accepted too.
+fn header(headers: &HttpHeaders, name: &str) -> Option<String> {
     let mut found = headers
         .headers
         .as_ref()?
         .headers
         .iter()
-        .filter(|h| h.key.eq_ignore_ascii_case("authorization"));
+        .filter(|h| h.key.eq_ignore_ascii_case(name));
     let header = found.next()?;
     if found.next().is_some() {
         return None; // two of them: refuse rather than guess

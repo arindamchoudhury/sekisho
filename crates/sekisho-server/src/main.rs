@@ -14,6 +14,7 @@ use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
 use sekisho_hooks::ratelimit::Charger;
+use sekisho_hooks::tally::Tallies;
 use sekisho_proto::ext_proc::external_processor_server::ExternalProcessorServer;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitServiceServer;
 use sekisho_server::app::{AppState, router, start_publisher};
@@ -94,7 +95,13 @@ async fn serve() -> anyhow::Result<()> {
         clock: Arc::clone(&clock),
         charge_secret_sha256: hash_secret(&config.settings.hooks.charge_secret),
     };
-    let guard = StreamGuard { cache, clock };
+    // What each stream relayed, for the estimate when one ends early.
+    let tallies = Tallies::new();
+    let guard = StreamGuard {
+        cache,
+        clock,
+        tallies,
+    };
     if config.settings.render.bare_route {
         tracing::warn!(
             "SEKISHO_E2E_BARE_ROUTE is on: /bare/openai serves a provider with no key or \

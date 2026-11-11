@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 axum = { workspace = true }
+prost-types = { workspace = true }
+rand = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-proto = { workspace = true }
 sekisho-store = { workspace = true }

@@ -1,10 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use prost_types::value::Kind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
+use sekisho_hooks::tally::{Tallies, Tally};
+use sekisho_hooks::tokens::count_text;
 use sekisho_proto::common::HeaderValue;
 use sekisho_proto::ext_proc::body_mutation::Mutation;
 use sekisho_proto::ext_proc::external_processor_client::ExternalProcessorClient;
@@ -32,6 +35,8 @@ struct Rig {
     now: Arc<Mutex<OffsetDateTime>>,
     token: String,
     key: EnvKeyId,
+    /// What the guard tallied for each request.
+    tallies: Tallies,
 }
 
 async fn rig() -> Rig {
@@ -53,9 +58,11 @@ async fn rig() -> Rig {
     cache.spawn_refresh(store.clone());
     let now = Arc::new(Mutex::new(OffsetDateTime::now_utc()));
     let clock_now = Arc::clone(&now);
+    let tallies = Tallies::new();
     let guard = StreamGuard {
         cache: Arc::clone(&cache),
         clock: Arc::new(move || *clock_now.lock().unwrap()),
+        tallies: tallies.clone(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -74,6 +81,7 @@ async fn rig() -> Rig {
         now,
         token,
         key: key.id,
+        tallies,
     }
 }
 
@@ -130,6 +138,41 @@ async fn open_stream(
         .unwrap()
         .into_inner();
     (tx, out)
+}
+
+/// Response headers with the answer's status, as agentgateway sends them.
+async fn send_response_status(tx: &Tx, status: &str) {
+    tx.send(message(Request::ResponseHeaders(HttpHeaders {
+        headers: Some(HeaderMap {
+            headers: vec![HeaderValue {
+                key: ":status".into(),
+                value: String::new(),
+                raw_value: status.as_bytes().to_vec(),
+            }],
+        }),
+        end_of_stream: false,
+    })))
+    .await
+    .unwrap();
+}
+
+/// An OpenAI chat chunk carrying `text`.
+fn openai_chunk(text: &str) -> Vec<u8> {
+    format!("data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{text}\"}}}}]}}\n\n")
+        .into_bytes()
+}
+
+/// The request ID the guard put in its answer to the request headers.
+fn request_id(answer: &ProcessingResponse) -> String {
+    assert!(
+        matches!(answer.response, Some(Response::RequestHeaders(_))),
+        "not the request-headers answer: {answer:?}"
+    );
+    let metadata = answer.dynamic_metadata.as_ref().expect("dynamic metadata");
+    match &metadata.fields["sekisho_request"].kind {
+        Some(Kind::StringValue(id)) => id.clone(),
+        other => panic!("sekisho_request is not a string: {other:?}"),
+    }
 }
 
 async fn send_body_chunk(tx: &Tx, chunk: &[u8]) {
@@ -328,4 +371,72 @@ async fn unknown_or_missing_keys_are_refused_at_headers() {
         );
         assert!(next(&mut out).await.is_none());
     }
+}
+
+#[tokio::test]
+async fn requests_get_an_id_in_dynamic_metadata() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (_tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let id = request_id(&next(&mut out).await.unwrap());
+    assert_eq!(id.len(), 32);
+    assert!(
+        id.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    let (_tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    assert_ne!(request_id(&next(&mut out).await.unwrap()), id);
+}
+
+#[tokio::test]
+async fn answer_text_is_tallied_when_the_stream_ends() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let id = request_id(&next(&mut out).await.unwrap());
+    send_response_status(&tx, "200").await;
+    next(&mut out).await.unwrap();
+    for text in ["t0 ", "t1 "] {
+        send_body_chunk(&tx, &openai_chunk(text)).await;
+        assert_eq!(next(&mut out).await.unwrap().body(), openai_chunk(text));
+    }
+    assert_eq!(
+        rig.tallies.wait(&id, Duration::from_millis(100)).await,
+        None,
+        "not finished while the stream runs"
+    );
+    drop(tx); // the client ends the stream
+    assert_eq!(
+        rig.tallies.wait(&id, Duration::from_secs(1)).await,
+        Some(Tally {
+            status: Some(200),
+            answer_o200k: count_text("t0 ") + count_text("t1 "),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_revoked_stream_is_tallied_too() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let id = request_id(&next(&mut out).await.unwrap());
+    send_response_status(&tx, "200").await;
+    next(&mut out).await.unwrap();
+    send_body_chunk(&tx, &openai_chunk("relayed")).await;
+    next(&mut out).await.unwrap();
+    rig.store.revoke_key(&rig.key).await.unwrap();
+    wait_cache(&rig, "revocation", |c| c.key(&rig.key).unwrap().revoked).await;
+    send_body_chunk(&tx, &openai_chunk("never relayed")).await;
+    assert_eq!(next(&mut out).await.unwrap().immediate_status(), 403);
+    // The tally finishes when the guard ends the stream, with the client
+    // still connected: only what reached the client is counted.
+    assert_eq!(
+        rig.tallies.wait(&id, Duration::from_secs(1)).await,
+        Some(Tally {
+            status: Some(200),
+            answer_o200k: count_text("relayed"),
+        })
+    );
+    drop(tx);
 }
