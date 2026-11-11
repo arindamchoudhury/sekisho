@@ -1381,6 +1381,13 @@ async fn provider_addresses_are_checked() {
             .unwrap_err();
         assert_eq!(fields(err), ["base_url"], "{url}");
     }
+    // A second colon would reach agentgateway as a host override it can't
+    // read, which stops every later config from loading.
+    let err = store
+        .create_provider(&sb, at("two-colons", "http://ollama:11434:11434/v1", true))
+        .await
+        .unwrap_err();
+    assert_eq!(fields(err), ["base_url"]);
     let err = store
         .create_provider(&sb, at("metadata", "http://169.254.169.254/", true))
         .await

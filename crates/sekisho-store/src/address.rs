@@ -29,9 +29,12 @@ pub(crate) fn host_and_port(url: &str) -> Option<(&str, u16)> {
             let (host, after) = bracketed.split_once(']')?;
             (host, after)
         }
-        // The port keeps its `:`, as after a bracketed host.
-        None => match authority.rfind(':') {
-            Some(colon) => authority.split_at(colon),
+        // The port keeps its `:`, as after a bracketed host. Any other colon
+        // is refused: agentgateway can't read such a host override and
+        // would refuse the whole config.
+        None => match authority.split_once(':') {
+            Some((_, port)) if port.contains(':') => return None,
+            Some((host, _)) => authority.split_at(host.len()),
             None => (authority, ""),
         },
     };
@@ -188,6 +191,10 @@ mod tests {
             ),
             ("http://h#@169.254.169.254", Some(("h", 80))),
             ("http://h:abc", None),
+            // agentgateway can't read a host override with a second colon,
+            // and refuses the whole config.
+            ("http://ollama:11434:11434/v1", None),
+            ("http://a:b:80", None),
             ("http://h:", None),
             ("http://[::1", None),
             ("http://[::1]x", None),

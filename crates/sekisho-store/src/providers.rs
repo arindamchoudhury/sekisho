@@ -754,46 +754,31 @@ impl Store {
         secret_box: &SecretBox,
         id: Uuid,
     ) -> Result<ProviderCredential> {
-        let (kind, sealed): (String, Option<Vec<u8>>) = sqlx::query_as(
-            "select credential_kind, credential_ciphertext from providers where id = $1",
-        )
+        Ok(self.provider_with_credential(secret_box, id).await?.1)
+    }
+
+    /// A provider and its decrypted credential, read from one row, so the
+    /// credential always comes with the base URL and settings it was saved
+    /// with. The gateway config is rendered from these: a credential paired
+    /// with another version's base URL could reach a host it must not.
+    pub async fn provider_with_credential(
+        &self,
+        secret_box: &SecretBox,
+        id: Uuid,
+    ) -> Result<(Provider, ProviderCredential)> {
+        let row = sqlx::query(concat!(
+            "select ",
+            columns!(),
+            ", credential_ciphertext from providers where id = $1"
+        ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(StoreError::NotFound)?;
-        let kind =
-            CredentialKind::parse(&kind).ok_or_else(|| bad_column("credential kind", &kind))?;
-        if kind == CredentialKind::CloudIdentity {
-            return Ok(ProviderCredential::CloudIdentity);
-        }
-        let sealed = sealed.ok_or_else(|| bad_column("credential", "NULL"))?;
-        let plaintext = secret_box.open(&sealed)?;
-        // Decoding errors could quote the plaintext, so none is passed on.
-        let undecodable = || StoreError::Secret(SecretError::Decrypt);
-        Ok(match kind {
-            CredentialKind::Key => {
-                ProviderCredential::Key(String::from_utf8(plaintext).map_err(|_| undecodable())?)
-            }
-            CredentialKind::AwsAccessKeys => {
-                let keys: SealedAwsKeys =
-                    serde_json::from_slice(&plaintext).map_err(|_| undecodable())?;
-                ProviderCredential::AwsAccessKeys {
-                    access_key_id: keys.access_key_id,
-                    secret_access_key: keys.secret_access_key,
-                    session_token: keys.session_token,
-                }
-            }
-            CredentialKind::AzureClientSecret => {
-                let sp: SealedAzureClientSecret =
-                    serde_json::from_slice(&plaintext).map_err(|_| undecodable())?;
-                ProviderCredential::AzureClientSecret {
-                    tenant_id: sp.tenant_id,
-                    client_id: sp.client_id,
-                    client_secret: sp.client_secret,
-                }
-            }
-            CredentialKind::CloudIdentity => ProviderCredential::CloudIdentity,
-        })
+        let provider = from_row(&row)?;
+        let sealed: Option<Vec<u8>> = row.try_get("credential_ciphertext")?;
+        let credential = open_credential(secret_box, provider.credential, sealed)?;
+        Ok((provider, credential))
     }
 
     /// Deletes a provider that no model uses.
@@ -829,6 +814,45 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// Opens a sealed credential of shape `kind`; the cloud identity has none.
+fn open_credential(
+    secret_box: &SecretBox,
+    kind: CredentialKind,
+    sealed: Option<Vec<u8>>,
+) -> Result<ProviderCredential> {
+    if kind == CredentialKind::CloudIdentity {
+        return Ok(ProviderCredential::CloudIdentity);
+    }
+    let sealed = sealed.ok_or_else(|| bad_column("credential", "NULL"))?;
+    let plaintext = secret_box.open(&sealed)?;
+    // Decoding errors could quote the plaintext, so none is passed on.
+    let undecodable = || StoreError::Secret(SecretError::Decrypt);
+    Ok(match kind {
+        CredentialKind::Key => {
+            ProviderCredential::Key(String::from_utf8(plaintext).map_err(|_| undecodable())?)
+        }
+        CredentialKind::AwsAccessKeys => {
+            let keys: SealedAwsKeys =
+                serde_json::from_slice(&plaintext).map_err(|_| undecodable())?;
+            ProviderCredential::AwsAccessKeys {
+                access_key_id: keys.access_key_id,
+                secret_access_key: keys.secret_access_key,
+                session_token: keys.session_token,
+            }
+        }
+        CredentialKind::AzureClientSecret => {
+            let sp: SealedAzureClientSecret =
+                serde_json::from_slice(&plaintext).map_err(|_| undecodable())?;
+            ProviderCredential::AzureClientSecret {
+                tenant_id: sp.tenant_id,
+                client_id: sp.client_id,
+                client_secret: sp.client_secret,
+            }
+        }
+        CredentialKind::CloudIdentity => ProviderCredential::CloudIdentity,
+    })
 }
 
 #[cfg(test)]

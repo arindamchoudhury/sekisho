@@ -1,13 +1,19 @@
 mod common;
 
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use std::time::Duration;
+
+use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
     build_snapshot, render, validate,
 };
-use sekisho_store::{EnvironmentSpec, NewModel, NewProvider, ProviderCredential, ProviderOptions};
+use sekisho_store::{
+    CredentialKind, EnvironmentSpec, NewModel, NewProvider, ProviderCredential, ProviderOptions,
+    ProviderUpdate,
+};
+use tokio::time::Instant;
 
 fn hooks() -> HookTargets {
     HookTargets {
@@ -249,4 +255,97 @@ async fn bedrock_routes_carry_their_credential_and_format() {
     let yaml = render(&snapshot, &RenderOptions::default());
     assert_eq!(validate(&yaml), Ok(()));
     assert!(yaml.contains("bedrock-secret") && yaml.contains("bedrock-session"));
+}
+
+/// A credential is rendered with the base URL and settings it was saved
+/// with. Here an update lands while `build_snapshot` waits between its list
+/// of providers and the rest of its reads (held by a lock on `models`): an
+/// Azure provider with a key and a base URL off Azure switches to the
+/// gateway's cloud identity and drops the base URL. Pairing the new identity
+/// with the old URL would send the gateway's Entra token to that host.
+#[tokio::test]
+async fn a_credential_renders_with_the_settings_saved_with_it() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(
+            &sb,
+            NewProvider {
+                format: ApiFormat::OpenAi,
+                base_url: Some("https://203.0.113.10".into()),
+                options: ProviderOptions::Azure {
+                    endpoint: AzureEndpoint::parse("https://my-resource.openai.azure.com").unwrap(),
+                },
+                ..NewProvider::keyed(provider("azure"), ProviderKind::Azure, None, "azure-key")
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .create_model(NewModel {
+            name: model("gpt-deployment"),
+            provider: provider("azure"),
+            input_price: Some(MicroUsd(3_000_000)),
+            output_price: Some(MicroUsd(15_000_000)),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_environment(EnvironmentSpec {
+            name: EnvName::parse("cloud").unwrap(),
+            description: String::new(),
+            notice: String::new(),
+            access_groups: Vec::new(),
+            models: vec![model("gpt-deployment")],
+        })
+        .await
+        .unwrap();
+
+    let mut blocker = store.pool().begin().await.unwrap();
+    sqlx::query("lock table models in access exclusive mode")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let build = {
+        let (store, sb) = (store.clone(), sb.clone());
+        tokio::spawn(async move { build_snapshot(&store, &sb, &hooks()).await })
+    };
+    let started = Instant::now();
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "select count(*) from pg_stat_activity \
+             where wait_event_type = 'Lock' and query ilike '%from models%'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break; // the providers are listed; the models read waits
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "build_snapshot never reached the models"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    store
+        .update_provider(
+            &sb,
+            &provider("azure"),
+            ProviderUpdate {
+                credential: Some(ProviderCredential::CloudIdentity),
+                base_url: Some(None),
+                ..ProviderUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    blocker.rollback().await.unwrap();
+
+    let snapshot = build.await.unwrap().unwrap();
+    let route = &snapshot.environments[0].routes[0];
+    assert_eq!(
+        (route.credential.kind(), route.base_url.as_deref()),
+        (CredentialKind::CloudIdentity, None),
+        "{route:?}"
+    );
 }

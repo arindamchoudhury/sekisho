@@ -7,7 +7,7 @@ use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
-use sekisho_store::{ProviderCredential, ProviderOptions, Store, StoreError};
+use sekisho_store::{Provider, ProviderCredential, ProviderOptions, Store, StoreError};
 
 /// Where agentgateway reaches Sekisho's hooks, each as `host:port`, and the
 /// secret its rate-limit calls carry.
@@ -106,7 +106,8 @@ pub async fn build_snapshot(
     let provider_by_name: HashMap<&str, _> =
         providers.iter().map(|p| (p.name.as_str(), p)).collect();
     let model_by_name: HashMap<&str, _> = models.iter().map(|m| (m.name.as_str(), m)).collect();
-    let mut credentials: HashMap<_, ProviderCredential> = HashMap::new();
+    // Each provider as saved together with its credential (see below).
+    let mut saved: HashMap<_, (Provider, ProviderCredential)> = HashMap::new();
 
     let mut snapshot_envs = Vec::with_capacity(environments.len());
     for env in &environments {
@@ -128,21 +129,26 @@ pub async fn build_snapshot(
                     route_provider = %route.provider, "two providers for one API format; model skipped"
                 ),
                 None => {
-                    let credential = match credentials.get(&provider.id) {
-                        Some(credential) => credential.clone(),
+                    // The credential, base URL and settings come from one
+                    // read of the provider, not the list above: a change
+                    // between the two could otherwise send the new credential
+                    // to the old host. The kind and format never change.
+                    let (current, credential) = match saved.get(&provider.id) {
+                        Some(found) => found.clone(),
                         None => {
-                            let credential =
-                                store.provider_credential(secret_box, provider.id).await?;
-                            credentials.insert(provider.id, credential.clone());
-                            credential
+                            let found = store
+                                .provider_with_credential(secret_box, provider.id)
+                                .await?;
+                            saved.insert(provider.id, found.clone());
+                            found
                         }
                     };
                     routes.push(ModelRoute {
                         format,
                         provider: provider.name.clone(),
                         kind: provider.kind,
-                        base_url: provider.base_url.clone(),
-                        options: provider.options.clone(),
+                        base_url: current.base_url,
+                        options: current.options,
                         credential,
                         models: vec![name.clone()],
                     });
