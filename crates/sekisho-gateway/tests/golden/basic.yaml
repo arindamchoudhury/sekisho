@@ -121,6 +121,20 @@ binds:
             - key: measure
               value: '"catalog"'
             cost: int(llm.cost.total * 1000000.0 + 0.5)
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: key
+              value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"prompt"'
         extProc:
           host: sekisho:9081
           failureMode: failClosed

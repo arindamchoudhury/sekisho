@@ -1,13 +1,19 @@
-//! What the stream hook counted of each answer, kept until the charge for
-//! that request reads it.
+//! What the stream hook counted of each answer, kept until the request is
+//! charged.
 //!
 //! The stream hook opens a tally when a request starts and hands its ID to
 //! agentgateway as ext_proc dynamic metadata; the spend descriptors carry it
 //! back as `extproc.sekisho_request`. The hook adds the tokens of the answer
 //! text it relays to the client and finishes the tally when the stream ends,
-//! however it ends. When a stream ended before the provider reported its
-//! output count, the rate-limit service waits for the finished tally and
-//! charges an estimate from it.
+//! however it ends.
+//!
+//! agentgateway v1.7.0 reports a request's usage to the rate-limit service
+//! when the provider's usage arrives, and never for a stream that ends
+//! before it. So the rate-limit service records each request's start here
+//! (key, model and prompt count, from agentgateway's request-side call) and
+//! watches its tally: a tally that ends with no report is charged an
+//! estimate, and a report that comes after that estimate is refused, so each
+//! request is charged once.
 //!
 //! Tallies live in this process: a request's stream hook and its charge must
 //! reach the same Sekisho (plan 8 shares them between replicas).
@@ -18,15 +24,19 @@ use std::time::{Duration, Instant};
 
 use rand::TryRng;
 use rand::rngs::SysRng;
+use sekisho_core::keys::EnvKeyId;
+use sekisho_core::names::EnvName;
+use sekisho_core::pricing::Usage;
 use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::tokens::count_text;
 
 /// A tally untouched for this long is dropped: no charge came for it, or its
-/// stream hook died without finishing it. Measured from the last chunk, so a
-/// long stream keeps its tally.
-const KEEP: Duration = Duration::from_secs(10 * 60);
+/// stream hook died without finishing it. Measured from the last change, so
+/// a long stream keeps its tally. Also the longest a charge waits for a
+/// stream to end, and how long an estimated request's ID is remembered.
+pub const KEEP: Duration = Duration::from_secs(10 * 60);
 
 /// How often [`Tallies::open`] looks for tallies to drop.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
@@ -45,20 +55,50 @@ pub struct Tally {
     pub answer_o200k: u64,
 }
 
+/// What agentgateway reported of a request that has no output count yet:
+/// whom to charge, for which model, and the prompt (or, from a response-side
+/// call without the output count, every count it had).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Start {
+    pub key: EnvKeyId,
+    pub env: EnvName,
+    pub model: String,
+    /// The output count is always 0 here.
+    pub usage: Usage,
+}
+
+/// What [`Tallies::start`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// The request's first start: the caller watches it
+    /// ([`Tallies::unreported`]).
+    First,
+    /// A later one, whose counts replaced the earlier ones.
+    Again,
+    /// The request was already charged an estimate.
+    Estimated,
+    /// No tally here for this ID.
+    Unknown,
+}
+
 struct Entry {
     tally: Tally,
     finished: bool,
+    start: Option<Start>,
     touched: Instant,
 }
 
 struct Book {
     entries: HashMap<String, Entry>,
+    /// IDs charged an estimate, so a later report is refused.
+    estimated: HashMap<String, Instant>,
     swept: Instant,
 }
 
 struct Inner {
     book: Mutex<Book>,
-    finished: Notify,
+    /// Woken whenever a tally finishes or is taken.
+    changed: Notify,
     clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 
@@ -73,6 +113,13 @@ impl Default for Tallies {
     }
 }
 
+/// How [`Tallies::until`] ended.
+enum Until {
+    Done,
+    Gone,
+    TimedOut,
+}
+
 impl Tallies {
     pub fn new() -> Self {
         Self::with_clock(Arc::new(Instant::now))
@@ -84,9 +131,10 @@ impl Tallies {
         Self(Arc::new(Inner {
             book: Mutex::new(Book {
                 entries: HashMap::new(),
+                estimated: HashMap::new(),
                 swept: now,
             }),
-            finished: Notify::new(),
+            changed: Notify::new(),
             clock,
         }))
     }
@@ -102,8 +150,9 @@ impl Tallies {
         let now = (self.0.clock)();
         let mut book = self.book();
         if now.saturating_duration_since(book.swept) >= SWEEP_EVERY {
-            book.entries
-                .retain(|_, e| now.saturating_duration_since(e.touched) < KEEP);
+            let fresh = |at: &Instant| now.saturating_duration_since(*at) < KEEP;
+            book.entries.retain(|_, e| fresh(&e.touched));
+            book.estimated.retain(|_, at| fresh(at));
             book.swept = now;
         }
         book.entries.insert(
@@ -111,6 +160,7 @@ impl Tallies {
             Entry {
                 tally: Tally::default(),
                 finished: false,
+                start: None,
                 touched: now,
             },
         );
@@ -132,32 +182,105 @@ impl Tallies {
     /// Marks the tally complete: its stream has ended.
     pub fn finish(&self, id: &str) {
         self.touch(id, |e| e.finished = true);
-        self.0.finished.notify_waiters();
+        self.0.changed.notify_waiters();
     }
 
     /// Drops a tally nobody will read.
     pub fn discard(&self, id: &str) {
         self.book().entries.remove(id);
+        self.0.changed.notify_waiters();
+    }
+
+    /// Records what agentgateway reported of a request without its output
+    /// count. A later record replaces an earlier one's counts.
+    pub fn start(&self, id: &str, start: Start) -> Recorded {
+        let now = (self.0.clock)();
+        let mut book = self.book();
+        if book.estimated.contains_key(id) {
+            return Recorded::Estimated;
+        }
+        let Some(entry) = book.entries.get_mut(id) else {
+            return Recorded::Unknown;
+        };
+        entry.touched = now;
+        match entry.start.replace(start) {
+            None => Recorded::First,
+            Some(_) => Recorded::Again,
+        }
+    }
+
+    /// agentgateway reported the request's usage, so its tally isn't needed.
+    /// `false` when Sekisho already charged the request an estimate: the
+    /// report must not be charged too.
+    pub fn reported(&self, id: &str) -> bool {
+        let mut book = self.book();
+        if book.estimated.contains_key(id) {
+            return false;
+        }
+        book.entries.remove(id);
+        drop(book);
+        self.0.changed.notify_waiters();
+        true
+    }
+
+    /// For a request agentgateway may never report: waits until its stream
+    /// ends (at most `longest`), then up to `grace` for a report, then takes
+    /// the tally to charge an estimate, remembering that it did. `None` when
+    /// a report took the tally first, or the request has no start.
+    pub async fn unreported(
+        &self,
+        id: &str,
+        grace: Duration,
+        longest: Duration,
+    ) -> Option<(Start, Tally)> {
+        match self.until(id, longest, |e| e.finished).await {
+            Until::Gone => return None,
+            // A stream that never ended is estimated as it stands.
+            Until::TimedOut => {}
+            Until::Done => {
+                if let Until::Gone = self.until(id, grace, |_| false).await {
+                    return None; // reported in the grace
+                }
+            }
+        }
+        let now = (self.0.clock)();
+        let mut book = self.book();
+        let entry = book.entries.remove(id)?;
+        let start = entry.start?;
+        book.estimated.insert(id.to_owned(), now);
+        Some((start, entry.tally))
     }
 
     /// The tally once its stream has ended, removed so it is read only once.
     /// `None` for an unknown ID, or when the stream hasn't ended within
     /// `timeout`.
     pub async fn wait(&self, id: &str, timeout: Duration) -> Option<Tally> {
+        match self.until(id, timeout, |e| e.finished).await {
+            Until::Done => {
+                let tally = self.book().entries.remove(id).map(|e| e.tally);
+                self.0.changed.notify_waiters();
+                tally
+            }
+            Until::Gone | Until::TimedOut => None,
+        }
+    }
+
+    /// Waits until `id`'s tally is `done`, is gone, or `timeout` passes.
+    async fn until(&self, id: &str, timeout: Duration, done: impl Fn(&Entry) -> bool) -> Until {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            // Registered before looking, so a finish in between still wakes us.
-            let finished = self.0.finished.notified();
-            tokio::pin!(finished);
-            finished.as_mut().enable();
-            {
-                let mut book = self.book();
-                let done = book.entries.get(id)?.finished;
-                if done {
-                    return book.entries.remove(id).map(|e| e.tally);
-                }
+            // Registered before looking, so a change in between still wakes us.
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match self.book().entries.get(id) {
+                None => return Until::Gone,
+                Some(entry) if done(entry) => return Until::Done,
+                Some(_) => {}
             }
-            tokio::time::timeout_at(deadline, finished).await.ok()?;
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return Until::TimedOut;
+            }
         }
     }
 
@@ -293,8 +416,24 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
+    use sekisho_core::keys::EnvKeyId;
+    use sekisho_core::names::EnvName;
+    use sekisho_core::pricing::Usage;
+
     use super::*;
     use crate::tokens::count_text;
+
+    fn start(prompt: u64) -> Start {
+        Start {
+            key: EnvKeyId::parse("aaaaaaaaaaaa").unwrap(),
+            env: EnvName::parse("data-team").unwrap(),
+            model: "gpt-priced".into(),
+            usage: Usage {
+                input: prompt,
+                ..Usage::default()
+            },
+        }
+    }
 
     fn event(json: &str) -> Vec<u8> {
         format!("data: {json}\n\n").into_bytes()
@@ -498,5 +637,130 @@ mod tests {
             "touched 5 minutes ago"
         );
         assert!(tallies.wait(&new, Duration::ZERO).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn start_records_once_and_replaces_the_usage() {
+        let tallies = Tallies::new();
+        assert_eq!(tallies.start("unknown", start(10)), Recorded::Unknown);
+        let id = tallies.open();
+        assert_eq!(tallies.start(&id, start(10)), Recorded::First);
+        // A response-side call without the output count: its counts win.
+        assert_eq!(tallies.start(&id, start(12)), Recorded::Again);
+        tallies.finish(&id);
+        let (recorded, _) = tallies
+            .unreported(&id, Duration::ZERO, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(recorded, start(12));
+    }
+
+    #[tokio::test]
+    async fn an_unreported_stream_is_taken_after_its_end_and_the_grace() {
+        let tallies = Tallies::new();
+        let id = tallies.open();
+        tallies.start(&id, start(10));
+        tallies.set_status(&id, 200);
+        tallies.add(&id, 7);
+        let watcher = {
+            let (tallies, id) = (tallies.clone(), id.clone());
+            tokio::spawn(async move {
+                tallies
+                    .unreported(&id, Duration::from_millis(100), Duration::from_secs(5))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!watcher.is_finished(), "waits for the stream's end");
+        let ended = Instant::now();
+        tallies.finish(&id);
+        let (recorded, tally) = watcher.await.unwrap().expect("taken for an estimate");
+        assert!(
+            ended.elapsed() >= Duration::from_millis(100),
+            "then the grace"
+        );
+        assert_eq!(recorded, start(10));
+        assert_eq!(
+            tally,
+            Tally {
+                status: Some(200),
+                answer_o200k: 7
+            }
+        );
+        assert_eq!(tallies.wait(&id, Duration::ZERO).await, None, "taken");
+        assert_eq!(
+            tallies
+                .unreported("unknown", Duration::ZERO, Duration::from_secs(5))
+                .await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_report_takes_the_tally_first() {
+        let tallies = Tallies::new();
+        // A report while the stream runs, and one in the grace after its end.
+        for after_the_end in [false, true] {
+            let id = tallies.open();
+            tallies.start(&id, start(10));
+            let watcher = {
+                let (tallies, id) = (tallies.clone(), id.clone());
+                tokio::spawn(async move {
+                    tallies
+                        .unreported(&id, Duration::from_millis(300), Duration::from_secs(5))
+                        .await
+                })
+            };
+            if after_the_end {
+                tallies.finish(&id);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(tallies.reported(&id), "after the end: {after_the_end}");
+            tallies.finish(&id); // the hook ends its stream later; nothing to finish
+            assert_eq!(
+                watcher.await.unwrap(),
+                None,
+                "after the end: {after_the_end}"
+            );
+        }
+        // No tally here (another Sekisho's stream hook): the report is charged.
+        assert!(tallies.reported("unknown"));
+    }
+
+    #[tokio::test]
+    async fn an_estimate_refuses_a_late_report() {
+        let tallies = Tallies::new();
+        let id = tallies.open();
+        tallies.start(&id, start(10));
+        tallies.finish(&id);
+        assert!(
+            tallies
+                .unreported(&id, Duration::ZERO, Duration::from_secs(1))
+                .await
+                .is_some()
+        );
+        assert!(!tallies.reported(&id), "already estimated");
+        assert_eq!(tallies.start(&id, start(10)), Recorded::Estimated);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_never_ends_is_taken_after_the_longest_wait() {
+        let tallies = Tallies::new();
+        let id = tallies.open();
+        tallies.start(&id, start(10));
+        tallies.add(&id, 3);
+        let started = Instant::now();
+        let (_, tally) = tallies
+            .unreported(&id, Duration::from_secs(5), Duration::from_millis(200))
+            .await
+            .expect("taken after the longest wait");
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(200), "{waited:?}");
+        assert!(
+            waited < Duration::from_secs(5),
+            "no grace after it: {waited:?}"
+        );
+        assert_eq!(tally.answer_o200k, 3);
+        assert!(!tallies.reported(&id));
     }
 }

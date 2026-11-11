@@ -97,15 +97,21 @@ pub enum Measure {
     Output,
     /// agentgateway's catalog cost, in micro-USD.
     Catalog,
+    /// A descriptor without a cost: agentgateway sends its `tokenize` count
+    /// of the prompt on the request-side call. All Sekisho hears of a stream
+    /// that ends early, since agentgateway v1.7.0 sends no response-side
+    /// call for one. Not a cost on a response-side call.
+    Prompt,
 }
 
 impl Measure {
-    pub const ALL: [Measure; 5] = [
+    pub const ALL: [Measure; 6] = [
         Measure::Input,
         Measure::CacheRead,
         Measure::CacheWrite,
         Measure::Output,
         Measure::Catalog,
+        Measure::Prompt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -115,6 +121,7 @@ impl Measure {
             Measure::CacheWrite => "cache_write",
             Measure::Output => "output",
             Measure::Catalog => "catalog",
+            Measure::Prompt => "prompt",
         }
     }
 
@@ -232,7 +239,14 @@ mod tests {
         let names: Vec<&str> = Measure::ALL.iter().map(|m| m.as_str()).collect();
         assert_eq!(
             names,
-            ["input", "cache_read", "cache_write", "output", "catalog"]
+            [
+                "input",
+                "cache_read",
+                "cache_write",
+                "output",
+                "catalog",
+                "prompt"
+            ]
         );
         for measure in Measure::ALL {
             assert_eq!(Measure::parse(measure.as_str()), Some(measure));

@@ -1019,23 +1019,26 @@ fn descriptors_report_each_measure() {
             "\"cache_read\"",
             "\"cache_write\"",
             "\"output\"",
-            "\"catalog\""
+            "\"catalog\"",
+            "\"prompt\""
         ]
     );
-    let costs: Vec<&str> = descriptors
-        .iter()
-        .map(|d| d["cost"].as_str().unwrap())
-        .collect();
+    // Without a cost, agentgateway sends its prompt count on the
+    // request-side call, which is all Sekisho hears of a stream that ends
+    // early.
+    let costs: Vec<Option<&str>> = descriptors.iter().map(|d| d["cost"].as_str()).collect();
     assert_eq!(
         costs,
         [
-            "llm.inputTokens",
-            "llm.cachedInputTokens",
-            "llm.cacheCreationInputTokens",
-            "llm.outputTokens",
-            "int(llm.cost.total * 1000000.0 + 0.5)"
+            Some("llm.inputTokens"),
+            Some("llm.cachedInputTokens"),
+            Some("llm.cacheCreationInputTokens"),
+            Some("llm.outputTokens"),
+            Some("int(llm.cost.total * 1000000.0 + 0.5)"),
+            None
         ]
     );
+    assert_eq!(descriptors[5].get("cost"), None);
     for d in &descriptors {
         assert_eq!(d["type"], "tokens");
         let keys: Vec<&str> = d["entries"]

@@ -1,23 +1,28 @@
 //! The Envoy rate-limit service, used only to record spend.
 //!
-//! agentgateway calls it twice per request: before (every cost 0) and when
-//! the request ends. The second call carries one descriptor per [`Measure`]:
-//! input, cache read, cache write and output tokens, and agentgateway's
-//! catalog cost in micro-USD. Every descriptor has the same entries: the
-//! route's `env`, the `key` id that `extAuthz` verified, the install's charge
-//! `secret`, the requested `model`, and the `request` ID Sekisho's stream
-//! hook gave the request. A measure agentgateway couldn't evaluate is left
-//! out, so a missing output count means the stream ended before the
-//! provider reported its usage.
+//! agentgateway calls it twice per request: when the request starts and
+//! when the provider's usage arrives. Each call carries one descriptor per
+//! [`Measure`]: input, cache read, cache write and output tokens and
+//! agentgateway's catalog cost in micro-USD, each costed when the request
+//! ends (all 0 on the first call), and the prompt count, sent on the first
+//! call. Every descriptor has the same entries: the route's `env`, the `key`
+//! id that `extAuthz` verified, the install's charge `secret`, the requested
+//! `model`, and the `request` ID Sekisho's stream hook gave the request.
+//!
+//! agentgateway v1.7.0 sends no second call for a stream that ends before
+//! the provider's usage (the client hung up, or a revoked key cut it). So
+//! the first call starts a watch on the stream hook's tally: if the stream
+//! ends and no report follows within [`TALLY_WAIT`], the request is charged
+//! an estimate here, and a later report is refused.
 //!
 //! What a request costs (design 9.6):
 //! 1. output reported, the model has admin prices: Sekisho prices the
 //!    provider's counts;
 //! 2. output reported, no admin prices: agentgateway's catalog cost;
-//! 3. output missing and the answer's status not 2xx: nothing;
-//! 4. output missing otherwise: an estimate, the prompt plus the answer text
-//!    the stream hook tallied, at the admin's prices or else at Sekisho's
-//!    copy of agentgateway's catalog.
+//! 3. no output count and the answer's status not 2xx: nothing;
+//! 4. no output count otherwise: an estimate, the prompt plus the answer
+//!    text the stream hook tallied, at the admin's prices or else at
+//!    Sekisho's copy of agentgateway's catalog.
 //!
 //! This is the only place that charges. It always answers OK; refusals
 //! happen in `extAuthz`, whose answers reach the client with a message.
@@ -33,13 +38,13 @@ use sekisho_core::pricing::{Measure, Usage};
 use sekisho_proto::ratelimit::rate_limit_response::Code;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitService;
 use sekisho_proto::ratelimit::{RateLimitDescriptor, RateLimitRequest, RateLimitResponse};
-use sekisho_store::{Store, StoreError};
+use sekisho_store::{ModelPricing, Store, StoreError};
 use time::OffsetDateTime;
 use tonic::{Request, Response, Status};
 
 use crate::cache::{AuthCache, CachedKey};
 use crate::catalog::catalog_rates;
-use crate::tally::{Tallies, Tally};
+use crate::tally::{KEEP, Recorded, Start, Tallies, Tally};
 use crate::tokens::answer_tokens;
 
 /// The pauses before each new attempt at recording spend after a database
@@ -48,9 +53,19 @@ use crate::tokens::answer_tokens;
 /// safer side.
 const CHARGE_RETRIES: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(400)];
 
-/// How long `sekisho serve` waits for the stream hook's tally of a stream
-/// that ended early. After that, the prompt alone is charged.
+/// How long `sekisho serve` waits, after a stream ends, for agentgateway to
+/// report its usage before charging an estimate.
 pub const TALLY_WAIT: Duration = Duration::from_secs(5);
+
+/// The measures that cost something when a request ends: all but the prompt
+/// count of the request-side call.
+const COSTED: [Measure; 5] = [
+    Measure::Input,
+    Measure::CacheRead,
+    Measure::CacheWrite,
+    Measure::Output,
+    Measure::Catalog,
+];
 
 #[derive(Clone)]
 pub struct Charger {
@@ -62,7 +77,8 @@ pub struct Charger {
     pub charge_secret_sha256: [u8; 32],
     /// What the stream hook relayed of each request, shared with it.
     pub tallies: Tallies,
-    /// How long to wait for a tally ([`TALLY_WAIT`] in `sekisho serve`).
+    /// How long to wait after a stream ends for agentgateway's report
+    /// ([`TALLY_WAIT`] in `sekisho serve`).
     pub tally_wait: Duration,
 }
 
@@ -75,17 +91,11 @@ impl RateLimitService for Charger {
         let request = request.into_inner();
         // agentgateway gives this call 10 s and then drops it, with whatever
         // it was waiting for. So the answer never waits for the database or
-        // a tally: spend is recorded on its own task, where a slow database,
-        // the retries or the tally wait can't cut a charge short and its
+        // a stream: each call is handled on its own task, where a slow
+        // database, the retries or a watch can't cut a charge short and its
         // errors are always logged.
-        let costs_something = request
-            .descriptors
-            .iter()
-            .any(|d| d.hits_addend.unwrap_or(u64::from(request.hits_addend)) != 0);
-        if costs_something {
-            let charger = self.clone();
-            tokio::spawn(async move { charger.charge(&request).await });
-        }
+        let charger = self.clone();
+        tokio::spawn(async move { charger.handle(&request).await });
         Ok(Response::new(RateLimitResponse {
             overall_code: Code::Ok as i32,
             ..Default::default()
@@ -93,7 +103,7 @@ impl RateLimitService for Charger {
     }
 }
 
-/// One finished request, as one call's descriptors report it.
+/// One call's report of a request.
 struct Report {
     key: CachedKey,
     env: EnvName,
@@ -109,21 +119,115 @@ impl Report {
     fn count(&self, measure: Measure) -> u64 {
         self.counts.get(&measure).copied().unwrap_or(0)
     }
+
+    /// The counts without the output, which is missing or not yet known.
+    fn usage(&self) -> Usage {
+        Usage {
+            input: self.count(Measure::Input),
+            cache_read: self.count(Measure::CacheRead),
+            cache_write: self.count(Measure::CacheWrite),
+            output: 0,
+        }
+    }
+
+    fn start(&self, usage: Usage) -> Start {
+        Start {
+            key: self.key.id.clone(),
+            env: self.env.clone(),
+            model: self.model.clone(),
+            usage,
+        }
+    }
 }
 
 impl Charger {
-    /// Charges one finished request to every budget its key's request counts
-    /// against. Problems are logged, never answered: the request has already
-    /// been served.
-    async fn charge(&self, request: &RateLimitRequest) {
+    /// Handles one call. Problems are logged, never answered: the request
+    /// has been served or is under way.
+    async fn handle(&self, request: &RateLimitRequest) {
         let Some(report) = self.report(request) else {
             return;
         };
-        let Some(cost) = self.cost(&report).await else {
+        let cost = if COSTED.iter().all(|&m| report.count(m) == 0) {
+            // The request-side call: only the prompt count.
+            let prompt = report.count(Measure::Prompt);
+            self.record_start(
+                &report,
+                Usage {
+                    input: prompt,
+                    ..Usage::default()
+                },
+            );
+            return;
+        } else if let Some(&output) = report.counts.get(&Measure::Output) {
+            if !report.request.is_empty() && !self.tallies.reported(&report.request) {
+                tracing::warn!(
+                    key = %report.key.id, model = report.model,
+                    "agentgateway reported a request already charged an estimate: not charged again"
+                );
+                return;
+            }
+            self.reported_cost(&report, output).await
+        } else {
+            // A response-side call without the output count: its counts
+            // replace the prompt count, and the stream's end decides.
+            let usage = report.usage();
+            if self.record_start(&report, usage) {
+                return;
+            }
+            tracing::warn!(
+                key = %report.key.id, model = report.model,
+                "no tally for a request without an output count: charging its prompt alone"
+            );
+            self.estimate(&report.key.id, &report.model, usage, None)
+                .await
+        };
+        if let Some(cost) = cost
+            && cost.0 > 0
+        {
+            self.charge_budgets(&report.key, &report.env, cost).await;
+        }
+    }
+
+    /// Records a request's start on its tally, and on the first record
+    /// watches the stream. `false` when there is no tally for it.
+    fn record_start(&self, report: &Report, usage: Usage) -> bool {
+        if report.request.is_empty() {
+            return false;
+        }
+        match self.tallies.start(&report.request, report.start(usage)) {
+            Recorded::First => {
+                let (charger, id) = (self.clone(), report.request.clone());
+                tokio::spawn(async move { charger.charge_unreported(&id).await });
+                true
+            }
+            Recorded::Again | Recorded::Estimated => true,
+            Recorded::Unknown => false,
+        }
+    }
+
+    /// Charges an estimate for a request whose stream ended with no report
+    /// from agentgateway.
+    async fn charge_unreported(&self, id: &str) {
+        let Some((start, tally)) = self.tallies.unreported(id, self.tally_wait, KEEP).await else {
+            return; // reported
+        };
+        let Some(key) = self.cache.key(&start.key) else {
+            tracing::warn!(key = %start.key, "spend not recorded: the key is no longer known");
             return;
         };
-        if cost.0 > 0 {
-            self.charge_budgets(&report.key, &report.env, cost).await;
+        if let Some(status) = tally.status
+            && !(200..300).contains(&status)
+        {
+            // A provider error isn't billed.
+            tracing::debug!(key = %key.id, model = start.model, status, "an error answer: nothing charged");
+            return;
+        }
+        if let Some(cost) = self
+            .estimate(&key.id, &start.model, start.usage, Some(tally))
+            .await
+            && cost.0 > 0
+        {
+            self.charge_budgets(&key, &start.env, cost).await;
         }
     }
 
@@ -178,71 +282,62 @@ impl Charger {
         })
     }
 
-    /// What the request costs, or `None` (logged where it matters) when
-    /// nothing is charged.
-    async fn cost(&self, report: &Report) -> Option<MicroUsd> {
-        let (key, model) = (&report.key.id, report.model.as_str());
-        let pricing = match ModelName::parse(model) {
-            Ok(name) => match retried(|| self.store.model_pricing(&name)).await {
-                Ok(pricing) => pricing,
-                Err(error) => {
-                    tracing::error!(%key, model, %error, "spend not recorded: reading the model's prices failed");
-                    return None;
-                }
-            },
-            Err(_) => None, // not a name Sekisho could have
+    /// The model's admin prices and provider. `Err` (logged) when the
+    /// database kept failing; `Ok(None)` for a model Sekisho doesn't have.
+    async fn pricing(&self, key: &EnvKeyId, model: &str) -> Result<Option<ModelPricing>, ()> {
+        let Ok(name) = ModelName::parse(model) else {
+            return Ok(None); // not a name Sekisho could have
         };
+        retried(|| self.store.model_pricing(&name))
+            .await
+            .map_err(|error| {
+                tracing::error!(%key, model, %error, "spend not recorded: reading the model's prices failed");
+            })
+    }
+
+    /// What a request agentgateway reported costs: the admin's prices, else
+    /// agentgateway's catalog cost.
+    async fn reported_cost(&self, report: &Report, output: u64) -> Option<MicroUsd> {
+        let (key, model) = (&report.key.id, report.model.as_str());
+        let pricing = self.pricing(key, model).await.ok()?;
         let admin = pricing
             .as_ref()
             .and_then(|p| Some(p.prices?.rates(p.format)));
-        let mut usage = Usage {
-            input: report.count(Measure::Input),
-            cache_read: report.count(Measure::CacheRead),
-            cache_write: report.count(Measure::CacheWrite),
-            output: 0,
+        let usage = Usage {
+            output,
+            ..report.usage()
         };
-
-        if let Some(&output) = report.counts.get(&Measure::Output) {
-            // The provider reported its usage: its counts win, the tally isn't needed.
-            if !report.request.is_empty() {
-                self.tallies.discard(&report.request);
-            }
-            usage.output = output;
-            return match (admin, report.counts.get(&Measure::Catalog)) {
-                (Some(rates), _) => Some(rates.cost(&usage)),
-                (None, Some(&catalog)) => match i64::try_from(catalog) {
-                    Ok(cost) => Some(MicroUsd(cost)),
-                    Err(_) => {
-                        tracing::error!(%key, model, catalog, "spend not recorded: cost too large");
-                        None
-                    }
-                },
-                (None, None) => {
-                    tracing::warn!(%key, model, "spend not recorded: no price for this model");
+        match (admin, report.counts.get(&Measure::Catalog)) {
+            (Some(rates), _) => Some(rates.cost(&usage)),
+            (None, Some(&catalog)) => match i64::try_from(catalog) {
+                Ok(cost) => Some(MicroUsd(cost)),
+                Err(_) => {
+                    tracing::error!(%key, model, catalog, "spend not recorded: cost too large");
                     None
                 }
-            };
-        }
-
-        // The stream ended before the provider reported its usage.
-        match self.tally(&report.request).await {
-            Some(Tally {
-                status: Some(status),
-                ..
-            }) if !(200..300).contains(&status) => {
-                // A provider error isn't billed.
-                tracing::debug!(%key, model, status, "an error answer ended early: nothing charged");
-                return None;
+            },
+            (None, None) => {
+                tracing::warn!(%key, model, "spend not recorded: no price for this model");
+                None
             }
-            Some(tally) => usage.output = answer_tokens(tally.answer_o200k, model),
-            None => tracing::warn!(
-                %key, model,
-                "no tally for a stream that ended early: charging its prompt alone"
-            ),
         }
-        let rates = admin.or_else(|| {
-            let p = pricing.as_ref()?;
-            catalog_rates(p.kind, p.format, model)
+    }
+
+    /// The estimate for a request without an output count: `usage` plus the
+    /// tallied answer, scaled for Claude, at the admin's prices or else
+    /// Sekisho's copy of agentgateway's catalog.
+    async fn estimate(
+        &self,
+        key: &EnvKeyId,
+        model: &str,
+        mut usage: Usage,
+        tally: Option<Tally>,
+    ) -> Option<MicroUsd> {
+        let pricing = self.pricing(key, model).await.ok()?;
+        usage.output = tally.map_or(0, |t| answer_tokens(t.answer_o200k, model));
+        let rates = pricing.as_ref().and_then(|p| match p.prices {
+            Some(prices) => Some(prices.rates(p.format)),
+            None => catalog_rates(p.kind, p.format, model),
         });
         let Some(rates) = rates else {
             tracing::warn!(%key, model, "spend not recorded: no price for this model");
@@ -251,22 +346,9 @@ impl Charger {
         let cost = rates.cost(&usage);
         tracing::info!(
             %key, model, input = usage.input, output = usage.output, micro_usd = cost.0,
-            "estimated a stream that ended before the provider reported its usage"
+            "estimated a request the provider's usage never arrived for"
         );
         Some(cost)
-    }
-
-    /// The stream hook's finished tally for `request`. One that doesn't
-    /// finish within the wait is dropped, so it can't be read later.
-    async fn tally(&self, request: &str) -> Option<Tally> {
-        if request.is_empty() {
-            return None;
-        }
-        let tally = self.tallies.wait(request, self.tally_wait).await;
-        if tally.is_none() {
-            self.tallies.discard(request);
-        }
-        tally
     }
 
     /// Adds `cost` to every budget `key`'s requests in `env` count against.

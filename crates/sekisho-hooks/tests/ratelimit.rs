@@ -35,10 +35,11 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    rig_waiting(Duration::from_secs(5)).await
+    rig_waiting(Duration::from_millis(300)).await
 }
 
-/// A rig whose charger waits `tally_wait` for a stream's tally. Its models:
+/// A rig whose charger waits `tally_wait`, after a stream ends, for
+/// agentgateway's report before it estimates. Its models:
 /// `claude-priced` (Anthropic, 3 / 15 USD per million tokens), `gpt-priced`
 /// (OpenAI, 3 / 15) and `claude-fable-5` (Anthropic, no admin price; 10 /
 /// 50 in the catalog).
@@ -194,6 +195,24 @@ fn each(
 ) -> RateLimitRequest {
     request.descriptors.iter_mut().for_each(change);
     request
+}
+
+/// agentgateway's request-side call: every costed measure 0, and the prompt
+/// count on the descriptor without a cost.
+fn start(key: &str, model: &str, request: &str, prompt: u64) -> RateLimitRequest {
+    req(
+        key,
+        model,
+        request,
+        &[
+            ("input", 0),
+            ("cache_read", 0),
+            ("cache_write", 0),
+            ("output", 0),
+            ("catalog", 0),
+            ("prompt", prompt),
+        ],
+    )
 }
 
 /// A tally as the stream hook leaves it: status and answer tokens, not yet
@@ -494,52 +513,52 @@ async fn an_unpriced_request_is_not_charged() {
     }
     // Ended early on a model with no price anywhere.
     let id = tally(&rig, 200, 10);
-    rig.tallies.finish(&id);
     rig.rls
-        .should_rate_limit(req(key, "not-a-sekisho-model", &id, &[("input", 1_000)]))
+        .should_rate_limit(start(key, "not-a-sekisho-model", &id, 1_000))
         .await
         .unwrap();
+    rig.tallies.finish(&id);
     assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
 }
 
+/// agentgateway reports only the start of a stream that ends early: Sekisho
+/// estimates it once the stream hook's tally ends and no report followed.
 #[tokio::test]
 async fn a_stream_that_ends_early_is_charged_an_estimate() {
     let mut rig = rig().await;
     let id = tally(&rig, 200, 40);
-    // No output count: the provider's usage never arrived.
     rig.rls
-        .should_rate_limit(req(
-            rig.key.as_str(),
-            "gpt-priced",
-            &id,
-            &[("input", 1_000)],
-        ))
+        .should_rate_limit(start(rig.key.as_str(), "gpt-priced", &id, 1_000))
         .await
         .unwrap();
-    // The stream hook finishes its tally a moment after agentgateway reports
-    // the request; the charge waits for it.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(spent(&rig).await, [MicroUsd(0); 3], "waits for the tally");
+    assert_eq!(
+        spent(&rig).await,
+        [MicroUsd(0); 3],
+        "waits for the stream's end"
+    );
     rig.tallies.finish(&id);
     // 1,000 × 3 + 40 × 15 USD per million.
     spent_becomes(&rig, MicroUsd(3_600)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
 }
 
+/// A stream that ends early on `model`, with a 1,000-token prompt and
+/// `answer_o200k` tokens tallied. Returns its request ID.
+async fn ended_early(rig: &mut Rig, model: &str, status: u16, answer_o200k: u64) -> String {
+    let id = tally(rig, status, answer_o200k);
+    rig.rls
+        .should_rate_limit(start(rig.key.as_str(), model, &id, 1_000))
+        .await
+        .unwrap();
+    rig.tallies.finish(&id);
+    id
+}
+
 #[tokio::test]
 async fn a_claude_estimate_scales_the_answer() {
     let mut rig = rig().await;
-    let id = tally(&rig, 200, 100);
-    rig.tallies.finish(&id);
-    rig.rls
-        .should_rate_limit(req(
-            rig.key.as_str(),
-            "claude-priced",
-            &id,
-            &[("input", 1_000)],
-        ))
-        .await
-        .unwrap();
+    ended_early(&mut rig, "claude-priced", 200, 100).await;
     // 1,000 × 3 + 130 × 15: a Claude model without a version counts 1.3
     // times o200k.
     spent_becomes(&rig, MicroUsd(4_950)).await;
@@ -548,17 +567,7 @@ async fn a_claude_estimate_scales_the_answer() {
 #[tokio::test]
 async fn an_estimate_without_an_admin_price_uses_the_catalog_copy() {
     let mut rig = rig().await;
-    let id = tally(&rig, 200, 10);
-    rig.tallies.finish(&id);
-    rig.rls
-        .should_rate_limit(req(
-            rig.key.as_str(),
-            "claude-fable-5",
-            &id,
-            &[("input", 1_000)],
-        ))
-        .await
-        .unwrap();
+    ended_early(&mut rig, "claude-fable-5", 200, 10).await;
     // 1,000 × 10 + 16 × 50 at the catalog's prices: Claude 5 counts 1.6
     // times o200k.
     spent_becomes(&rig, MicroUsd(10_800)).await;
@@ -567,17 +576,7 @@ async fn an_estimate_without_an_admin_price_uses_the_catalog_copy() {
 #[tokio::test]
 async fn a_stream_cut_before_any_text_is_charged_its_prompt() {
     let mut rig = rig().await;
-    let id = tally(&rig, 200, 0);
-    rig.tallies.finish(&id);
-    rig.rls
-        .should_rate_limit(req(
-            rig.key.as_str(),
-            "gpt-priced",
-            &id,
-            &[("input", 1_000)],
-        ))
-        .await
-        .unwrap();
+    ended_early(&mut rig, "gpt-priced", 200, 0).await;
     spent_becomes(&rig, MicroUsd(3_000)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(3_000); 3]);
 }
@@ -586,55 +585,55 @@ async fn a_stream_cut_before_any_text_is_charged_its_prompt() {
 async fn an_error_answer_is_not_charged() {
     let mut rig = rig().await;
     for status in [429, 500] {
-        let id = tally(&rig, status, 5);
-        rig.tallies.finish(&id);
-        rig.rls
-            .should_rate_limit(req(
-                rig.key.as_str(),
-                "gpt-priced",
-                &id,
-                &[("input", 1_000)],
-            ))
-            .await
-            .unwrap();
+        ended_early(&mut rig, "gpt-priced", status, 5).await;
     }
     assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
 }
 
+/// A response-side call without the output count for a request whose tally
+/// isn't here (another Sekisho's stream hook, or none) charges the prompt at
+/// once: there is no stream to wait for.
 #[tokio::test]
-async fn a_missing_tally_charges_the_prompt_after_the_wait() {
-    let mut rig = rig_waiting(Duration::from_millis(200)).await;
+async fn a_missing_tally_charges_the_prompt() {
+    let mut rig = rig_waiting(Duration::from_secs(5)).await;
     let key = rig.key.as_str();
-    // A stream hook that never finishes its tally: the prompt, after the wait.
-    let stuck = tally(&rig, 200, 40);
-    let start = tokio::time::Instant::now();
-    rig.rls
-        .should_rate_limit(req(key, "gpt-priced", &stuck, &[("input", 1_000)]))
-        .await
-        .unwrap();
-    spent_becomes(&rig, MicroUsd(3_000)).await;
-    assert!(start.elapsed() >= Duration::from_millis(200));
-    // No tally at all (another Sekisho's stream hook, or none): the prompt.
+    let begun = tokio::time::Instant::now();
     for request in ["0123456789abcdef0123456789abcdef", ""] {
         rig.rls
             .should_rate_limit(req(key, "gpt-priced", request, &[("input", 1_000)]))
             .await
             .unwrap();
     }
-    spent_becomes(&rig, MicroUsd(9_000)).await;
-    // The stuck tally was dropped, so it is never charged again.
-    rig.tallies.finish(&stuck);
-    assert_eq!(rig.tallies.wait(&stuck, Duration::ZERO).await, None);
-    assert_eq!(settled(&rig).await, [MicroUsd(9_000); 3]);
+    spent_becomes(&rig, MicroUsd(6_000)).await;
+    assert!(
+        begun.elapsed() < Duration::from_secs(2),
+        "not after the wait"
+    );
+    // agentgateway's request-side call for such a request charges nothing.
+    rig.rls
+        .should_rate_limit(start(
+            key,
+            "gpt-priced",
+            "0123456789abcdef0123456789abcdef",
+            1_000,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(settled(&rig).await, [MicroUsd(6_000); 3]);
 }
 
 #[tokio::test]
 async fn a_complete_request_drops_its_tally() {
     let mut rig = rig().await;
+    let key = rig.key.as_str();
     let id = tally(&rig, 200, 999);
     rig.rls
+        .should_rate_limit(start(key, "gpt-priced", &id, 1_000))
+        .await
+        .unwrap();
+    rig.rls
         .should_rate_limit(req(
-            rig.key.as_str(),
+            key,
             "gpt-priced",
             &id,
             &[("input", 1_000), ("output", 10)],
@@ -643,7 +642,52 @@ async fn a_complete_request_drops_its_tally() {
         .unwrap();
     // The provider's counts, not the tally: 1,000 × 3 + 10 × 15.
     spent_becomes(&rig, MicroUsd(3_150)).await;
-    rig.tallies.finish(&id);
+    rig.tallies.finish(&id); // the stream ends after its report
     assert_eq!(rig.tallies.wait(&id, Duration::ZERO).await, None);
     assert_eq!(settled(&rig).await, [MicroUsd(3_150); 3]);
+}
+
+#[tokio::test]
+async fn a_late_report_is_not_charged_twice() {
+    let mut rig = rig().await;
+    let id = ended_early(&mut rig, "gpt-priced", 200, 40).await;
+    spent_becomes(&rig, MicroUsd(3_600)).await;
+    // agentgateway's report arrives after Sekisho estimated the request.
+    rig.rls
+        .should_rate_limit(req(
+            rig.key.as_str(),
+            "gpt-priced",
+            &id,
+            &[("input", 1_000), ("output", 40)],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
+}
+
+#[tokio::test]
+async fn a_report_without_output_is_estimated_once_the_stream_ends() {
+    let mut rig = rig().await;
+    let key = rig.key.as_str();
+    let id = tally(&rig, 200, 40);
+    rig.rls
+        .should_rate_limit(start(key, "gpt-priced", &id, 900))
+        .await
+        .unwrap();
+    // A response-side call without the output count: agentgateway's input
+    // count replaces the prompt count.
+    rig.rls
+        .should_rate_limit(req(key, "gpt-priced", &id, &[("input", 1_000)]))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        spent(&rig).await,
+        [MicroUsd(0); 3],
+        "waits for the stream's end"
+    );
+    rig.tallies.finish(&id);
+    // 1,000 × 3 + 40 × 15, once.
+    spent_becomes(&rig, MicroUsd(3_600)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
 }

@@ -153,21 +153,24 @@ fn hook_policies(
 
 /// One descriptor per [`Measure`], all with the same entries. agentgateway
 /// evaluates the entries when the request starts and each cost when it ends;
-/// a cost it can't evaluate (no output count after a stream ended early)
-/// leaves its descriptor out.
+/// a cost it can't evaluate leaves its descriptor out. The descriptor
+/// without a cost carries the prompt count on the request-side call.
 fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
     Measure::ALL
         .iter()
         .map(|measure| {
             let cost = match measure {
-                Measure::Input => "llm.inputTokens",
-                Measure::CacheRead => "llm.cachedInputTokens",
-                Measure::CacheWrite => "llm.cacheCreationInputTokens",
-                Measure::Output => "llm.outputTokens",
+                Measure::Input => Some("llm.inputTokens"),
+                Measure::CacheRead => Some("llm.cachedInputTokens"),
+                Measure::CacheWrite => Some("llm.cacheCreationInputTokens"),
+                Measure::Output => Some("llm.outputTokens"),
                 // The catalog price of the finished request, in micro-USD.
-                Measure::Catalog => "int(llm.cost.total * 1000000.0 + 0.5)",
+                Measure::Catalog => Some("int(llm.cost.total * 1000000.0 + 0.5)"),
+                // No cost: agentgateway sends its prompt count when the
+                // request starts.
+                Measure::Prompt => None,
             };
-            json!({
+            let mut descriptor = json!({
                 "type": "tokens",
                 "entries": [
                     { "key": "env", "value": cel_string(env) },
@@ -181,8 +184,11 @@ fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
                     { "key": "request", "value": "default(extproc.sekisho_request, \"\")" },
                     { "key": "measure", "value": cel_string(measure.as_str()) },
                 ],
-                "cost": cost,
-            })
+            });
+            if let Some(cost) = cost {
+                descriptor["cost"] = json!(cost);
+            }
+            descriptor
         })
         .collect()
 }
