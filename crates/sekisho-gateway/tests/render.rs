@@ -1,6 +1,7 @@
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
+use sekisho_core::pricing::ModelPrices;
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions, render, usd,
     validate,
@@ -101,9 +102,14 @@ mod fixtures {
         PricedModel {
             provider: ProviderName::parse(provider).unwrap(),
             kind,
+            format: kind.formats()[0],
             model: ModelName::parse(model).unwrap(),
-            input: MicroUsd(input),
-            output: MicroUsd(output),
+            prices: ModelPrices {
+                input: MicroUsd(input),
+                output: MicroUsd(output),
+                cache_read: None,
+                cache_write: None,
+            },
         }
     }
 
@@ -237,13 +243,17 @@ mod fixtures {
                     3_000_000,
                     15_000_000,
                 ),
-                priced(
-                    "azure",
-                    ProviderKind::Azure,
-                    "gpt-deployment",
-                    1_250_000,
-                    10_000_000,
-                ),
+                // The Azure route serves the OpenAI format.
+                PricedModel {
+                    format: ApiFormat::OpenAi,
+                    ..priced(
+                        "azure",
+                        ProviderKind::Azure,
+                        "gpt-deployment",
+                        1_250_000,
+                        10_000_000,
+                    )
+                },
             ],
             hooks: hooks(),
         }
@@ -473,11 +483,11 @@ fn every_kind_renders_sorted_and_valid() {
     );
     assert_eq!(
         catalog["vllm"]["models"]["qwen3"]["rates"],
-        serde_json::json!({ "input": "0.1", "output": "0.4" })
+        serde_json::json!({ "input": "0.1", "output": "0.4", "cacheRead": "0.05", "cacheWrite": "0.1" })
     );
     assert_eq!(
         catalog["openai"]["models"]["gpt-5"]["rates"],
-        serde_json::json!({ "input": "1.25", "output": "10" })
+        serde_json::json!({ "input": "1.25", "output": "10", "cacheRead": "0.625", "cacheWrite": "1.25" })
     );
 }
 
@@ -499,7 +509,10 @@ fn spend_is_charged_to_the_key_extauthz_verified() {
         serde_json::json!([
             { "key": "env", "value": "\"data-team\"" },
             { "key": "key", "value": "extauthz.key" },
-            { "key": "secret", "value": "\"test-charge-secret\"" }
+            { "key": "secret", "value": "\"test-charge-secret\"" },
+            { "key": "model", "value": "llm.requestModel" },
+            { "key": "request", "value": "default(extproc.sekisho_request, \"\")" },
+            { "key": "measure", "value": "\"input\"" }
         ])
     );
 }
@@ -570,12 +583,18 @@ fn bare_route_skips_the_hooks() {
     for hook in ["extAuthz", "remoteRateLimit", "extProc"] {
         assert!(bare[0]["policies"].get(hook).is_none(), "{hook}");
     }
-    // The first environment's openai backend, unchanged.
+    // The first environment's openai backend, without prompt counting, so the
+    // latency test measures it together with the hooks.
     let first_openai = routes(&doc)
         .iter()
         .find(|r| r["name"] == "cloud-team-openai")
         .unwrap();
-    assert_eq!(bare[0]["backends"], first_openai["backends"]);
+    let mut counted = first_openai["backends"].clone();
+    assert_eq!(
+        counted[0]["ai"].as_object_mut().unwrap().remove("tokenize"),
+        Some(serde_json::json!(true))
+    );
+    assert_eq!(bare[0]["backends"], counted);
     assert!(!render(&fixtures::every_kind(), &RenderOptions::default()).contains("/bare/"));
 }
 
@@ -729,11 +748,11 @@ fn bedrock_and_azure_render_their_provider_blocks() {
     let catalog = &doc["config"]["modelCatalog"][0]["inline"]["providers"];
     assert_eq!(
         catalog["aws.bedrock"]["models"]["us.anthropic.claude-sonnet-4-6-v1:0"]["rates"],
-        json!({ "input": "3", "output": "15" })
+        json!({ "input": "3", "output": "15", "cacheRead": "0.3", "cacheWrite": "3.75" })
     );
     assert_eq!(
         catalog["azure"]["models"]["gpt-deployment"]["rates"],
-        json!({ "input": "1.25", "output": "10" })
+        json!({ "input": "1.25", "output": "10", "cacheRead": "0.625", "cacheWrite": "1.25" })
     );
 
     let mut foundry = fixtures::every_kind();
@@ -977,5 +996,130 @@ fn routes_follow_the_provider_format() {
         json!({ "azure": {
             "resourceName": "my-foundry", "resourceType": "foundry", "projectName": "team-project"
         } })
+    );
+}
+
+/// One descriptor per measure, each costed when the request ends: a cost
+/// agentgateway can't evaluate (no output count after a stream ended early)
+/// skips its descriptor, which is how Sekisho knows to estimate.
+#[test]
+fn descriptors_report_each_measure() {
+    let y = render(&fixtures::basic(), &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    let descriptors = routes(&doc)[0]["policies"]["remoteRateLimit"]["descriptors"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let measure = |d: &Value| d["entries"][5]["value"].as_str().unwrap().to_owned();
+    assert_eq!(
+        descriptors.iter().map(measure).collect::<Vec<_>>(),
+        [
+            "\"input\"",
+            "\"cache_read\"",
+            "\"cache_write\"",
+            "\"output\"",
+            "\"catalog\""
+        ]
+    );
+    let costs: Vec<&str> = descriptors
+        .iter()
+        .map(|d| d["cost"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        costs,
+        [
+            "llm.inputTokens",
+            "llm.cachedInputTokens",
+            "llm.cacheCreationInputTokens",
+            "llm.outputTokens",
+            "int(llm.cost.total * 1000000.0 + 0.5)"
+        ]
+    );
+    for d in &descriptors {
+        assert_eq!(d["type"], "tokens");
+        let keys: Vec<&str> = d["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            keys,
+            ["env", "key", "secret", "model", "request", "measure"]
+        );
+        assert_eq!(
+            d["entries"][4]["value"],
+            "default(extproc.sekisho_request, \"\")"
+        );
+    }
+}
+
+/// agentgateway counts every prompt for the estimates; the bare route
+/// doesn't, so the latency test measures prompt counting with the hooks.
+#[test]
+fn environment_backends_tokenize() {
+    let y = render(
+        &fixtures::every_kind(),
+        &RenderOptions {
+            bare_route: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    for route in routes(&doc) {
+        let tokenize = route["backends"][0]["ai"].get("tokenize").cloned();
+        if route["name"] == "bare-openai" {
+            assert_eq!(tokenize, None);
+        } else {
+            assert_eq!(tokenize, Some(json!(true)), "{}", route["name"]);
+        }
+    }
+}
+
+#[test]
+fn inline_catalog_carries_cache_rates() {
+    let mut snapshot = fixtures::basic();
+    snapshot.priced_models = vec![
+        fixtures::priced(
+            "anthropic",
+            ProviderKind::Anthropic,
+            "claude-sonnet-5-5",
+            3_000_000,
+            15_000_000,
+        ),
+        PricedModel {
+            prices: ModelPrices {
+                cache_read: Some(MicroUsd(100_000)),
+                ..fixtures::priced(
+                    "openai",
+                    ProviderKind::OpenAi,
+                    "gpt-5",
+                    3_000_000,
+                    15_000_000,
+                )
+                .prices
+            },
+            ..fixtures::priced(
+                "openai",
+                ProviderKind::OpenAi,
+                "gpt-5",
+                3_000_000,
+                15_000_000,
+            )
+        },
+    ];
+    let y = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    let catalog = &doc["config"]["modelCatalog"][0]["inline"]["providers"];
+    assert_eq!(
+        catalog["anthropic"]["models"]["claude-sonnet-5-5"]["rates"],
+        json!({ "input": "3", "output": "15", "cacheRead": "0.3", "cacheWrite": "3.75" })
+    );
+    assert_eq!(
+        catalog["openai"]["models"]["gpt-5"]["rates"],
+        json!({ "input": "3", "output": "15", "cacheRead": "0.1", "cacheWrite": "3" })
     );
 }

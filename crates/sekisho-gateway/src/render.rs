@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
 use sekisho_core::money::MicroUsd;
+use sekisho_core::pricing::Measure;
 use sekisho_store::{ProviderCredential, ProviderOptions};
 use serde_json::{Map, Value, json};
 
@@ -49,7 +50,7 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
                 "name": format!("{}-{segment}", env.env),
                 "matches": [route_match(&format!("/env/{}/{segment}", env.env))],
                 "policies": policies,
-                "backends": [backend(route)],
+                "backends": [backend(route, true)],
             }));
         }
     }
@@ -62,7 +63,9 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
             "name": "bare-openai",
             "matches": [route_match("/bare/openai")],
             "policies": forwarding_policies(),
-            "backends": [backend(route)],
+            // No prompt counting either, so the latency test that compares
+            // this route measures it together with the hooks.
+            "backends": [backend(route, false)],
         }));
     }
 
@@ -131,18 +134,7 @@ fn hook_policies(
             "host": hooks.grpc,
             "domain": RATE_LIMIT_DOMAIN,
             "failureMode": if options.fail_open_ratelimit { "failOpen" } else { "failClosed" },
-            "descriptors": [{
-                "type": "tokens",
-                "entries": [
-                    { "key": "env", "value": cel_string(env) },
-                    // Not the Authorization header: agentgateway evaluates these
-                    // after backendAuth has put the provider key there.
-                    { "key": "key", "value": "extauthz.key" },
-                    { "key": "secret", "value": cel_string(&hooks.charge_secret) },
-                ],
-                // The catalog price of the finished request, in micro-USD.
-                "cost": "int(llm.cost.total * 1000000.0)",
-            }],
+            "descriptors": spend_descriptors(env, &hooks.charge_secret),
         }),
     );
     policies.insert(
@@ -159,7 +151,45 @@ fn hook_policies(
     policies
 }
 
-fn backend(route: &ModelRoute) -> Value {
+/// One descriptor per [`Measure`], all with the same entries. agentgateway
+/// evaluates the entries when the request starts and each cost when it ends;
+/// a cost it can't evaluate (no output count after a stream ended early)
+/// leaves its descriptor out.
+fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
+    Measure::ALL
+        .iter()
+        .map(|measure| {
+            let cost = match measure {
+                Measure::Input => "llm.inputTokens",
+                Measure::CacheRead => "llm.cachedInputTokens",
+                Measure::CacheWrite => "llm.cacheCreationInputTokens",
+                Measure::Output => "llm.outputTokens",
+                // The catalog price of the finished request, in micro-USD.
+                Measure::Catalog => "int(llm.cost.total * 1000000.0 + 0.5)",
+            };
+            json!({
+                "type": "tokens",
+                "entries": [
+                    { "key": "env", "value": cel_string(env) },
+                    // Not the Authorization header: agentgateway evaluates these
+                    // after backendAuth has put the provider key there.
+                    { "key": "key", "value": "extauthz.key" },
+                    { "key": "secret", "value": cel_string(charge_secret) },
+                    { "key": "model", "value": "llm.requestModel" },
+                    // The ID Sekisho's stream hook gave the request, so the
+                    // charge can find what the hook counted.
+                    { "key": "request", "value": "default(extproc.sekisho_request, \"\")" },
+                    { "key": "measure", "value": cel_string(measure.as_str()) },
+                ],
+                "cost": cost,
+            })
+        })
+        .collect()
+}
+
+/// `tokenize` has agentgateway count each prompt before sending it, for
+/// estimating streams that end early.
+fn backend(route: &ModelRoute, tokenize: bool) -> Value {
     let provider = match route.kind {
         ProviderKind::Anthropic => json!({ "anthropic": {} }),
         ProviderKind::OpenAi => json!({ "openAI": {} }),
@@ -183,6 +213,9 @@ fn backend(route: &ModelRoute) -> Value {
     let mut ai = Map::new();
     ai.insert("name".into(), json!(route.provider.as_str()));
     ai.insert("provider".into(), provider);
+    if tokenize {
+        ai.insert("tokenize".into(), json!(true));
+    }
     let mut policies = Map::new();
     if let Some(url) = &route.base_url {
         let upstream = Upstream::parse(url);
@@ -374,9 +407,15 @@ fn catalog(priced: &[PricedModel]) -> Value {
             ProviderKind::Azure => "azure".to_owned(),
             ProviderKind::OpenAiCompatible => m.provider.as_str().to_owned(),
         };
+        let rates = m.prices.rates(m.format);
         providers.entry(key).or_default().insert(
             m.model.as_str(),
-            json!({ "rates": { "input": usd(m.input), "output": usd(m.output) } }),
+            json!({ "rates": {
+                "input": usd(rates.input),
+                "output": usd(rates.output),
+                "cacheRead": usd(rates.cache_read),
+                "cacheWrite": usd(rates.cache_write),
+            } }),
         );
     }
     let providers: Map<String, Value> = providers

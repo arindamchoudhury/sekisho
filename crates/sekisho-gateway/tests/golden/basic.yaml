@@ -8,6 +8,8 @@ config:
               rates:
                 input: '3'
                 output: '15'
+                cacheRead: '1.5'
+                cacheWrite: '3'
 binds:
 - port: 3000
   listeners:
@@ -52,7 +54,73 @@ binds:
               value: extauthz.key
             - key: secret
               value: '"test-charge-secret"'
-            cost: int(llm.cost.total * 1000000.0)
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"input"'
+            cost: llm.inputTokens
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: key
+              value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"cache_read"'
+            cost: llm.cachedInputTokens
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: key
+              value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"cache_write"'
+            cost: llm.cacheCreationInputTokens
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: key
+              value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"output"'
+            cost: llm.outputTokens
+          - type: tokens
+            entries:
+            - key: env
+              value: '"data-team"'
+            - key: key
+              value: extauthz.key
+            - key: secret
+              value: '"test-charge-secret"'
+            - key: model
+              value: llm.requestModel
+            - key: request
+              value: default(extproc.sekisho_request, "")
+            - key: measure
+              value: '"catalog"'
+            cost: int(llm.cost.total * 1000000.0 + 0.5)
         extProc:
           host: sekisho:9081
           failureMode: failClosed
@@ -67,6 +135,7 @@ binds:
               providerOverride: mock
               formats:
               - type: completions
+          tokenize: true
           hostOverride: mock:8000
           pathPrefix: /v1
         policies:

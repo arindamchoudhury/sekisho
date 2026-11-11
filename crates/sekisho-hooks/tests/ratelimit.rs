@@ -357,3 +357,29 @@ async fn store_failure_still_answers_ok() {
         .into_inner();
     assert_eq!(resp.overall_code, Code::Ok as i32);
 }
+
+/// From plan 1c's Task 3 the gateway reports each measure as its own
+/// descriptor; until Sekisho prices the token counts (Task 5), only the
+/// catalog cost is charged, as before.
+#[tokio::test]
+async fn only_the_catalog_measure_is_charged() {
+    let mut rig = rig().await;
+    let measured = |measure: &str, cost: u64| {
+        let mut d = req("data-team", rig.key.as_str(), cost)
+            .descriptors
+            .remove(0);
+        d.entries.push(Entry {
+            key: "measure".into(),
+            value: measure.into(),
+        });
+        d
+    };
+    let request = RateLimitRequest {
+        domain: "sekisho".into(),
+        descriptors: vec![measured("input", 1_000), measured("catalog", 4_500)],
+        hits_addend: 0,
+    };
+    rig.rls.should_rate_limit(request).await.unwrap();
+    spent_becomes(&rig, MicroUsd(4_500)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(4_500); 3]);
+}

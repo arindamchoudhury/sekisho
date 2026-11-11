@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use sekisho_core::formats::{ApiFormat, ProviderKind};
-use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
+use sekisho_core::pricing::ModelPrices;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{Provider, ProviderCredential, ProviderOptions, Store, StoreError};
 
@@ -69,14 +69,15 @@ pub struct EnvRoutes {
     pub routes: Vec<ModelRoute>,
 }
 
-/// A model with admin-set prices, in micro-USD per 1,000,000 tokens.
+/// A model with admin-set prices, in micro-USD per 1,000,000 tokens, and the
+/// API format its provider serves (which sets the default cache prices).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PricedModel {
     pub provider: ProviderName,
     pub kind: ProviderKind,
+    pub format: ApiFormat,
     pub model: ModelName,
-    pub input: MicroUsd,
-    pub output: MicroUsd,
+    pub prices: ModelPrices,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,9 +169,10 @@ pub async fn build_snapshot(
             Some(PricedModel {
                 provider: m.provider.clone(),
                 kind: m.provider_kind,
+                // A provider deleted since the list was read leaves its model out.
+                format: provider_by_name.get(m.provider.as_str())?.format,
                 model: m.name.clone(),
-                input: m.input_price?,
-                output: m.output_price?,
+                prices: m.prices()?,
             })
         })
         .collect();

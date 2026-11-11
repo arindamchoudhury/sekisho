@@ -5,6 +5,7 @@ use std::time::Duration;
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
+use sekisho_core::pricing::ModelPrices;
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
     build_snapshot, render, validate,
@@ -132,23 +133,38 @@ async fn snapshot_reflects_the_store() {
             PricedModel {
                 provider: provider("anthropic"),
                 kind: ProviderKind::Anthropic,
+                format: ApiFormat::Anthropic,
                 model: model("claude-sonnet-5-5"),
-                input: MicroUsd(3_000_000),
-                output: MicroUsd(15_000_000),
+                prices: ModelPrices {
+                    input: MicroUsd(3_000_000),
+                    output: MicroUsd(15_000_000),
+                    cache_read: None,
+                    cache_write: None,
+                },
             },
             PricedModel {
                 provider: provider("mock"),
                 kind: ProviderKind::OpenAiCompatible,
+                format: ApiFormat::OpenAi,
                 model: model("mock-model"),
-                input: MicroUsd(3_000_000),
-                output: MicroUsd(15_000_000),
+                prices: ModelPrices {
+                    input: MicroUsd(3_000_000),
+                    output: MicroUsd(15_000_000),
+                    cache_read: None,
+                    cache_write: None,
+                },
             },
             PricedModel {
                 provider: provider("mock"),
                 kind: ProviderKind::OpenAiCompatible,
+                format: ApiFormat::OpenAi,
                 model: model("unused-model"),
-                input: MicroUsd(1),
-                output: MicroUsd(2),
+                prices: ModelPrices {
+                    input: MicroUsd(1),
+                    output: MicroUsd(2),
+                    cache_read: None,
+                    cache_write: None,
+                },
             },
         ],
         hooks: hooks(),

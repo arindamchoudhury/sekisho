@@ -12,6 +12,7 @@ use std::time::Duration;
 use sekisho_core::keys::{EnvKeyId, verify_secret};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::EnvName;
+use sekisho_core::pricing::Measure;
 use sekisho_proto::ratelimit::rate_limit_response::Code;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitService;
 use sekisho_proto::ratelimit::{RateLimitDescriptor, RateLimitRequest, RateLimitResponse};
@@ -75,6 +76,16 @@ impl Charger {
         let cost = descriptor.hits_addend.unwrap_or(u64::from(request_hits));
         if cost == 0 {
             return; // the pre-check before the request
+        }
+        // The gateway reports each measure as its own descriptor (plan 1c);
+        // only the catalog cost is in micro-USD, the rest are token counts.
+        let measure = descriptor
+            .entries
+            .iter()
+            .find(|e| e.key == "measure")
+            .map(|e| e.value.as_str());
+        if measure.is_some_and(|m| m != Measure::Catalog.as_str()) {
+            return;
         }
         let Ok(cost) = i64::try_from(cost) else {
             tracing::error!(cost, "spend not recorded: cost too large");
