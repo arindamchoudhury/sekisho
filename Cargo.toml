@@ -36,6 +36,8 @@ sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "r
 tempfile = "3.27.0"
 testcontainers = "0.28.0"
 thiserror = "2.0.21"
+# agentgateway v1.7.0's tokenizer, for counting answers (plan 1c).
+tiktoken = { version = "4.1.2", default-features = false, features = ["vocab-o200k_base"] }
 time = "0.3.55"
 tokio = "1.54.1"
 tokio-stream = "0.1.19"

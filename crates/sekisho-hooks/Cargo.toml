@@ -13,6 +13,7 @@ sekisho-core = { workspace = true }
 sekisho-proto = { workspace = true }
 sekisho-store = { workspace = true }
 serde_json = { workspace = true }
+tiktoken = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
