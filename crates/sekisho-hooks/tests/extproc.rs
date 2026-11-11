@@ -4,9 +4,10 @@ use std::time::Duration;
 use prost_types::value::Kind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
+use sekisho_core::pricing::Usage;
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
-use sekisho_hooks::tally::{Tallies, Tally};
+use sekisho_hooks::tally::{ProviderUsage, Tallies, Tally};
 use sekisho_hooks::tokens::count_text;
 use sekisho_proto::common::HeaderValue;
 use sekisho_proto::ext_proc::body_mutation::Mutation;
@@ -411,6 +412,7 @@ async fn answer_text_is_tallied_when_the_stream_ends() {
         Some(Tally {
             status: Some(200),
             answer_o200k: count_text("t0 ") + count_text("t1 "),
+            ..Tally::default()
         })
     );
 }
@@ -436,7 +438,40 @@ async fn a_revoked_stream_is_tallied_too() {
         Some(Tally {
             status: Some(200),
             answer_o200k: count_text("relayed"),
+            ..Tally::default()
         })
     );
     drop(tx);
+}
+
+#[tokio::test]
+async fn the_providers_counts_are_tallied() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let id = request_id(&next(&mut out).await.unwrap());
+    send_response_status(&tx, "200").await;
+    next(&mut out).await.unwrap();
+    let usage = br#"data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":2}}
+
+"#;
+    for chunk in [&openai_chunk("t0 ")[..], usage] {
+        send_body_chunk(&tx, chunk).await;
+        next(&mut out).await.unwrap();
+    }
+    drop(tx);
+    assert_eq!(
+        rig.tallies.wait(&id, Duration::from_secs(1)).await,
+        Some(Tally {
+            status: Some(200),
+            answer_o200k: count_text("t0 "),
+            usage: ProviderUsage {
+                prompt: Some(Usage {
+                    input: 1000,
+                    ..Usage::default()
+                }),
+                output: Some(2),
+            },
+        })
+    );
 }

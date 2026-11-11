@@ -79,3 +79,4 @@ D77	A model without an admin price keeps agentgateway's catalog cost; Sekisho ke
 D78	The rate-limit service answers at once and records spend on a task of its own (our call)	task of its own	design plan1c
 D79	Each estimated charge is logged; a request with no price anywhere is logged as a warning (our call)	logged as a warning	design plan1c
 D80	A stream agentgateway never reports is charged its estimate by the rate-limit service once the stream hook's tally ends; a later report is refused (our call)	never reports	design plan1c
+D81	A stream that ended before any answer reached the client (agentgateway's own error) is charged nothing (our call)	before any answer reached the client	design plan1c

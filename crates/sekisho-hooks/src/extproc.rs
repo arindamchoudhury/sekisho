@@ -117,7 +117,13 @@ async fn guard(
                     tallies.set_status(&t.id, status);
                 }
             }
-            (Message::ResponseBody(body), Some(t)) => tallies.add(&t.id, text.push(&body.body)),
+            (Message::ResponseBody(body), Some(t)) => {
+                let before = text.usage();
+                tallies.add(&t.id, text.push(&body.body));
+                if text.usage() != before {
+                    tallies.set_usage(&t.id, text.usage());
+                }
+            }
             _ => {}
         }
         let mut response = answer(message);

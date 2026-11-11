@@ -5,10 +5,11 @@ use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
+use sekisho_core::pricing::Usage;
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::ratelimit::Charger;
-use sekisho_hooks::tally::Tallies;
+use sekisho_hooks::tally::{ProviderUsage, Tallies};
 use sekisho_proto::ratelimit::RateLimitDescriptor;
 use sekisho_proto::ratelimit::RateLimitRequest;
 use sekisho_proto::ratelimit::rate_limit_descriptor::Entry;
@@ -247,9 +248,11 @@ async fn spent_becomes(rig: &Rig, want: MicroUsd) {
     }
 }
 
-/// The spend once a charge that should change nothing has had time to run.
+/// The spend once a charge that should change nothing has had time to run:
+/// well past the rig's 300 ms grace after a stream ends, so an estimate the
+/// code wrongly charges is seen.
 async fn settled(rig: &Rig) -> Vec<MicroUsd> {
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
     spent(rig).await
 }
 
@@ -690,4 +693,65 @@ async fn a_report_without_output_is_estimated_once_the_stream_ends() {
     // 1,000 × 3 + 40 × 15, once.
     spent_becomes(&rig, MicroUsd(3_600)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
+}
+
+/// agentgateway answers with its own error when it can't reach the provider,
+/// and ext_proc never sees that answer: no status, nothing reached the
+/// client, and the provider billed nothing.
+#[tokio::test]
+async fn an_answer_that_never_started_is_not_charged() {
+    let mut rig = rig().await;
+    let id = rig.tallies.open(); // no answer headers
+    rig.rls
+        .should_rate_limit(start(rig.key.as_str(), "gpt-priced", &id, 1_000))
+        .await
+        .unwrap();
+    rig.tallies.finish(&id);
+    assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
+}
+
+/// The provider's own usage events in the stream win over agentgateway's
+/// prompt count: cached prompts are priced as cached.
+#[tokio::test]
+async fn an_estimate_uses_the_counts_the_provider_streamed() {
+    let mut rig = rig().await;
+    let key = rig.key.as_str();
+    let prompt = Some(Usage {
+        input: 100_000,
+        cache_read: 95_000,
+        cache_write: 0,
+        output: 0,
+    });
+    // Cut before the end: the prompt's counts, and the tallied answer.
+    let id = tally(&rig, 200, 40);
+    rig.tallies.set_usage(
+        &id,
+        ProviderUsage {
+            prompt,
+            output: None,
+        },
+    );
+    rig.rls
+        .should_rate_limit(start(key, "claude-priced", &id, 100_000))
+        .await
+        .unwrap();
+    rig.tallies.finish(&id);
+    // 5,000 × 3 + 95,000 × 0.3 + 52 × 15 (40 tallied, ×1.3 for Claude).
+    spent_becomes(&rig, MicroUsd(44_280)).await;
+    // The provider's final count got through: it replaces the tally.
+    let id = tally(&rig, 200, 40);
+    rig.tallies.set_usage(
+        &id,
+        ProviderUsage {
+            prompt,
+            output: Some(60),
+        },
+    );
+    rig.rls
+        .should_rate_limit(start(key, "claude-priced", &id, 100_000))
+        .await
+        .unwrap();
+    rig.tallies.finish(&id);
+    // + 5,000 × 3 + 95,000 × 0.3 + 60 × 15.
+    spent_becomes(&rig, MicroUsd(44_280 + 44_400)).await;
 }

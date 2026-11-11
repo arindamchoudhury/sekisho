@@ -57,7 +57,7 @@ field on purpose to prove the check bites.
 | `SESSION_KEY` | Must be set, or agentgateway tries to write a generated key into its config file |
 | Docker DNS | Keeps a restarted upstream's old IP (503) until agentgateway restarts (#2810) |
 | `backendAuth.jwtSign` | Fixed claims only. Per-user tokens need token exchange to Sekisho |
-| Overhead | Hooks add about 1.3 ms per request; with `ai.tokenize` on, hooks and prompt counting together add about 2.5 ms (medians 8.7–9.0 ms without, 11.4 ms with, in Docker Desktop) |
+| Overhead | Hooks add about 1.3 ms per request; with `ai.tokenize` on, hooks and prompt counting together add about 2.5–3 ms (medians 8.7–12.0 ms without, 11.4–15.0 ms with, over four runs in Docker Desktop) |
 
 ## Where to look upstream (at the pinned tag)
 

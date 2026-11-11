@@ -1153,18 +1153,17 @@ async fn azure_openai_route_uses_its_api_key_and_is_charged() {
     wait_spent(&budget, "0.003015").await;
 }
 
-// What a request costs (plan 1c). A stream that ends before the provider
-// reports its usage is charged an estimate: agentgateway's count of the
-// prompt plus the answer text Sekisho's stream hook relayed, each o200k
-// event counted on its own and scaled for Claude. The mock reports usage
-// only at the end of a stream, so a stream cut short has none, and
-// agentgateway reports such a stream only when it starts (Task 7).
+// What a request costs (plan 1c). agentgateway reports a stream that ends
+// early only when it starts (Task 7), so Sekisho charges it from what its
+// stream hook relayed: the provider's own counts where its usage events got
+// through, else agentgateway's count of the prompt plus the answer text,
+// each o200k event counted on its own. The mock reports its usage (1,000
+// prompt tokens and one per chunk) at the end of a stream.
 
 /// agentgateway's `tokenize` count of `chat_body`'s one "hi" message.
 const OPENAI_PROMPT: i64 = 8;
-/// agentgateway's `tokenize` count of `messages_request`'s "hi" message to
-/// a Claude model, already scaled for Claude.
-const CLAUDE_PROMPT: i64 = 8;
+/// The mock's own prompt count, in its usage event.
+const MOCK_PROMPT: i64 = 1_000;
 
 /// `usd` as a budget's status shows it ("0.000249"), in micro-USD.
 fn micro_usd(usd: &str) -> i64 {
@@ -1204,13 +1203,7 @@ fn o200k(deltas: &[String]) -> i64 {
     deltas.iter().map(|d| count_text(d) as i64).sum()
 }
 
-/// agentgateway's Claude factor for an older Claude model, rounded as
-/// Sekisho rounds an estimated answer.
-fn claude(tokens: i64) -> i64 {
-    (tokens as f64 * 1.3).round() as i64
-}
-
-/// The estimate at 3 / 15 USD per million tokens, in micro-USD.
+/// The cost at 3 / 15 USD per million tokens, in micro-USD.
 fn estimate(prompt: i64, answer: i64) -> i64 {
     3 * prompt + 15 * answer
 }
@@ -1270,15 +1263,14 @@ async fn a_cut_off_stream_is_charged_an_estimate() {
         100,
         true,
     );
-    let read = read_then_hang_up(request, 5).await;
-    // At least what the client read; at most the whole answer: agentgateway
-    // keeps reading the provider after the client hangs up, and the stream
-    // hook counts what it relays (which the provider bills too).
-    assert_between(
-        charged(&budget).await,
-        estimate(OPENAI_PROMPT, o200k(&read)),
-        estimate(OPENAI_PROMPT, o200k(&all_deltas())),
-    );
+    read_then_hang_up(request, 5).await;
+    // agentgateway keeps reading the provider after the client hangs up, so
+    // the stream hook relays the whole answer, the provider's usage event
+    // included: the charge is the provider's own count, 1,000 prompt and 20
+    // answer tokens, though agentgateway never reported the request.
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    assert_eq!(spent, estimate(MOCK_PROMPT, 20));
 }
 
 #[tokio::test]
@@ -1325,18 +1317,16 @@ async fn a_stream_cut_by_revocation_is_charged_an_estimate() {
 async fn a_cut_off_bedrock_stream_is_charged_an_estimate() {
     ensure_bedrock_keys().await;
     let (env, _, token, budget) = cloud_env("bedrock-cut", &[BEDROCK_CLAUDE], "anthropic").await;
-    let read = read_then_hang_up(
+    read_then_hang_up(
         messages_request(&env, &token, BEDROCK_CLAUDE, 20, 100, true),
         5,
     )
     .await;
-    // Sekisho scales the answer for Claude, as agentgateway scales its
-    // prompt count.
-    assert_between(
-        charged(&budget).await,
-        estimate(CLAUDE_PROMPT, claude(o200k(&read))),
-        estimate(CLAUDE_PROMPT, claude(o200k(&all_deltas()))),
-    );
+    // As for OpenAI: Bedrock's usage, translated into the Anthropic stream's
+    // last event, gets through after the hang-up.
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    assert_eq!(spent, estimate(MOCK_PROMPT, 20));
 }
 
 #[tokio::test]

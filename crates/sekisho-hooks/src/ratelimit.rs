@@ -44,7 +44,7 @@ use tonic::{Request, Response, Status};
 
 use crate::cache::{AuthCache, CachedKey};
 use crate::catalog::catalog_rates;
-use crate::tally::{KEEP, Recorded, Start, Tallies, Tally};
+use crate::tally::{Recorded, STALLED, Start, Tallies, Tally};
 use crate::tokens::answer_tokens;
 
 /// The pauses before each new attempt at recording spend after a database
@@ -208,19 +208,27 @@ impl Charger {
     /// Charges an estimate for a request whose stream ended with no report
     /// from agentgateway.
     async fn charge_unreported(&self, id: &str) {
-        let Some((start, tally)) = self.tallies.unreported(id, self.tally_wait, KEEP).await else {
+        let Some((start, tally)) = self.tallies.unreported(id, self.tally_wait, STALLED).await
+        else {
             return; // reported
         };
         let Some(key) = self.cache.key(&start.key) else {
             tracing::warn!(key = %start.key, "spend not recorded: the key is no longer known");
             return;
         };
-        if let Some(status) = tally.status
-            && !(200..300).contains(&status)
-        {
+        match tally.status {
+            // agentgateway's own error (an unreachable provider): ext_proc
+            // never sees it, nothing reached the client, nothing was billed.
+            None => {
+                tracing::debug!(key = %key.id, model = start.model, "no answer reached the client: nothing charged");
+                return;
+            }
             // A provider error isn't billed.
-            tracing::debug!(key = %key.id, model = start.model, status, "an error answer: nothing charged");
-            return;
+            Some(status) if !(200..300).contains(&status) => {
+                tracing::debug!(key = %key.id, model = start.model, status, "an error answer: nothing charged");
+                return;
+            }
+            Some(_) => {}
         }
         if let Some(cost) = self
             .estimate(&key.id, &start.model, start.usage, Some(tally))
@@ -325,7 +333,8 @@ impl Charger {
 
     /// The estimate for a request without an output count: `usage` plus the
     /// tallied answer, scaled for Claude, at the admin's prices or else
-    /// Sekisho's copy of agentgateway's catalog.
+    /// Sekisho's copy of agentgateway's catalog. The provider's own counts
+    /// from the stream win where they got through.
     async fn estimate(
         &self,
         key: &EnvKeyId,
@@ -334,7 +343,17 @@ impl Charger {
         tally: Option<Tally>,
     ) -> Option<MicroUsd> {
         let pricing = self.pricing(key, model).await.ok()?;
-        usage.output = tally.map_or(0, |t| answer_tokens(t.answer_o200k, model));
+        usage.output = 0;
+        if let Some(tally) = tally {
+            if let Some(prompt) = tally.usage.prompt {
+                (usage.input, usage.cache_read, usage.cache_write) =
+                    (prompt.input, prompt.cache_read, prompt.cache_write);
+            }
+            usage.output = tally
+                .usage
+                .output
+                .unwrap_or_else(|| answer_tokens(tally.answer_o200k, model));
+        }
         let rates = pricing.as_ref().and_then(|p| match p.prices {
             Some(prices) => Some(prices.rates(p.format)),
             None => catalog_rates(p.kind, p.format, model),
@@ -345,8 +364,9 @@ impl Charger {
         };
         let cost = rates.cost(&usage);
         tracing::info!(
-            %key, model, input = usage.input, output = usage.output, micro_usd = cost.0,
-            "estimated a request the provider's usage never arrived for"
+            %key, model, input = usage.input, cache_read = usage.cache_read,
+            cache_write = usage.cache_write, output = usage.output, micro_usd = cost.0,
+            "estimated a request agentgateway never reported"
         );
         Some(cost)
     }
