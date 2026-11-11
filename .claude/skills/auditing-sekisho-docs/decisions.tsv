@@ -71,3 +71,10 @@ D69	Changing where a provider's requests go (base URL, region, endpoint) needs i
 D70	Azure providers are set up by the endpoint URL the Azure portal shows	endpoint URL	design plan1b
 D71	Provider base URLs are checked for private, loopback, link-local and metadata addresses when saved; private ones need allow_private_network	allow_private_network	design plan1b plans
 D72	Plan 8's Helm chart blocks cloud metadata addresses from agentgateway	metadata addresses	design plans
+D73	Recorded spend stays close to the provider's bill (plan 1c)	close to the provider.s bill	design plans plan1c
+D74	A stream that ends early is charged an estimate: the provider's counts where reported, the prompt from agentgateway's tokenizer, the answer from the text that reached the client	charged an estimate	design plans plan1c
+D75	An admin's prices win over agentgateway's catalog whatever model name the provider reports	win over agentgateway.s catalog	design plans plan1c
+D76	Model prices have four parts (input, output, cache read, cache write), with the provider's usual ratios as defaults	cache.write	design plans plan1c
+D77	A model without an admin price keeps agentgateway's catalog cost; Sekisho keeps a copy of the catalog to price estimates (our call)	copy of agentgateway.s catalog	design plans plan1c
+D78	The rate-limit service answers at once and records spend on a task of its own (our call)	task of its own	design plan1c
+D79	Each estimated charge is logged; a request with no price anywhere is logged as a warning (our call)	logged as a warning	design plan1c
