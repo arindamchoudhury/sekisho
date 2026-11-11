@@ -13,13 +13,14 @@ and what they carried.
 > part, the model gateway, works and is tested end to end against agentgateway
 > v1.7.0: an admin API for providers, models, environments, environment keys
 > and dollar budgets; gateway configuration live in under a second; key and
-> budget checks on every request, with spend recorded at the catalog price; and
-> running streams cut about a second after a key is revoked. Providers can be
-> Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure (Azure OpenAI, or Claude on
-> Foundry) or any OpenAI-compatible endpoint, with an API key, AWS access keys,
-> an Entra service principal or the gateway's own cloud identity. Sign-in, the
-> web UI, the CLI, MCP servers and catalogs come next. Everything below
-> describes what release 1 will do.
+> budget checks on every request, with spend recorded at the admin's prices
+> (or else the gateway's catalog price) and an estimate charged for streams
+> that end early; and running streams cut about a second after a key is
+> revoked. Providers can be Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure
+> (Azure OpenAI, or Claude on Foundry) or any OpenAI-compatible endpoint,
+> with an API key, AWS access keys, an Entra service principal or the
+> gateway's own cloud identity. Sign-in, the web UI, the CLI, MCP servers and
+> catalogs come next. Everything below describes what release 1 will do.
 
 ## What release 1 will do
 
@@ -47,9 +48,14 @@ and what they carried.
   the gateway can't reach Sekisho's checks, requests are refused too, unless an
   admin chooses to let that check fail open.
 - **Budgets** per person (in one environment or across all), per
-  environment and per key, over a day, week or month, priced from the
-  gateway's model catalog. When a budget runs out, the next request is refused
-  with a message naming the budget and when it resets.
+  environment and per key, over a day, week or month. When a budget runs
+  out, the next request is refused with a message naming the budget and when
+  it resets.
+  - Spend is priced at the admin's prices for each model (input, output,
+    cache reads and cache writes), or else from the gateway's model catalog.
+  - A stream that ends before the provider reports its usage (Esc, a dropped
+    connection, a revoked key) is charged an estimate: its prompt plus the
+    answer that reached the client. Each request is charged once.
   - Budgets and spend are shown in your currency: an admin picks the
     display currency and sets its exchange rate. Underneath, Sekisho records
     spend in US dollars, the currency providers price in.

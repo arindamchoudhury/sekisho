@@ -2530,6 +2530,7 @@ name = "sekisho-e2e"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+ "sekisho-hooks",
  "serde_json",
  "tokio",
 ]

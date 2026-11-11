@@ -4,7 +4,9 @@
 //! 20), one every `x-mock-interval-ms` (default 1000), and always reports
 //! usage: 1000 prompt tokens and one completion token per chunk. With
 //! `"stream": true` it streams server-sent events ending in `[DONE]`;
-//! otherwise it answers one JSON body with the same usage.
+//! otherwise it answers one JSON body with the same usage. The answer names
+//! the requested model, or `x-mock-model` when given (as providers report a
+//! dated model name).
 //!
 //! `POST /v1/messages` answers like Anthropic's Messages API (not streamed),
 //! with the same usage.
@@ -135,7 +137,12 @@ async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
 async fn completions(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let chunks = header_number(&headers, "x-mock-chunks", 20);
     let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
-    let model = body["model"].as_str().unwrap_or("mock-model").to_owned();
+    let model = headers
+        .get("x-mock-model")
+        .and_then(|v| v.to_str().ok())
+        .or(body["model"].as_str())
+        .unwrap_or("mock-model")
+        .to_owned();
     let usage = json!({
         "prompt_tokens": 1000,
         "completion_tokens": chunks,

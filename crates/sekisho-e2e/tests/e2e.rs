@@ -1,4 +1,4 @@
-//! The acceptance tests of plans 1 and 1b, against the stack in
+//! The acceptance tests of plans 1, 1b and 1c, against the stack in
 //! `e2e/docker-compose.yml`.
 //! Ignored by default; run with the stack up:
 //!   cargo test -p sekisho-e2e -- --ignored --test-threads=1
@@ -8,6 +8,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::{Client, StatusCode};
+use sekisho_hooks::tokens::count_text;
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
@@ -1150,4 +1151,230 @@ async fn azure_openai_route_uses_its_api_key_and_is_charged() {
     );
     // 1000 input tokens at $3/M and 1 output at $15/M.
     wait_spent(&budget, "0.003015").await;
+}
+
+// What a request costs (plan 1c). A stream that ends before the provider
+// reports its usage is charged an estimate: agentgateway's count of the
+// prompt plus the answer text Sekisho's stream hook relayed, each o200k
+// event counted on its own and scaled for Claude. The mock reports usage
+// only at the end of a stream, so a stream cut short has none, and
+// agentgateway reports such a stream only when it starts (Task 7).
+
+/// agentgateway's `tokenize` count of `chat_body`'s one "hi" message.
+const OPENAI_PROMPT: i64 = 8;
+/// agentgateway's `tokenize` count of `messages_request`'s "hi" message to
+/// a Claude model, already scaled for Claude.
+const CLAUDE_PROMPT: i64 = 8;
+
+/// `usd` as a budget's status shows it ("0.000249"), in micro-USD.
+fn micro_usd(usd: &str) -> i64 {
+    let (whole, fraction) = usd.split_once('.').unwrap_or((usd, ""));
+    let fraction = format!("{fraction:0<6}");
+    let whole: i64 = whole
+        .parse()
+        .unwrap_or_else(|_| panic!("not an amount: {usd}"));
+    whole * 1_000_000 + fraction[..6].parse::<i64>().unwrap()
+}
+
+/// The answer text of each complete server-sent event in `sse`, in the
+/// OpenAI chat or Anthropic Messages format.
+fn deltas(sse: &str) -> Vec<String> {
+    let complete = &sse[..sse.rfind('\n').map_or(0, |end| end + 1)];
+    complete
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<Value>(data.trim_start()).ok())
+        .filter_map(|event| {
+            event["choices"][0]["delta"]["content"]
+                .as_str()
+                .or(event["delta"]["text"].as_str())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Every delta of a full 20-chunk mock answer.
+fn all_deltas() -> Vec<String> {
+    (0..20).map(|i| format!("t{i} ")).collect()
+}
+
+/// The o200k tokens of `deltas`, each counted on its own as the stream hook
+/// counts them.
+fn o200k(deltas: &[String]) -> i64 {
+    deltas.iter().map(|d| count_text(d) as i64).sum()
+}
+
+/// agentgateway's Claude factor for an older Claude model, rounded as
+/// Sekisho rounds an estimated answer.
+fn claude(tokens: i64) -> i64 {
+    (tokens as f64 * 1.3).round() as i64
+}
+
+/// The estimate at 3 / 15 USD per million tokens, in micro-USD.
+fn estimate(prompt: i64, answer: i64) -> i64 {
+    3 * prompt + 15 * answer
+}
+
+/// Streams `request` until `keep` answer deltas have arrived, then hangs up
+/// as a client does on Esc. Returns the deltas read.
+async fn read_then_hang_up(request: reqwest::RequestBuilder, keep: usize) -> Vec<String> {
+    let mut resp = request.send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    while let Some(bytes) = resp.chunk().await.unwrap() {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        let read = deltas(&text);
+        if read.len() >= keep {
+            return read; // dropping the response closes the connection
+        }
+    }
+    panic!("the stream ended before {keep} deltas: {text}");
+}
+
+/// Waits up to 10 s for `budget` to be charged, then a second more for any
+/// second charge, and returns its spend in micro-USD.
+async fn charged(budget: &str) -> i64 {
+    let start = Instant::now();
+    loop {
+        if micro_usd(&spent(budget).await) > 0 {
+            sleep(Duration::from_secs(1)).await;
+            return micro_usd(&spent(budget).await);
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "nothing charged within 10 s"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn assert_between(spent: i64, low: i64, high: i64) {
+    println!("charged {spent} micro-USD; expected {low}..={high}");
+    assert!(
+        (low..=high).contains(&spent),
+        "charged {spent} micro-USD, expected {low}..={high}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_cut_off_stream_is_charged_an_estimate() {
+    seed().await;
+    let (env, _, token, budget) = cloud_env("cut-off", &[MODEL], "openai").await;
+    let request = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        MODEL,
+        20,
+        100,
+        true,
+    );
+    let read = read_then_hang_up(request, 5).await;
+    // At least what the client read; at most the whole answer: agentgateway
+    // keeps reading the provider after the client hangs up, and the stream
+    // hook counts what it relays (which the provider bills too).
+    assert_between(
+        charged(&budget).await,
+        estimate(OPENAI_PROMPT, o200k(&read)),
+        estimate(OPENAI_PROMPT, o200k(&all_deltas())),
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_stream_cut_by_revocation_is_charged_an_estimate() {
+    seed().await;
+    let (env, id, token, budget) = cloud_env("revoked", &[MODEL], "openai").await;
+    let mut resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        MODEL,
+        20,
+        100,
+        true,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    let mut revoked = false;
+    // The stream ends cleanly or with an error once it is cut.
+    while let Ok(Some(bytes)) = resp.chunk().await {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        if !revoked && deltas(&text).len() >= 3 {
+            let (s, _) = admin("POST", &format!("/api/v1/keys/{id}/revoke"), None).await;
+            assert_eq!(s, StatusCode::NO_CONTENT);
+            revoked = true;
+        }
+    }
+    assert!(revoked && !text.contains("[DONE]"), "not cut: {text}");
+    let received = deltas(&text);
+    println!("{} deltas before the cut", received.len());
+    assert_between(
+        charged(&budget).await,
+        estimate(OPENAI_PROMPT, o200k(&received)),
+        estimate(OPENAI_PROMPT, o200k(&all_deltas())),
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_cut_off_bedrock_stream_is_charged_an_estimate() {
+    ensure_bedrock_keys().await;
+    let (env, _, token, budget) = cloud_env("bedrock-cut", &[BEDROCK_CLAUDE], "anthropic").await;
+    let read = read_then_hang_up(
+        messages_request(&env, &token, BEDROCK_CLAUDE, 20, 100, true),
+        5,
+    )
+    .await;
+    // Sekisho scales the answer for Claude, as agentgateway scales its
+    // prompt count.
+    assert_between(
+        charged(&budget).await,
+        estimate(CLAUDE_PROMPT, claude(o200k(&read))),
+        estimate(CLAUDE_PROMPT, claude(o200k(&all_deltas()))),
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_admin_price_wins_over_a_dated_model_name() {
+    seed().await;
+    ensure(
+        "/api/v1/providers",
+        json!({
+            "name": "mock-openai", "kind": "openai", "base_url": "http://mock-model:8000",
+            "api_key": OPENAI_KEY, "allow_private_network": true
+        }),
+    )
+    .await;
+    ensure(
+        "/api/v1/models",
+        json!({ "name": "gpt-4o", "provider": "mock-openai", "input_price": "1", "output_price": "1" }),
+    )
+    .await;
+    let (env, _, token, budget) = cloud_env("dated", &["gpt-4o"], "openai").await;
+    let resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        "gpt-4o",
+        1,
+        0,
+        false,
+    )
+    .header("x-mock-model", "gpt-4o-2024-08-06")
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["model"], "gpt-4o-2024-08-06", "{answer}");
+    // 1000 prompt and 1 answer token at the admin's 1 / 1 USD per million,
+    // not the catalog's 2.5 / 10 for the dated name (0.00251).
+    wait_spent(&budget, "0.001001").await;
 }
