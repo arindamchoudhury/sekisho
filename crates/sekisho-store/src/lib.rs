@@ -20,7 +20,7 @@ pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
 pub use keys::{AuthSnapshot, EnvKey};
-pub use models::{Model, NewModel};
+pub use models::{Model, ModelPricing, NewModel};
 pub use notify::ChangeKind;
 pub use providers::{
     CredentialKind, NewProvider, Provider, ProviderCredential, ProviderOptions, ProviderUpdate,

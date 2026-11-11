@@ -1,6 +1,7 @@
 use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
+use sekisho_core::pricing::ModelPrices;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
@@ -9,15 +10,20 @@ use crate::error::{FieldError, bad_column, check, is_foreign_key_violation, is_u
 use crate::notify::{ChangeKind, notify};
 use crate::{Result, Store, StoreError};
 
-/// A model to add. Prices are micro-USD per 1,000,000 tokens; leave both
-/// `None` to use agentgateway's catalog prices. An OpenAI-compatible
-/// provider's models need prices: the catalog has none for them.
+/// A model to add. Prices are micro-USD per 1,000,000 tokens; leave input
+/// and output `None` to use agentgateway's catalog prices. An
+/// OpenAI-compatible provider's models need prices: the catalog has none for
+/// them. Cache prices are optional and only set with input and output
+/// prices; when unset, the provider's usual ratios apply
+/// ([`ModelPrices::rates`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewModel {
     pub name: ModelName,
     pub provider: ProviderName,
     pub input_price: Option<MicroUsd>,
     pub output_price: Option<MicroUsd>,
+    pub cache_read_price: Option<MicroUsd>,
+    pub cache_write_price: Option<MicroUsd>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +34,30 @@ pub struct Model {
     pub provider_kind: ProviderKind,
     pub input_price: Option<MicroUsd>,
     pub output_price: Option<MicroUsd>,
+    pub cache_read_price: Option<MicroUsd>,
+    pub cache_write_price: Option<MicroUsd>,
+}
+
+impl Model {
+    /// The admin's prices, or `None` when agentgateway's catalog prices it.
+    pub fn prices(&self) -> Option<ModelPrices> {
+        Some(ModelPrices {
+            input: self.input_price?,
+            output: self.output_price?,
+            cache_read: self.cache_read_price,
+            cache_write: self.cache_write_price,
+        })
+    }
+}
+
+/// What charging needs to know about a model: whose it is, the API format
+/// its provider serves, and the admin's prices if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelPricing {
+    pub provider: ProviderName,
+    pub kind: ProviderKind,
+    pub format: ApiFormat,
+    pub prices: Option<ModelPrices>,
 }
 
 /// Expands to the model query without its filter, for building fixed SQL
@@ -35,7 +65,8 @@ pub struct Model {
 macro_rules! select {
     () => {
         "select m.id, m.name, p.name as provider, p.kind as provider_kind, \
-         m.input_price_micro_usd, m.output_price_micro_usd \
+         p.api_format, m.input_price_micro_usd, m.output_price_micro_usd, \
+         m.cache_read_price_micro_usd, m.cache_write_price_micro_usd \
          from models m join providers p on p.id = m.provider_id"
     };
 }
@@ -54,6 +85,19 @@ fn validate(m: &NewModel) -> Vec<FieldError> {
     ] {
         if price.is_some_and(|p| p.0 < 0) {
             errors.push(FieldError::new(field, "must not be negative"));
+        }
+    }
+    let priced = m.input_price.is_some() && m.output_price.is_some();
+    for (field, price) in [
+        ("cache_read_price", m.cache_read_price),
+        ("cache_write_price", m.cache_write_price),
+    ] {
+        match price {
+            Some(_) if !priced => {
+                errors.push(FieldError::new(field, "set input and output prices first"))
+            }
+            Some(p) if p.0 < 0 => errors.push(FieldError::new(field, "must not be negative")),
+            _ => {}
         }
     }
     errors
@@ -75,6 +119,8 @@ fn from_row(row: &PgRow) -> Result<Model> {
             .ok_or_else(|| bad_column("provider kind", &kind))?,
         input_price: price("input_price_micro_usd")?,
         output_price: price("output_price_micro_usd")?,
+        cache_read_price: price("cache_read_price_micro_usd")?,
+        cache_write_price: price("cache_write_price_micro_usd")?,
     })
 }
 
@@ -113,13 +159,16 @@ impl Store {
             )]));
         }
         let id: Uuid = sqlx::query_scalar(
-            "insert into models (name, provider_id, input_price_micro_usd, output_price_micro_usd) \
-             values ($1, $2, $3, $4) returning id",
+            "insert into models (name, provider_id, input_price_micro_usd, \
+             output_price_micro_usd, cache_read_price_micro_usd, cache_write_price_micro_usd) \
+             values ($1, $2, $3, $4, $5, $6) returning id",
         )
         .bind(new.name.as_str())
         .bind(provider_id)
         .bind(new.input_price.map(|p| p.0))
         .bind(new.output_price.map(|p| p.0))
+        .bind(new.cache_read_price.map(|p| p.0))
+        .bind(new.cache_write_price.map(|p| p.0))
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -138,6 +187,26 @@ impl Store {
         notify(&mut tx, ChangeKind::Models).await?;
         tx.commit().await?;
         from_row(&row)
+    }
+
+    /// The model named `name` with what charging needs, or `None` when there
+    /// is no such model.
+    pub async fn model_pricing(&self, name: &ModelName) -> Result<Option<ModelPricing>> {
+        let Some(row) = sqlx::query(concat!(select!(), " where m.name = $1"))
+            .bind(name.as_str())
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let model = from_row(&row)?;
+        let format: String = row.try_get("api_format")?;
+        Ok(Some(ModelPricing {
+            format: ApiFormat::parse(&format).ok_or_else(|| bad_column("API format", &format))?,
+            prices: model.prices(),
+            provider: model.provider,
+            kind: model.provider_kind,
+        }))
     }
 
     /// All models with their providers, sorted by model name.

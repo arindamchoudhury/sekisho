@@ -383,7 +383,11 @@ async fn providers_models_and_environments_round_trip() {
     let models = app.admin("GET", "/api/v1/models", None).await;
     assert_eq!(
         models.body,
-        json!([{ "id": models.body[0]["id"], "name": "mock-model", "provider": "mock", "provider_kind": "openai_compatible", "input_price": "3", "output_price": "15" }])
+        json!([{
+            "id": models.body[0]["id"], "name": "mock-model", "provider": "mock",
+            "provider_kind": "openai_compatible", "input_price": "3", "output_price": "15",
+            "cache_read_price": null, "cache_write_price": null
+        }])
     );
 
     let put = app
@@ -1223,5 +1227,61 @@ async fn switching_to_cloud_identity_republishes_without_the_key() {
             .as_str()
             .unwrap()
             .contains("bedrock-key-123")
+    );
+}
+
+#[tokio::test]
+async fn model_cache_prices_round_trip() {
+    let app = app().await;
+    let r = app
+        .post_provider(json!({ "name": "anthropic", "kind": "anthropic", "api_key": "k" }))
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    let model = |body: Value| app.admin("POST", "/api/v1/models", Some(body));
+    let r = model(json!({
+        "name": "claude-x", "provider": "anthropic", "input_price": "3", "output_price": "15",
+        "cache_read_price": "0.3", "cache_write_price": "3.75"
+    }))
+    .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        (
+            &r.body["input_price"],
+            &r.body["output_price"],
+            &r.body["cache_read_price"],
+            &r.body["cache_write_price"]
+        ),
+        (&json!("3"), &json!("15"), &json!("0.3"), &json!("3.75"))
+    );
+    let created = r.body.clone();
+    let r = model(json!({ "name": "claude-y", "provider": "anthropic" })).await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        (&r.body["cache_read_price"], &r.body["cache_write_price"]),
+        (&Value::Null, &Value::Null)
+    );
+    let listed = app.admin("GET", "/api/v1/models", None).await;
+    assert_eq!(listed.body, json!([created, r.body]), "{}", listed.text);
+
+    let r = model(json!({
+        "name": "claude-z", "provider": "anthropic", "cache_read_price": "0.3"
+    }))
+    .await;
+    assert_eq!(
+        (r.status, &r.body["fields"][0]["field"]),
+        (422, &json!("cache_read_price")),
+        "{}",
+        r.text
+    );
+    let r = model(json!({
+        "name": "claude-z", "provider": "anthropic", "input_price": "3", "output_price": "15",
+        "cache_write_price": "lots"
+    }))
+    .await;
+    assert_eq!(
+        (r.status, &r.body["fields"][0]["field"]),
+        (422, &json!("cache_write_price")),
+        "{}",
+        r.text
     );
 }

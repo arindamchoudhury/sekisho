@@ -71,6 +71,8 @@ async fn snapshot_reflects_the_store() {
                 provider: provider(provider_name),
                 input_price: prices.map(|p| MicroUsd(p.0)),
                 output_price: prices.map(|p| MicroUsd(p.1)),
+                cache_read_price: None,
+                cache_write_price: None,
             })
             .await
             .unwrap();
@@ -204,6 +206,8 @@ async fn bedrock_routes_carry_their_credential_and_format() {
                 provider: provider(provider_name),
                 input_price: Some(MicroUsd(3_000_000)),
                 output_price: Some(MicroUsd(15_000_000)),
+                cache_read_price: None,
+                cache_write_price: None,
             })
             .await
             .unwrap();
@@ -286,6 +290,8 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
             provider: provider("azure"),
             input_price: Some(MicroUsd(3_000_000)),
             output_price: Some(MicroUsd(15_000_000)),
+            cache_read_price: None,
+            cache_write_price: None,
         })
         .await
         .unwrap();

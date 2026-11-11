@@ -65,6 +65,8 @@ async fn provider_with_models(
                 provider: ProviderName::parse(name).unwrap(),
                 input_price: price,
                 output_price: price,
+                cache_read_price: None,
+                cache_write_price: None,
             })
             .await
             .unwrap();
@@ -273,6 +275,8 @@ async fn bedrock_formats_count_per_provider() {
                 provider: ProviderName::parse(name).unwrap(),
                 input_price: Some(MicroUsd(3_000_000)),
                 output_price: Some(MicroUsd(15_000_000)),
+                cache_read_price: None,
+                cache_write_price: None,
             })
             .await
             .unwrap();

@@ -10,8 +10,10 @@ use uuid::Uuid;
 use super::{ApiError, ApiJson, Fields};
 use crate::app::AppState;
 
-/// Prices are USD per 1,000,000 tokens, as decimal strings. Leave both out to
-/// use agentgateway's catalog prices.
+/// Prices are USD per 1,000,000 tokens, as decimal strings. Leave input and
+/// output out to use agentgateway's catalog prices. Cache prices are optional
+/// and only accepted with input and output prices; when unset, the
+/// provider's usual ratios to the input price apply.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewModelBody {
@@ -21,6 +23,10 @@ pub struct NewModelBody {
     input_price: Option<String>,
     #[serde(default)]
     output_price: Option<String>,
+    #[serde(default)]
+    cache_read_price: Option<String>,
+    #[serde(default)]
+    cache_write_price: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -31,6 +37,8 @@ pub struct ModelBody {
     provider_kind: &'static str,
     input_price: Option<String>,
     output_price: Option<String>,
+    cache_read_price: Option<String>,
+    cache_write_price: Option<String>,
 }
 
 impl From<Model> for ModelBody {
@@ -42,6 +50,8 @@ impl From<Model> for ModelBody {
             provider_kind: m.provider_kind.as_str(),
             input_price: m.input_price.map(MicroUsd::to_usd_string),
             output_price: m.output_price.map(MicroUsd::to_usd_string),
+            cache_read_price: m.cache_read_price.map(MicroUsd::to_usd_string),
+            cache_write_price: m.cache_write_price.map(MicroUsd::to_usd_string),
         }
     }
 }
@@ -59,8 +69,23 @@ pub async fn create(
     };
     let input_price = price("input_price", &body.input_price);
     let output_price = price("output_price", &body.output_price);
-    let (Some(name), Some(provider), Some(input_price), Some(output_price)) =
-        (name, provider, input_price, output_price)
+    let cache_read_price = price("cache_read_price", &body.cache_read_price);
+    let cache_write_price = price("cache_write_price", &body.cache_write_price);
+    let (
+        Some(name),
+        Some(provider),
+        Some(input_price),
+        Some(output_price),
+        Some(cache_read_price),
+        Some(cache_write_price),
+    ) = (
+        name,
+        provider,
+        input_price,
+        output_price,
+        cache_read_price,
+        cache_write_price,
+    )
     else {
         return Err(fields.fail());
     };
@@ -71,6 +96,8 @@ pub async fn create(
             provider,
             input_price,
             output_price,
+            cache_read_price,
+            cache_write_price,
         })
         .await?;
     Ok((StatusCode::CREATED, Json(model.into())))

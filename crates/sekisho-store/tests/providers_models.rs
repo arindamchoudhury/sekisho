@@ -6,9 +6,10 @@ use std::time::Duration;
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
+use sekisho_core::pricing::ModelPrices;
 use sekisho_store::{
-    ChangeKind, CredentialKind, FieldError, NewModel, NewProvider, ProviderCredential,
-    ProviderOptions, ProviderUpdate, Store, StoreError,
+    ChangeKind, CredentialKind, FieldError, ModelPricing, NewModel, NewProvider,
+    ProviderCredential, ProviderOptions, ProviderUpdate, Store, StoreError,
 };
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -121,6 +122,8 @@ fn new_model(name: &str, provider: &str, prices: Option<(i64, i64)>) -> NewModel
         provider: ProviderName::parse(provider).unwrap(),
         input_price: prices.map(|p| MicroUsd(p.0)),
         output_price: prices.map(|p| MicroUsd(p.1)),
+        cache_read_price: None,
+        cache_write_price: None,
     }
 }
 
@@ -1501,4 +1504,141 @@ fn debug_hides_cloud_secrets() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn cache_prices_round_trip() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(&sb, new_provider("anthropic", ProviderKind::Anthropic, "k"))
+        .await
+        .unwrap();
+    let priced = store
+        .create_model(NewModel {
+            cache_read_price: Some(MicroUsd(300_000)),
+            cache_write_price: Some(MicroUsd(3_750_000)),
+            ..new_model("claude-x", "anthropic", Some((3_000_000, 15_000_000)))
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (priced.cache_read_price, priced.cache_write_price),
+        (Some(MicroUsd(300_000)), Some(MicroUsd(3_750_000)))
+    );
+    assert_eq!(
+        priced.prices(),
+        Some(ModelPrices {
+            input: MicroUsd(3_000_000),
+            output: MicroUsd(15_000_000),
+            cache_read: Some(MicroUsd(300_000)),
+            cache_write: Some(MicroUsd(3_750_000)),
+        })
+    );
+    let input_and_output = store
+        .create_model(new_model("claude-y", "anthropic", Some((1, 2))))
+        .await
+        .unwrap();
+    assert_eq!(
+        input_and_output.prices(),
+        Some(ModelPrices {
+            input: MicroUsd(1),
+            output: MicroUsd(2),
+            cache_read: None,
+            cache_write: None,
+        })
+    );
+    let catalog = store
+        .create_model(new_model("claude-z", "anthropic", None))
+        .await
+        .unwrap();
+    assert_eq!(catalog.prices(), None);
+    assert_eq!(
+        store.list_models().await.unwrap(),
+        vec![priced, input_and_output, catalog]
+    );
+}
+
+#[tokio::test]
+async fn cache_prices_need_input_and_output() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(&sb, new_provider("anthropic", ProviderKind::Anthropic, "k"))
+        .await
+        .unwrap();
+    for (model, want) in [
+        (
+            NewModel {
+                cache_read_price: Some(MicroUsd(300_000)),
+                ..new_model("m", "anthropic", None)
+            },
+            vec!["cache_read_price"],
+        ),
+        (
+            NewModel {
+                cache_read_price: Some(MicroUsd(1)),
+                cache_write_price: Some(MicroUsd(1)),
+                ..new_model("m", "anthropic", None)
+            },
+            vec!["cache_read_price", "cache_write_price"],
+        ),
+        (
+            NewModel {
+                cache_write_price: Some(MicroUsd(-1)),
+                ..new_model("m", "anthropic", Some((1, 2)))
+            },
+            vec!["cache_write_price"],
+        ),
+    ] {
+        let err = store.create_model(model).await.unwrap_err();
+        assert_eq!(fields(err), want);
+    }
+    assert!(store.list_models().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn model_pricing_reads_one_model() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(
+            &sb,
+            bedrock("bedrock-oss", ApiFormat::OpenAi, "us-east-1", key("k")),
+        )
+        .await
+        .unwrap();
+    store
+        .create_model(NewModel {
+            cache_read_price: Some(MicroUsd(3)),
+            ..new_model("gpt-oss", "bedrock-oss", Some((1, 2)))
+        })
+        .await
+        .unwrap();
+    store
+        .create_model(new_model("gpt-oss-catalog", "bedrock-oss", None))
+        .await
+        .unwrap();
+    let name = |n: &str| ModelName::parse(n).unwrap();
+    assert_eq!(
+        store.model_pricing(&name("gpt-oss")).await.unwrap(),
+        Some(ModelPricing {
+            provider: pname("bedrock-oss"),
+            kind: ProviderKind::Bedrock,
+            format: ApiFormat::OpenAi,
+            prices: Some(ModelPrices {
+                input: MicroUsd(1),
+                output: MicroUsd(2),
+                cache_read: Some(MicroUsd(3)),
+                cache_write: None,
+            }),
+        })
+    );
+    assert_eq!(
+        store
+            .model_pricing(&name("gpt-oss-catalog"))
+            .await
+            .unwrap()
+            .unwrap()
+            .prices,
+        None
+    );
+    assert_eq!(store.model_pricing(&name("nope")).await.unwrap(), None);
 }
