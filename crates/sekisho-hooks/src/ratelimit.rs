@@ -27,6 +27,7 @@ use crate::cache::AuthCache;
 /// safer side.
 const CHARGE_RETRIES: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(400)];
 
+#[derive(Clone)]
 pub struct Charger {
     pub cache: Arc<AuthCache>,
     pub store: Store,
@@ -43,8 +44,21 @@ impl RateLimitService for Charger {
         request: Request<RateLimitRequest>,
     ) -> Result<Response<RateLimitResponse>, Status> {
         let request = request.into_inner();
-        for descriptor in &request.descriptors {
-            self.charge(descriptor, request.hits_addend).await;
+        // agentgateway gives this call 10 s and then drops it, with whatever
+        // it was waiting for. So the answer never waits for the database:
+        // spend is recorded on its own task, where a slow database or the
+        // retries can't cut a charge short and its errors are always logged.
+        let costs_something = request
+            .descriptors
+            .iter()
+            .any(|d| d.hits_addend.unwrap_or(u64::from(request.hits_addend)) != 0);
+        if costs_something {
+            let charger = self.clone();
+            tokio::spawn(async move {
+                for descriptor in &request.descriptors {
+                    charger.charge(descriptor, request.hits_addend).await;
+                }
+            });
         }
         Ok(Response::new(RateLimitResponse {
             overall_code: Code::Ok as i32,

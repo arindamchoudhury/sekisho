@@ -132,6 +132,29 @@ async fn spent(rig: &Rig) -> Vec<MicroUsd> {
     statuses.into_iter().map(|s| s.spent).collect()
 }
 
+/// Spend is recorded on its own task, after the answer: waits until the
+/// three budgets read `want` each.
+async fn spent_becomes(rig: &Rig, want: MicroUsd) {
+    let start = tokio::time::Instant::now();
+    loop {
+        let now = spent(rig).await;
+        if now == [want; 3] {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "spent {now:?}, expected {want:?} each"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The spend once a charge that should change nothing has had time to run.
+async fn settled(rig: &Rig) -> Vec<MicroUsd> {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    spent(rig).await
+}
+
 #[tokio::test]
 async fn charge_records_exact_cost() {
     let mut rig = rig().await;
@@ -143,17 +166,17 @@ async fn charge_records_exact_cost() {
         .unwrap()
         .into_inner();
     assert_eq!(resp.overall_code, Code::Ok as i32);
+    // Every applicable budget is charged: environment, key and person.
+    spent_becomes(&rig, MicroUsd(4500)).await;
     assert_eq!(
         store.status(&budgets, now).await.unwrap()[0].spent,
         MicroUsd(4500)
     );
-    // Every applicable budget is charged: environment, key and person.
-    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
     rig.rls
         .should_rate_limit(req("data-team", rig.key.as_str(), 500))
         .await
         .unwrap();
-    assert_eq!(spent(&rig).await, [MicroUsd(5000); 3]);
+    spent_becomes(&rig, MicroUsd(5000)).await;
 }
 
 #[tokio::test]
@@ -166,7 +189,7 @@ async fn precheck_with_zero_cost_charges_nothing() {
         .unwrap()
         .into_inner();
     assert_eq!(resp.overall_code, Code::Ok as i32);
-    assert_eq!(spent(&rig).await, [MicroUsd(0); 3]);
+    assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
 }
 
 #[tokio::test]
@@ -176,7 +199,7 @@ async fn request_level_hits_addend_is_the_fallback() {
     request.descriptors[0].hits_addend = None;
     request.hits_addend = 1234;
     rig.rls.should_rate_limit(request).await.unwrap();
-    assert_eq!(spent(&rig).await, [MicroUsd(1234); 3]);
+    spent_becomes(&rig, MicroUsd(1234)).await;
 }
 
 #[tokio::test]
@@ -219,7 +242,7 @@ async fn always_ok_but_charges_only_known_keys() {
             .into_inner();
         assert_eq!(resp.overall_code, Code::Ok as i32);
     }
-    assert_eq!(spent(&rig).await, [MicroUsd(0); 3]);
+    assert_eq!(settled(&rig).await, [MicroUsd(0); 3]);
 }
 
 #[tokio::test]
@@ -230,7 +253,7 @@ async fn a_revoked_key_is_still_charged_for_its_last_request() {
         .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await
         .unwrap();
-    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
+    spent_becomes(&rig, MicroUsd(4500)).await;
 }
 
 /// A brief database failure while charging must not lose the spend: the
@@ -258,7 +281,7 @@ async fn a_brief_database_failure_does_not_lose_spend() {
         .into_inner();
     restore.await.unwrap();
     assert_eq!(resp.overall_code, Code::Ok as i32);
-    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
+    spent_becomes(&rig, MicroUsd(4500)).await;
 }
 
 /// Each budget's spend is its own upsert, so a retry after one budget fails
@@ -285,7 +308,41 @@ async fn a_retry_never_charges_a_budget_twice() {
         .should_rate_limit(req("data-team", rig.key.as_str(), 4500))
         .await
         .unwrap();
-    assert_eq!(spent(&rig).await, [MicroUsd(4500); 3]);
+    spent_becomes(&rig, MicroUsd(4500)).await;
+    // The retries are over within a second; none charged a budget twice.
+    assert_eq!(
+        {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            spent(&rig).await
+        },
+        [MicroUsd(4500); 3]
+    );
+}
+
+/// agentgateway gives this call 10 s, then drops it (and the work it was
+/// waiting for), so the answer must not wait for the database: spend is
+/// recorded on its own task, after the answer. Here a lock on `spend` holds
+/// every charge until the test releases it.
+#[tokio::test]
+async fn the_answer_never_waits_for_the_database() {
+    let mut rig = rig().await;
+    let mut held = rig.store.pool().begin().await.unwrap();
+    sqlx::query("lock table spend in access exclusive mode")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(2),
+        rig.rls
+            .should_rate_limit(req("data-team", rig.key.as_str(), 4500)),
+    )
+    .await
+    .expect("an answer while the database is held")
+    .unwrap()
+    .into_inner();
+    assert_eq!(answer.overall_code, Code::Ok as i32);
+    held.rollback().await.unwrap();
+    spent_becomes(&rig, MicroUsd(4500)).await;
 }
 
 #[tokio::test]
