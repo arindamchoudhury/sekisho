@@ -1,4 +1,5 @@
-//! Plan 1's acceptance tests, against the stack in `e2e/docker-compose.yml`.
+//! The acceptance tests of plans 1 and 1b, against the stack in
+//! `e2e/docker-compose.yml`.
 //! Ignored by default; run with the stack up:
 //!   cargo test -p sekisho-e2e -- --ignored --test-threads=1
 
@@ -61,7 +62,11 @@ async fn seed() {
     let (s, _) = admin(
         "POST",
         "/api/v1/providers",
-        Some(json!({ "name": "mock", "kind": "openai_compatible", "base_url": "http://mock-model:8000/v1", "api_key": MOCK_PROVIDER_KEY })),
+        // The mock is on Docker's private network.
+        Some(json!({
+            "name": "mock", "kind": "openai_compatible", "base_url": "http://mock-model:8000/v1",
+            "api_key": MOCK_PROVIDER_KEY, "allow_private_network": true
+        })),
     )
     .await;
     assert!(
@@ -242,15 +247,20 @@ async fn chat(env: &str, token: &str, chunks: u32) -> (StatusCode, Value) {
     )
 }
 
-/// Waits until `env`'s route is live and its key is accepted. The probe asks
-/// for a model the route doesn't allow, so it never reaches the model and
-/// costs nothing.
+/// Waits until `env`'s OpenAI route is live and its key is accepted.
 async fn wait_route(env: &str, token: &str) {
+    wait_route_at(env, token, "openai").await;
+}
+
+/// Waits until `env`'s route for `format` is live and its key is accepted.
+/// The probe asks for a model the route doesn't allow, so it never reaches
+/// the model and costs nothing.
+async fn wait_route_at(env: &str, token: &str, format: &str) {
     let start = Instant::now();
     loop {
         let resp = chat_request(
             &http(),
-            &format!("/env/{env}/openai"),
+            &format!("/env/{env}/{format}"),
             Some(token),
             "e2e-probe-not-allowed",
             0,
@@ -268,7 +278,7 @@ async fn wait_route(env: &str, token: &str) {
         }
         assert!(
             start.elapsed() < Duration::from_secs(10),
-            "route for {env} not live: {status} {body}"
+            "{format} route for {env} not live: {status} {body}"
         );
         sleep(Duration::from_millis(100)).await;
     }
@@ -716,7 +726,10 @@ async fn built_in_providers_get_their_key_on_their_model_endpoint() {
     ] {
         ensure(
             "/api/v1/providers",
-            json!({ "name": name, "kind": kind, "base_url": "http://mock-model:8000", "api_key": key }),
+            json!({
+                "name": name, "kind": kind, "base_url": "http://mock-model:8000", "api_key": key,
+                "allow_private_network": true
+            }),
         )
         .await;
     }
@@ -805,4 +818,336 @@ async fn built_in_providers_get_their_key_on_their_model_endpoint() {
             _ => panic!("reached the provider: {r}"),
         }
     }
+}
+
+// Bedrock and Azure (plan 1b). Their providers point at the mock model; the
+// e2e image is built with sekisho-server/e2e, which is the only build that
+// lets cloud credentials go to a host other than AWS's or Azure's. The mock
+// is on Docker's private network, hence allow_private_network.
+
+/// Bedrock on the Anthropic route with AWS access keys.
+const BEDROCK_CLAUDE: &str = "us.anthropic.claude-mock-v1:0";
+const E2E_ACCESS_KEY: &str = "AKIAE2EACCESSKEY01";
+/// Bedrock on the Anthropic route with the gateway's own AWS credentials
+/// (set on the agentgateway service in e2e/docker-compose.yml).
+const BEDROCK_CLOUD_CLAUDE: &str = "eu.anthropic.claude-mock-v1:0";
+const GATEWAY_ACCESS_KEY: &str = "AKIAE2EGATEWAY00001";
+/// Bedrock on the OpenAI route with a Bedrock API key.
+const BEDROCK_OSS: &str = "gpt-oss-mock";
+const BEDROCK_API_KEY: &str = "e2e-bedrock-api-key";
+/// Azure OpenAI with an API key.
+const AZURE_DEPLOYMENT: &str = "gpt-mock-deployment";
+const AZURE_KEY: &str = "e2e-azure-key";
+
+/// Creates a provider on the mock and its model (3 / 15 USD per million
+/// tokens) unless an earlier run did.
+async fn ensure_cloud_provider(provider: Value, model: &str) {
+    let mut provider = provider;
+    provider["base_url"] = json!("http://mock-model:8000");
+    provider["allow_private_network"] = json!(true);
+    let name = provider["name"].clone();
+    ensure("/api/v1/providers", provider).await;
+    ensure(
+        "/api/v1/models",
+        json!({ "name": model, "provider": name, "input_price": "3", "output_price": "15" }),
+    )
+    .await;
+}
+
+async fn ensure_bedrock_keys() {
+    ensure_cloud_provider(
+        json!({
+            "name": "bedrock-keys", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "aws_access_key_id": E2E_ACCESS_KEY, "aws_secret_access_key": "e2e-aws-secret"
+        }),
+        BEDROCK_CLAUDE,
+    )
+    .await;
+}
+
+/// A fresh environment for `models` with a $1 budget and a key, live on its
+/// `format` route: (env, key id, token, budget id). Names start with `via-`
+/// so they sort after `data-team`: the bare route of plan 1's latency test
+/// serves the first environment, by name, that has an OpenAI route.
+async fn cloud_env(
+    prefix: &str,
+    models: &[&str],
+    format: &str,
+) -> (String, String, String, String) {
+    let env = unique(&format!("via-{prefix}"));
+    put_env_models(&env, models).await;
+    let budget = env_budget(&env, "1").await;
+    let (id, token) = new_key(&env).await;
+    wait_route_at(&env, &token, format).await;
+    (env, id, token, budget)
+}
+
+/// An Anthropic Messages request as Claude Code sends it: the Sekisho token
+/// as both `Authorization` and `x-api-key`.
+fn messages_request(
+    env: &str,
+    token: &str,
+    model: &str,
+    chunks: u32,
+    interval_ms: u32,
+    stream: bool,
+) -> reqwest::RequestBuilder {
+    http()
+        .post(format!("{GATEWAY}/env/{env}/anthropic/v1/messages"))
+        .bearer_auth(token)
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .header("x-mock-chunks", chunks.to_string())
+        .header("x-mock-interval-ms", interval_ms.to_string())
+        .json(&json!({
+            "model": model, "max_tokens": 64, "stream": stream,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+}
+
+/// The one request the mock received since `before`, checked to carry no
+/// Sekisho token and no client credential header.
+async fn the_request_since(before: usize) -> Value {
+    let seen = mock_requests().await;
+    let new = &seen[before..];
+    assert_eq!(new.len(), 1, "{new:?}");
+    let r = new[0].clone();
+    let headers = r["headers"].as_object().unwrap();
+    assert!(
+        headers
+            .values()
+            .all(|v| !v.as_str().unwrap().contains("sek_")),
+        "{r}"
+    );
+    for client_header in ["x-api-key", "api-key"] {
+        assert!(headers.get(client_header).is_none(), "{client_header}: {r}");
+    }
+    r
+}
+
+fn header<'a>(r: &'a Value, name: &str) -> &'a str {
+    r["headers"][name].as_str().unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore]
+async fn bedrock_claude_code_request_is_signed_with_access_keys() {
+    ensure_bedrock_keys().await;
+    let (env, _, token, _) = cloud_env("bedrock-keys", &[BEDROCK_CLAUDE], "anthropic").await;
+    let before = mock_requests().await.len();
+    let resp = messages_request(&env, &token, BEDROCK_CLAUDE, 1, 0, false)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(
+        answer["type"], "message",
+        "not an Anthropic answer: {answer}"
+    );
+
+    let r = the_request_since(before).await;
+    assert_eq!(r["method"], "POST", "{r}");
+    assert_eq!(
+        r["path"],
+        format!("/model/{BEDROCK_CLAUDE}/converse"),
+        "{r}"
+    );
+    let signature = header(&r, "authorization");
+    assert!(
+        signature.starts_with(&format!("AWS4-HMAC-SHA256 Credential={E2E_ACCESS_KEY}/"))
+            && signature.contains("/us-east-1/bedrock/aws4_request"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn bedrock_stream_is_translated_and_charged() {
+    ensure_bedrock_keys().await;
+    let (env, _, token, budget) = cloud_env("bedrock-stream", &[BEDROCK_CLAUDE], "anthropic").await;
+    let resp = messages_request(&env, &token, BEDROCK_CLAUDE, 10, 50, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("event: message_start"), "{text}");
+    assert_eq!(
+        text.matches("event: content_block_delta").count(),
+        10,
+        "{text}"
+    );
+    assert!(text.contains("event: message_stop"), "{text}");
+    // 1000 input tokens at $3/M and 10 output at $15/M, at Sekisho's price.
+    wait_spent(&budget, "0.00315").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn revoking_a_key_cuts_a_bedrock_stream_under_2s() {
+    ensure_bedrock_keys().await;
+    let (env, id, token, _) = cloud_env("bedrock-revoke", &[BEDROCK_CLAUDE], "anthropic").await;
+    let mut resp = messages_request(&env, &token, BEDROCK_CLAUDE, 20, 300, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    let mut revoked_at = None;
+    let mut last_chunk_at = Instant::now();
+    // The stream ends cleanly or with an error once it is cut; both end the loop.
+    while let Ok(Some(bytes)) = resp.chunk().await {
+        last_chunk_at = Instant::now();
+        if let Some(at) = revoked_at {
+            assert!(
+                last_chunk_at.duration_since(at) <= Duration::from_secs(2),
+                "a chunk arrived {:?} after revocation",
+                last_chunk_at.duration_since(at)
+            );
+        }
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        if revoked_at.is_none() && text.contains("event: content_block_delta") {
+            let (s, _) = admin("POST", &format!("/api/v1/keys/{id}/revoke"), None).await;
+            assert_eq!(s, StatusCode::NO_CONTENT);
+            revoked_at = Some(Instant::now());
+        }
+    }
+    let revoked_at = revoked_at.expect("a delta before the revocation");
+    let ended = last_chunk_at.max(Instant::now()).duration_since(revoked_at);
+    println!(
+        "Bedrock stream ended {ended:?} after revocation; {} deltas",
+        text.matches("event: content_block_delta").count()
+    );
+    assert!(
+        ended <= Duration::from_secs(2) + Duration::from_millis(500),
+        "stream ran {ended:?} past revocation"
+    );
+    assert!(!text.contains("message_stop"), "the stream was not cut");
+}
+
+#[tokio::test]
+#[ignore]
+async fn bedrock_openai_route_uses_its_api_key() {
+    ensure_cloud_provider(
+        json!({
+            "name": "bedrock-oss", "kind": "bedrock", "format": "openai", "region": "us-east-1",
+            "api_key": BEDROCK_API_KEY
+        }),
+        BEDROCK_OSS,
+    )
+    .await;
+    let (env, _, token, _) = cloud_env("bedrock-oss", &[BEDROCK_OSS], "openai").await;
+    let before = mock_requests().await.len();
+    let resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        BEDROCK_OSS,
+        1,
+        0,
+        false,
+    )
+    .header("x-api-key", &token)
+    .header("api-key", &token)
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["object"], "chat.completion", "{answer}");
+
+    let r = the_request_since(before).await;
+    assert_eq!(r["path"], format!("/model/{BEDROCK_OSS}/converse"), "{r}");
+    assert_eq!(
+        header(&r, "authorization"),
+        format!("Bearer {BEDROCK_API_KEY}"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn bedrock_cloud_identity_signs_with_the_gateways_credentials() {
+    ensure_cloud_provider(
+        json!({
+            "name": "bedrock-cloud", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "cloud_identity": true
+        }),
+        BEDROCK_CLOUD_CLAUDE,
+    )
+    .await;
+    let (env, _, token, _) = cloud_env("bedrock-cloud", &[BEDROCK_CLOUD_CLAUDE], "anthropic").await;
+    let before = mock_requests().await.len();
+    let resp = messages_request(&env, &token, BEDROCK_CLOUD_CLAUDE, 1, 0, false)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let r = the_request_since(before).await;
+    assert_eq!(
+        r["path"],
+        format!("/model/{BEDROCK_CLOUD_CLAUDE}/converse"),
+        "{r}"
+    );
+    let signature = header(&r, "authorization");
+    assert!(
+        signature.starts_with(&format!(
+            "AWS4-HMAC-SHA256 Credential={GATEWAY_ACCESS_KEY}/"
+        )) && signature.contains("/us-east-1/bedrock/aws4_request"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn azure_openai_route_uses_its_api_key_and_is_charged() {
+    ensure_cloud_provider(
+        json!({
+            "name": "azure-openai", "kind": "azure", "format": "openai",
+            "endpoint": "https://e2e-resource.openai.azure.com", "api_key": AZURE_KEY
+        }),
+        AZURE_DEPLOYMENT,
+    )
+    .await;
+    let (env, _, token, budget) = cloud_env("azure", &[AZURE_DEPLOYMENT], "openai").await;
+    let before = mock_requests().await.len();
+    let resp = chat_request(
+        &http(),
+        &format!("/env/{env}/openai"),
+        Some(&token),
+        AZURE_DEPLOYMENT,
+        1,
+        0,
+        false,
+    )
+    .header("x-api-key", &token)
+    .header("api-key", &token)
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let answer: Value = resp.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    // The mock echoes the model it was asked for.
+    assert_eq!(answer["model"], AZURE_DEPLOYMENT, "{answer}");
+
+    let r = the_request_since(before).await;
+    assert_eq!(
+        (&r["method"], &r["path"]),
+        (&json!("POST"), &json!("/openai/v1/chat/completions")),
+        "{r}"
+    );
+    assert_eq!(
+        header(&r, "authorization"),
+        format!("Bearer {AZURE_KEY}"),
+        "{r}"
+    );
+    // 1000 input tokens at $3/M and 1 output at $15/M.
+    wait_spent(&budget, "0.003015").await;
 }

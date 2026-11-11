@@ -8,9 +8,9 @@ happened. It is built in Rust on an unmodified agentgateway, shaped like Obot,
 and aims for all of ACH's features over time.
 
 **Status:** release 1 design approved. Plan 1 (the governed gateway core:
-store, admin API, agentgateway config and gateway agent, hooks, e2e tests) is
-built and merged; plans 1b and 2–8 are next, each written just before it
-starts.
+store, admin API, agentgateway config and gateway agent, hooks, e2e tests)
+and plan 1b (Bedrock and Azure providers) are built and merged; plans 2–8 are
+next, each written just before it starts.
 
 ## Maintainers' private notes (not in Git)
 

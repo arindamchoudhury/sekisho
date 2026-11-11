@@ -1,4 +1,4 @@
-# End-to-end stack for plan 1's acceptance tests (crates/sekisho-e2e).
+# End-to-end stack for the acceptance tests (crates/sekisho-e2e).
 #   docker compose -f e2e/docker-compose.yml up -d --build --wait
 #   cargo test -p sekisho-e2e -- --ignored --test-threads=1
 #   docker compose -f e2e/docker-compose.yml down -v
@@ -12,7 +12,8 @@ x-sekisho: &sekisho
     context: ..
     dockerfile: Dockerfile
     args:
-      # Allows SEKISHO_E2E_BARE_ROUTE below; release images are built without it.
+      # Allows SEKISHO_E2E_BARE_ROUTE below and lets cloud credentials reach
+      # the mock model; release images are built without it.
       SEKISHO_FEATURES: sekisho-server/e2e
 
 services:
@@ -74,6 +75,12 @@ services:
     environment:
       # 32 bytes as 64 hex characters, quoted so YAML keeps it a string.
       SESSION_KEY: "e2e0000000000000000000000000000000000000000000000000000000000abc"
+      # The gateway's own AWS identity, for the Bedrock cloud-identity test.
+      # Test-only; no metadata service lookups.
+      AWS_ACCESS_KEY_ID: AKIAE2EGATEWAY00001
+      AWS_SECRET_ACCESS_KEY: e2e-gateway-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
     volumes:
       - agwcfg:/config:ro
     ports:

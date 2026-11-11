@@ -14,9 +14,12 @@ and what they carried.
 > v1.7.0: an admin API for providers, models, environments, environment keys
 > and dollar budgets; gateway configuration live in under a second; key and
 > budget checks on every request, with spend recorded at the catalog price; and
-> running streams cut about a second after a key is revoked. Sign-in, the web
-> UI, the CLI, MCP servers and catalogs come next. Everything below describes
-> what release 1 will do.
+> running streams cut about a second after a key is revoked. Providers can be
+> Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure (Azure OpenAI, or Claude on
+> Foundry) or any OpenAI-compatible endpoint, with an API key, AWS access keys,
+> an Entra service principal or the gateway's own cloud identity. Sign-in, the
+> web UI, the CLI, MCP servers and catalogs come next. Everything below
+> describes what release 1 will do.
 
 ## What release 1 will do
 
