@@ -47,6 +47,7 @@ pub struct CreatedKeyBody {
 fn state_name(state: KeyState) -> &'static str {
     match state {
         KeyState::Active => "active",
+        KeyState::Invalid => "invalid",
         KeyState::Suspended => "suspended",
         KeyState::Expired => "expired",
         KeyState::Revoked => "revoked",
@@ -111,4 +112,18 @@ pub async fn act(
         _ => return Err(ApiError::NotFound),
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_key_state_has_its_api_name() {
+        assert_eq!(state_name(KeyState::Active), "active");
+        assert_eq!(state_name(KeyState::Suspended), "suspended");
+        assert_eq!(state_name(KeyState::Expired), "expired");
+        assert_eq!(state_name(KeyState::Revoked), "revoked");
+        assert_eq!(state_name(KeyState::Invalid), "invalid");
+    }
 }

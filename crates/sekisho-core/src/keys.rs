@@ -1,4 +1,5 @@
-//! Environment keys: `sek_<id>_<secret>` tokens, their hashes and states.
+//! Environment keys: `sek_<id>_<secret>` tokens, their hashes and states;
+//! and random secrets for other tokens.
 //!
 //! The id is public and indexes the key. Only the SHA-256 of the secret is
 //! stored; the token is shown to its owner once.
@@ -56,7 +57,7 @@ impl fmt::Debug for GeneratedKey {
     }
 }
 
-fn os_random<const N: usize>() -> [u8; N] {
+pub(crate) fn os_random<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
     SysRng
         .try_fill_bytes(&mut buf)
@@ -77,6 +78,12 @@ pub fn generate_key() -> GeneratedKey {
         id: EnvKeyId(id),
         secret_sha256: hash_secret(&secret),
     }
+}
+
+/// 32 random bytes from the OS, base64url without padding: the secret part of
+/// refresh tokens, authorisation codes and setup links.
+pub fn random_secret() -> String {
+    URL_SAFE_NO_PAD.encode(os_random::<SECRET_BYTES>())
 }
 
 /// Splits `sek_<id>_<secret>` into its id and secret. Anything else, including
@@ -108,12 +115,17 @@ pub fn verify_secret(secret: &str, expected: &[u8; 32]) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyState {
     Active,
+    /// The owner may not use the environment (disabled, refused at the
+    /// identity provider, or outside its access groups). The key works again
+    /// once access returns.
+    Invalid,
     Suspended,
     Expired,
     Revoked,
 }
 
-/// A key's state at `now`, by priority Revoked → Expired → Suspended → Active.
+/// A key's state at `now` from its own fields, by priority Revoked → Expired →
+/// Suspended → Active; [`with_access`] then adds the owner's access.
 /// A key is expired from its expiry instant on. Any revocation counts, even
 /// one stamped slightly after `now` by another replica's clock.
 pub fn effective_state(
@@ -130,6 +142,16 @@ pub fn effective_state(
         KeyState::Suspended
     } else {
         KeyState::Active
+    }
+}
+
+/// A key's state once its owner's access is known: an active key whose owner
+/// may not use the environment is `Invalid`. Revoked, expired and suspended
+/// rank above invalid, so they stay as they are.
+pub fn with_access(state: KeyState, owner_can_use: bool) -> KeyState {
+    match state {
+        KeyState::Active if !owner_can_use => KeyState::Invalid,
+        other => other,
     }
 }
 
@@ -280,5 +302,24 @@ mod tests {
             effective_state(Some(later), false, None, now),
             KeyState::Revoked
         );
+    }
+
+    #[test]
+    fn invalid_ranks_below_revoked_expired_suspended() {
+        for s in [KeyState::Revoked, KeyState::Expired, KeyState::Suspended] {
+            assert_eq!(with_access(s, false), s);
+            assert_eq!(with_access(s, true), s);
+        }
+        assert_eq!(with_access(KeyState::Active, false), KeyState::Invalid);
+        assert_eq!(with_access(KeyState::Active, true), KeyState::Active);
+        assert_eq!(with_access(KeyState::Invalid, true), KeyState::Invalid);
+    }
+
+    #[test]
+    fn random_secrets_are_32_url_safe_bytes() {
+        let s = random_secret();
+        assert_eq!(s.len(), 43, "{s}");
+        assert_eq!(URL_SAFE_NO_PAD.decode(&s).unwrap().len(), 32);
+        assert_ne!(random_secret(), s);
     }
 }

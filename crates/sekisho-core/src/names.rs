@@ -1,4 +1,5 @@
-//! Validated names for environments, providers and models.
+//! Validated names for environments, providers, models, groups and
+//! sign-in connectors.
 
 use std::fmt;
 
@@ -24,6 +25,15 @@ fn is_slug(s: &str) -> bool {
         && b.first().is_some_and(edge_ok)
         && b.last().is_some_and(edge_ok)
         && b.iter().all(|c| edge_ok(c) || *c == b'-')
+}
+
+/// Dex's own connector for local accounts.
+const DEX_LOCAL: &str = "local";
+const CONNECTOR_RULE: &str = "use 1-63 lowercase letters, digits or hyphens, starting and ending with a letter or digit; local is reserved for Dex's local accounts";
+
+/// A slug other than `local`.
+fn is_connector_id(s: &str) -> bool {
+    is_slug(s) && s != DEX_LOCAL
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`
@@ -75,6 +85,15 @@ name_type!(
     /// A model's name as the provider spells it, such as `claude-sonnet-5-5`.
     ModelName, "model", is_model_name, MODEL_RULE
 );
+name_type!(
+    /// A Sekisho group's name. Identity providers' groups are plain strings;
+    /// only groups made in Sekisho follow this rule.
+    GroupName, "group", is_slug, SLUG_RULE
+);
+name_type!(
+    /// The ID of an identity provider's connector at Dex, such as `github`.
+    ConnectorId, "connector", is_connector_id, CONNECTOR_RULE
+);
 
 #[cfg(test)]
 mod tests {
@@ -124,5 +143,23 @@ mod tests {
         for bad in ["", "-x", ".x", "/x", "a b", "é", &"a".repeat(129)] {
             assert!(ModelName::parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn group_and_connector_names() {
+        for good in ["data-team", "a", &"a".repeat(63)] {
+            assert_eq!(GroupName::parse(good).unwrap().as_str(), good);
+        }
+        for bad in ["acme:team", "Data", "", "-x", "x-", "a_b", &"a".repeat(64)] {
+            assert!(GroupName::parse(bad).is_err(), "{bad:?}");
+        }
+        for good in ["github", "corp-ldap", "local2", "my-local"] {
+            assert_eq!(ConnectorId::parse(good).unwrap().as_str(), good);
+        }
+        for bad in ["local", "Local", "acme:team", "", "-x", &"a".repeat(64)] {
+            assert!(ConnectorId::parse(bad).is_err(), "{bad:?}");
+        }
+        let refused = ConnectorId::parse("local").unwrap_err().to_string();
+        assert!(refused.contains("reserved"), "{refused}");
     }
 }

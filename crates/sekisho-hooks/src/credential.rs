@@ -40,6 +40,7 @@ pub(crate) fn refusal(key: &CachedKey, now: OffsetDateTime) -> Option<&'static s
         now,
     ) {
         KeyState::Active => None,
+        KeyState::Invalid => Some("invalid"),
         KeyState::Revoked => Some("revoked"),
         KeyState::Expired => Some("expired"),
         KeyState::Suspended => Some("suspended"),

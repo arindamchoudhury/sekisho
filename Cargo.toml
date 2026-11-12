@@ -22,7 +22,9 @@ axum = "0.8.9"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 crc = "3.4.0"
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
 jsonschema = { version = "0.60.1", default-features = false }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
 protox = "0.10.0"
