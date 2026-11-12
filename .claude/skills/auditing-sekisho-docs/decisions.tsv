@@ -98,3 +98,5 @@ D96	A key is invalid while its owner is disabled, refused at Dex or outside the 
 D97	Keys are created by their owner; admins list, suspend, resume and revoke anyone's keys (our call)	created by their owner	design plan2
 D98	OAuth details: 60 s codes with PKCE S256, 10-minute device codes, the pre-registered sekisho-cli client with loopback redirects (our call)	sekisho-cli	design plan2
 D99	Dex's gRPC port is never published; browsers reach Dex at its issuer, Sekisho over the private network (our call)	gRPC port is never published	design
+D100	Every coding tool reaches an environment's A2A agents as tools on its MCP endpoint, served by Sekisho and relayed over A2A (decided 2026-11-12)	tools? on (its|the environment.s) MCP endpoint	README design plans
+D101	Gemini CLI's own remote-agent files for A2A agents are placed in release 2 (our call)	remote-agent files	design plans

@@ -72,7 +72,9 @@ and what they carried.
   - It works with clients on the 2026-07-28 MCP specification and on earlier
     ones.
   - Local (stdio) MCP servers run on the developer's machine.
-  - A2A agents go behind the same gateway, with the same checks.
+  - A2A agents go behind the same gateway, with the same checks. Every
+    coding tool reaches them as tools on the environment's MCP endpoint, so
+    tools without an A2A client can use them too.
 - **Catalogs from Git.** MCP servers, A2A agents, skills, plugins and prompts,
   pinned to commits. The MCP and skill catalogs use Obot-compatible formats;
   plugins use Claude Code's plugin and marketplace format.
