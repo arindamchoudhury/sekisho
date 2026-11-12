@@ -728,7 +728,7 @@ async fn an_estimate_uses_the_counts_the_provider_streamed() {
         &id,
         ProviderUsage {
             prompt,
-            output: None,
+            ..ProviderUsage::default()
         },
     );
     rig.rls
@@ -745,6 +745,7 @@ async fn an_estimate_uses_the_counts_the_provider_streamed() {
         ProviderUsage {
             prompt,
             output: Some(60),
+            ..ProviderUsage::default()
         },
     );
     rig.rls
@@ -754,4 +755,48 @@ async fn an_estimate_uses_the_counts_the_provider_streamed() {
     rig.tallies.finish(&id);
     // + 5,000 × 3 + 95,000 × 0.3 + 60 × 15.
     spent_becomes(&rig, MicroUsd(44_280 + 44_400)).await;
+}
+
+/// A Claude stream the provider ends with an error before `message_delta`:
+/// agentgateway reports `message_start`'s output count (1) as the output.
+/// That report is estimated instead, from the answer the client got.
+#[tokio::test]
+async fn a_report_of_the_streams_start_count_is_estimated() {
+    let mut rig = rig().await;
+    let key = rig.key.as_str();
+    let id = tally(&rig, 200, 15);
+    rig.tallies.set_usage(
+        &id,
+        ProviderUsage {
+            prompt: Some(Usage {
+                input: 1_000,
+                ..Usage::default()
+            }),
+            start_output: Some(1),
+            ..ProviderUsage::default()
+        },
+    );
+    rig.rls
+        .should_rate_limit(start(key, "claude-priced", &id, 8))
+        .await
+        .unwrap();
+    rig.rls
+        .should_rate_limit(req(
+            key,
+            "claude-priced",
+            &id,
+            &[("input", 1_000), ("output", 1)],
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        spent(&rig).await,
+        [MicroUsd(0); 3],
+        "waits for the stream's end"
+    );
+    rig.tallies.finish(&id);
+    // 1,000 × 3 + 20 × 15 (15 tallied, ×1.3 for Claude), once.
+    spent_becomes(&rig, MicroUsd(3_300)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(3_300); 3]);
 }

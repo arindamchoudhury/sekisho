@@ -471,6 +471,7 @@ async fn the_providers_counts_are_tallied() {
                     ..Usage::default()
                 }),
                 output: Some(2),
+                start_output: None,
             },
         })
     );

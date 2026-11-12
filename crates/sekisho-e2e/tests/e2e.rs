@@ -1368,3 +1368,117 @@ async fn an_admin_price_wins_over_a_dated_model_name() {
     // not the catalog's 2.5 / 10 for the dated name (0.00251).
     wait_spent(&budget, "0.001001").await;
 }
+
+// Claude Code's own path: Anthropic's Messages API, streamed, on a built-in
+// Anthropic provider. The mock's `message_start` carries the prompt's usage
+// (1,000 tokens) and its `message_delta` the output count.
+
+/// An environment on the mock's built-in Anthropic provider, with a $1
+/// budget: (env, key id, token, budget id).
+async fn claude_env(prefix: &str) -> (String, String, String, String) {
+    seed().await;
+    ensure(
+        "/api/v1/providers",
+        json!({
+            "name": "mock-anthropic", "kind": "anthropic", "base_url": "http://mock-model:8000",
+            "api_key": ANTHROPIC_KEY, "allow_private_network": true
+        }),
+    )
+    .await;
+    ensure(
+        "/api/v1/models",
+        json!({ "name": CLAUDE_MODEL, "provider": "mock-anthropic", "input_price": "3", "output_price": "15" }),
+    )
+    .await;
+    cloud_env(prefix, &[CLAUDE_MODEL], "anthropic").await
+}
+
+/// agentgateway's Claude factor for a Claude model without a version,
+/// rounded as Sekisho rounds an estimated answer.
+fn claude(tokens: i64) -> i64 {
+    (tokens as f64 * 1.3).round() as i64
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_cut_off_claude_stream_is_charged_the_providers_count() {
+    let (env, _, token, budget) = claude_env("claude-cut").await;
+    read_then_hang_up(
+        messages_request(&env, &token, CLAUDE_MODEL, 20, 100, true),
+        5,
+    )
+    .await;
+    // agentgateway reads on after the hang-up; the stream hook relays the
+    // whole answer, its final usage included: 1,000 prompt and 20 answer
+    // tokens.
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    assert_eq!(spent, estimate(MOCK_PROMPT, 20));
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_claude_stream_cut_by_revocation_is_charged_an_estimate() {
+    let (env, id, token, budget) = claude_env("claude-revoked").await;
+    let mut resp = messages_request(&env, &token, CLAUDE_MODEL, 20, 100, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    let mut revoked = false;
+    while let Ok(Some(bytes)) = resp.chunk().await {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        if !revoked && deltas(&text).len() >= 3 {
+            let (s, _) = admin("POST", &format!("/api/v1/keys/{id}/revoke"), None).await;
+            assert_eq!(s, StatusCode::NO_CONTENT);
+            revoked = true;
+        }
+    }
+    assert!(revoked && !text.contains("message_stop"), "not cut: {text}");
+    let received = deltas(&text);
+    println!("{} deltas before the cut", received.len());
+    // The prompt's count from `message_start` (the provider's own), and the
+    // answer that reached the client, scaled for Claude.
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    assert_eq!(spent, estimate(MOCK_PROMPT, claude(o200k(&received))));
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_claude_stream_the_provider_ends_early_is_charged() {
+    let (env, _, token, budget) = claude_env("claude-error").await;
+    let resp = messages_request(&env, &token, CLAUDE_MODEL, 20, 50, true)
+        .header("x-mock-error-after", "5")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("overloaded_error"), "{text}");
+    let received = deltas(&text);
+    assert_eq!(received.len(), 5, "{text}");
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    // The prompt, and the answer the client got: the provider never sent its
+    // final count.
+    assert_eq!(spent, estimate(MOCK_PROMPT, claude(o200k(&received))));
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_complete_claude_stream_is_charged_the_providers_count() {
+    let (env, _, token, budget) = claude_env("claude-full").await;
+    let resp = messages_request(&env, &token, CLAUDE_MODEL, 20, 10, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("message_stop"), "{text}");
+    // 1,000 prompt and 20 answer tokens, from `message_delta`'s final count.
+    let spent = charged(&budget).await;
+    println!("charged {spent} micro-USD");
+    assert_eq!(spent, estimate(MOCK_PROMPT, 20));
+}

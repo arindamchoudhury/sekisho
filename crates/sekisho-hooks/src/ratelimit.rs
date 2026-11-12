@@ -130,12 +130,13 @@ impl Report {
         }
     }
 
-    fn start(&self, usage: Usage) -> Start {
+    fn start(&self, usage: Usage, from_response: bool) -> Start {
         Start {
             key: self.key.id.clone(),
             env: self.env.clone(),
             model: self.model.clone(),
             usage,
+            from_response,
         }
     }
 }
@@ -149,16 +150,24 @@ impl Charger {
         };
         let cost = if COSTED.iter().all(|&m| report.count(m) == 0) {
             // The request-side call: only the prompt count.
-            let prompt = report.count(Measure::Prompt);
-            self.record_start(
-                &report,
-                Usage {
-                    input: prompt,
-                    ..Usage::default()
-                },
-            );
+            let prompt = Usage {
+                input: report.count(Measure::Prompt),
+                ..Usage::default()
+            };
+            if !self.record_start(&report, prompt, false) && !report.request.is_empty() {
+                // Another Sekisho's stream hook has it, or it is gone: a
+                // stream that ends early can't be estimated here.
+                tracing::debug!(
+                    key = %report.key.id, model = report.model,
+                    "no tally here for a request's start"
+                );
+            }
             return;
-        } else if let Some(&output) = report.counts.get(&Measure::Output) {
+        } else if let Some(&output) = report.counts.get(&Measure::Output)
+            // A Claude stream that ended without `message_delta` is reported
+            // with `message_start`'s count: estimate it like one without.
+            && !self.tallies.stale(&report.request, output)
+        {
             if !report.request.is_empty() && !self.tallies.reported(&report.request) {
                 tracing::warn!(
                     key = %report.key.id, model = report.model,
@@ -168,10 +177,11 @@ impl Charger {
             }
             self.reported_cost(&report, output).await
         } else {
-            // A response-side call without the output count: its counts
-            // replace the prompt count, and the stream's end decides.
+            // A response-side call without the output count (or with a stale
+            // one): its counts replace the prompt count, and the stream's end
+            // decides.
             let usage = report.usage();
-            if self.record_start(&report, usage) {
+            if self.record_start(&report, usage, true) {
                 return;
             }
             tracing::warn!(
@@ -190,11 +200,14 @@ impl Charger {
 
     /// Records a request's start on its tally, and on the first record
     /// watches the stream. `false` when there is no tally for it.
-    fn record_start(&self, report: &Report, usage: Usage) -> bool {
+    fn record_start(&self, report: &Report, usage: Usage, from_response: bool) -> bool {
         if report.request.is_empty() {
             return false;
         }
-        match self.tallies.start(&report.request, report.start(usage)) {
+        match self
+            .tallies
+            .start(&report.request, report.start(usage, from_response))
+        {
             Recorded::First => {
                 let (charger, id) = (self.clone(), report.request.clone());
                 tokio::spawn(async move { charger.charge_unreported(&id).await });

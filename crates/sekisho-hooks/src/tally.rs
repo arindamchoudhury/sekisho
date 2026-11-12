@@ -43,6 +43,12 @@ pub const KEEP: Duration = Duration::from_secs(10 * 60);
 /// long, so a report after the estimate is never charged on top.
 pub const STALLED: Duration = Duration::from_secs(60 * 60);
 
+/// A finished tally that no rate-limit call ever started (count_tokens, a
+/// path that isn't a model call) is dropped this long after its end. The
+/// request-side call comes before the provider is even asked, so a minute
+/// is far more than it needs.
+const UNCLAIMED: Duration = Duration::from_secs(60);
+
 /// How often [`Tallies::open`] looks for tallies to drop.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
@@ -72,6 +78,10 @@ pub struct ProviderUsage {
     pub prompt: Option<Usage>,
     /// The answer's final token count.
     pub output: Option<u64>,
+    /// The output count in Anthropic's `message_start`. agentgateway
+    /// reports it as the output when a stream ends without `message_delta`
+    /// (the provider failed mid-answer), so a report of it is stale.
+    pub start_output: Option<u64>,
 }
 
 /// What agentgateway reported of a request that has no output count yet:
@@ -84,6 +94,9 @@ pub struct Start {
     pub model: String,
     /// The output count is always 0 here.
     pub usage: Usage,
+    /// The counts came from a response-side call (the provider's, through
+    /// agentgateway), which a request-side prompt count never replaces.
+    pub from_response: bool,
 }
 
 /// What [`Tallies::start`] did.
@@ -105,6 +118,17 @@ struct Entry {
     finished: bool,
     start: Option<Start>,
     touched: Instant,
+    /// Wakes this tally's waiters when it finishes or is taken; each tally
+    /// has its own, so one stream's end wakes only its own watcher.
+    changed: Arc<Notify>,
+}
+
+impl Entry {
+    /// Wakes its waiters as it is taken out of the book.
+    fn taken(self) -> Self {
+        self.changed.notify_waiters();
+        self
+    }
 }
 
 struct Book {
@@ -116,8 +140,6 @@ struct Book {
 
 struct Inner {
     book: Mutex<Book>,
-    /// Woken whenever a tally finishes or is taken.
-    changed: Notify,
     clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 
@@ -153,7 +175,6 @@ impl Tallies {
                 estimated: HashMap::new(),
                 swept: now,
             }),
-            changed: Notify::new(),
             clock,
         }))
     }
@@ -173,12 +194,16 @@ impl Tallies {
             // A watched tally is its watcher's to take; this only catches one
             // whose watcher is gone.
             book.entries.retain(|_, e| {
-                let limit = if e.start.is_some() {
-                    STALLED + KEEP
-                } else {
-                    KEEP
+                let limit = match (&e.start, e.finished) {
+                    (Some(_), _) => STALLED + KEEP,
+                    (None, true) => UNCLAIMED,
+                    (None, false) => KEEP,
                 };
-                within(&e.touched, limit)
+                let keep = within(&e.touched, limit);
+                if !keep {
+                    e.changed.notify_waiters();
+                }
+                keep
             });
             book.estimated.retain(|_, at| within(at, STALLED));
             book.swept = now;
@@ -190,6 +215,7 @@ impl Tallies {
                 finished: false,
                 start: None,
                 touched: now,
+                changed: Arc::new(Notify::new()),
             },
         );
         id
@@ -214,18 +240,20 @@ impl Tallies {
 
     /// Marks the tally complete: its stream has ended.
     pub fn finish(&self, id: &str) {
-        self.touch(id, |e| e.finished = true);
-        self.0.changed.notify_waiters();
+        self.touch(id, |e| {
+            e.finished = true;
+            e.changed.notify_waiters();
+        });
     }
 
     /// Drops a tally nobody will read.
     pub fn discard(&self, id: &str) {
-        self.book().entries.remove(id);
-        self.0.changed.notify_waiters();
+        self.book().entries.remove(id).map(Entry::taken);
     }
 
     /// Records what agentgateway reported of a request without its output
-    /// count. A later record replaces an earlier one's counts.
+    /// count. A later record replaces an earlier one's counts, except that
+    /// a request-side prompt count never replaces a response-side call's.
     pub fn start(&self, id: &str, start: Start) -> Recorded {
         let now = (self.0.clock)();
         let mut book = self.book();
@@ -236,10 +264,27 @@ impl Tallies {
             return Recorded::Unknown;
         };
         entry.touched = now;
-        match entry.start.replace(start) {
-            None => Recorded::First,
-            Some(_) => Recorded::Again,
+        match &entry.start {
+            None => {
+                entry.start = Some(start);
+                Recorded::First
+            }
+            Some(recorded) => {
+                if start.from_response || !recorded.from_response {
+                    entry.start = Some(start);
+                }
+                Recorded::Again
+            }
         }
+    }
+
+    /// Whether a report's `output` is only the stream's `message_start`
+    /// count: the stream showed no final count, and agentgateway reported
+    /// the start's as the output.
+    pub fn stale(&self, id: &str, output: u64) -> bool {
+        self.book().entries.get(id).is_some_and(|e| {
+            e.tally.usage.output.is_none() && e.tally.usage.start_output == Some(output)
+        })
     }
 
     /// agentgateway reported the request's usage, so its tally isn't needed.
@@ -250,9 +295,7 @@ impl Tallies {
         if book.estimated.contains_key(id) {
             return false;
         }
-        book.entries.remove(id);
-        drop(book);
-        self.0.changed.notify_waiters();
+        book.entries.remove(id).map(Entry::taken);
         true
     }
 
@@ -292,7 +335,7 @@ impl Tallies {
         }
         let now = (self.0.clock)();
         let mut book = self.book();
-        let entry = book.entries.remove(id)?;
+        let entry = book.entries.remove(id)?.taken();
         let start = entry.start?;
         book.estimated.insert(id.to_owned(), now);
         Some((start, entry.tally))
@@ -303,11 +346,7 @@ impl Tallies {
     /// `timeout`.
     pub async fn wait(&self, id: &str, timeout: Duration) -> Option<Tally> {
         match self.until(id, timeout, |e| e.finished).await {
-            Until::Done => {
-                let tally = self.book().entries.remove(id).map(|e| e.tally);
-                self.0.changed.notify_waiters();
-                tally
-            }
+            Until::Done => self.book().entries.remove(id).map(|e| e.taken().tally),
             Until::Gone | Until::TimedOut => None,
         }
     }
@@ -324,8 +363,11 @@ impl Tallies {
     async fn until(&self, id: &str, timeout: Duration, done: impl Fn(&Entry) -> bool) -> Until {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
+            let Some(signal) = self.book().entries.get(id).map(|e| Arc::clone(&e.changed)) else {
+                return Until::Gone;
+            };
             // Registered before looking, so a change in between still wakes us.
-            let changed = self.0.changed.notified();
+            let changed = signal.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             match self.book().entries.get(id) {
@@ -447,6 +489,9 @@ fn provider_usage(event: &Value, usage: &mut ProviderUsage) {
     match event["type"].as_str() {
         Some("message_start") => {
             let (input, read, write) = anthropic(&event["message"]["usage"]);
+            if input > 0 {
+                usage.start_output = event["message"]["usage"]["output_tokens"].as_u64();
+            }
             prompt(input, read, write);
         }
         Some("message_delta") if event["usage"].is_object() => {
@@ -514,10 +559,11 @@ fn answer_text(event: &Value, found: &mut dyn FnMut(&str)) {
         }
         _ => {}
     }
-    // OpenAI chat: content, reasoning and tool arguments.
+    // OpenAI chat: content, reasoning (`reasoning_content`, or `reasoning`
+    // from OpenRouter and vLLM) and tool arguments.
     for choice in event["choices"].as_array().into_iter().flatten() {
         let delta = &choice["delta"];
-        for field in ["content", "reasoning_content"] {
+        for field in ["content", "reasoning_content", "reasoning"] {
             emit(&delta[field], found);
         }
         for call in delta["tool_calls"].as_array().into_iter().flatten() {
@@ -568,6 +614,7 @@ mod tests {
                 input: prompt,
                 ..Usage::default()
             },
+            from_response: false,
         }
     }
 
@@ -599,6 +646,10 @@ mod tests {
             (
                 r#"{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"First, the files"}}]}"#,
                 "First, the files",
+            ),
+            (
+                r#"{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning":"Then the tests"}}]}"#,
+                "Then the tests",
             ),
             (
                 r#"{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"src"}}]}}]}"#,
@@ -989,6 +1040,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(100_200, 95_000, 200)),
                     output: None,
+                    start_output: Some(1),
                 },
             ),
             (
@@ -999,6 +1051,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(30, 0, 0)),
                     output: Some(57),
+                    start_output: Some(1),
                 },
             ),
             // A translated stream's empty start counts nothing.
@@ -1016,6 +1069,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(1000, 600, 0)),
                     output: Some(20),
+                    start_output: None,
                 },
             ),
             // OpenAI Responses.
@@ -1026,6 +1080,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(900, 100, 0)),
                     output: Some(45),
+                    start_output: None,
                 },
             ),
             // Gemini: the prompt in every chunk, the output once it finished.
@@ -1036,6 +1091,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(700, 300, 0)),
                     output: None,
+                    start_output: None,
                 },
             ),
             (
@@ -1045,6 +1101,7 @@ mod tests {
                 ProviderUsage {
                     prompt: Some(usage(700, 0, 0)),
                     output: Some(42),
+                    start_output: None,
                 },
             ),
         ];
@@ -1055,5 +1112,74 @@ mod tests {
             }
             assert_eq!(answer.usage(), want, "{events:?}");
         }
+    }
+
+    /// A response-side call's counts (the provider's, from agentgateway)
+    /// beat the request-side call's prompt count, whichever is handled last.
+    #[tokio::test]
+    async fn a_request_side_start_never_replaces_reported_counts() {
+        let tallies = Tallies::new();
+        let reported = Start {
+            usage: Usage {
+                input: 1_000,
+                cache_read: 600,
+                ..Usage::default()
+            },
+            from_response: true,
+            ..start(0)
+        };
+        let id = tallies.open();
+        assert_eq!(tallies.start(&id, reported.clone()), Recorded::First);
+        assert_eq!(tallies.start(&id, start(8)), Recorded::Again);
+        tallies.finish(&id);
+        let (recorded, _) = tallies
+            .unreported(&id, Duration::ZERO, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(recorded, reported);
+    }
+
+    /// A finished tally that no rate-limit call claimed (count_tokens, or a
+    /// path that isn't a model call) goes within two minutes, not ten.
+    #[test]
+    fn finished_tallies_nobody_watches_go_soon() {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock_now = Arc::clone(&now);
+        let tallies = Tallies::with_clock(Arc::new(move || *clock_now.lock().unwrap()));
+        let advance = |minutes: u64| *now.lock().unwrap() += Duration::from_secs(minutes * 60);
+
+        let unclaimed = tallies.open();
+        tallies.finish(&unclaimed);
+        let running = tallies.open(); // still streaming, nobody watching yet
+        let watched = tallies.open();
+        tallies.start(&watched, start(10));
+        tallies.finish(&watched);
+        advance(2);
+        tallies.open(); // sweeps
+        assert_eq!(tallies.start(&unclaimed, start(10)), Recorded::Unknown);
+        assert_eq!(tallies.start(&running, start(10)), Recorded::First);
+        assert_eq!(tallies.start(&watched, start(10)), Recorded::Again);
+    }
+
+    /// agentgateway reports Anthropic's `message_start` output count as the
+    /// output when a stream ends without `message_delta` (a provider error
+    /// mid-answer). Such a report is stale until the stream shows its final
+    /// count.
+    #[test]
+    fn a_report_of_the_start_count_is_stale() {
+        let tallies = Tallies::new();
+        let id = tallies.open();
+        assert!(!tallies.stale(&id, 1), "no start count seen");
+        let mut usage = ProviderUsage {
+            start_output: Some(1),
+            ..ProviderUsage::default()
+        };
+        tallies.set_usage(&id, usage);
+        assert!(tallies.stale(&id, 1));
+        assert!(!tallies.stale(&id, 20), "a count of its own");
+        usage.output = Some(1); // `message_delta`: one token after all
+        tallies.set_usage(&id, usage);
+        assert!(!tallies.stale(&id, 1));
+        assert!(!tallies.stale("unknown", 1));
     }
 }

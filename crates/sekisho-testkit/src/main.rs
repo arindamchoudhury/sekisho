@@ -8,8 +8,13 @@
 //! the requested model, or `x-mock-model` when given (as providers report a
 //! dated model name).
 //!
-//! `POST /v1/messages` answers like Anthropic's Messages API (not streamed),
-//! with the same usage.
+//! `POST /v1/messages` answers like Anthropic's Messages API, with the same
+//! chunks, interval and usage. With `"stream": true` it streams Anthropic's
+//! events: `message_start` (with the prompt's usage), one
+//! `content_block_delta` per chunk, then `message_delta` (with the output
+//! count) and `message_stop`. `x-mock-error-after: n` ends the stream after
+//! `n` deltas with an `overloaded_error` event, as a provider that fails
+//! mid-answer does.
 //!
 //! Azure's `v1` path, `POST /openai/v1/chat/completions`, answers like
 //! `/v1/chat/completions`.
@@ -119,19 +124,90 @@ async fn unrouted() -> Json<Value> {
     Json(json!({ "mock": "unrouted" }))
 }
 
-async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let chunks = header_number(&headers, "x-mock-chunks", 20);
-    let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
-    Json(json!({
-        "id": "msg_mock",
-        "type": "message",
-        "role": "assistant",
-        "model": body["model"].as_str().unwrap_or("mock-model"),
-        "content": [{ "type": "text", "text": text }],
-        "stop_reason": "end_turn",
-        "stop_sequence": null,
-        "usage": { "input_tokens": 1000, "output_tokens": chunks },
-    }))
+    let model = body["model"].as_str().unwrap_or("mock-model").to_owned();
+    if body["stream"].as_bool() != Some(true) {
+        let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+        return Json(json!({
+            "id": "msg_mock",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [{ "type": "text", "text": text }],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": { "input_tokens": 1000, "output_tokens": chunks },
+        }))
+        .into_response();
+    }
+
+    let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
+    let error_after = headers
+        .get("x-mock-error-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+    tokio::spawn(async move {
+        let event =
+            |name: &str, value: Value| Ok(Bytes::from(format!("event: {name}\ndata: {value}\n\n")));
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_mock", "type": "message", "role": "assistant", "model": model,
+                "content": [], "stop_reason": null, "stop_sequence": null,
+                "usage": { "input_tokens": 1000, "output_tokens": 1 },
+            },
+        });
+        let block = json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } });
+        for (name, value) in [("message_start", start), ("content_block_start", block)] {
+            if tx.send(event(name, value)).await.is_err() {
+                return;
+            }
+        }
+        for i in 0..chunks {
+            tokio::time::sleep(interval).await;
+            let delta = json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": { "type": "text_delta", "text": format!("t{i} ") },
+            });
+            if tx.send(event("content_block_delta", delta)).await.is_err() {
+                return; // the client went away
+            }
+            if error_after == Some(i + 1) {
+                let error = json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } });
+                let _ = tx.send(event("error", error)).await;
+                return;
+            }
+        }
+        for (name, value) in [
+            (
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": 0 }),
+            ),
+            (
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+                    "usage": { "output_tokens": chunks },
+                }),
+            ),
+            ("message_stop", json!({ "type": "message_stop" })),
+        ] {
+            if tx.send(event(name, value)).await.is_err() {
+                return;
+            }
+        }
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
 }
 
 async fn completions(headers: HeaderMap, Json(body): Json<Value>) -> Response {
