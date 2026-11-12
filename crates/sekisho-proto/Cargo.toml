@@ -1,6 +1,6 @@
 [package]
 name = "sekisho-proto"
-description = "gRPC types for agentgateway's rate-limit and ext_proc hooks (Envoy protocols)"
+description = "gRPC types for agentgateway's rate-limit and ext_proc hooks (Envoy protocols) and Dex's management API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

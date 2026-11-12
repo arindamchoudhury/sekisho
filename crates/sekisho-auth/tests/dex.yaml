@@ -1,0 +1,29 @@
+# Dex for sekisho-auth's tests: local passwords, and the management API on
+# 5557. Sekisho registers its own client through gRPC.
+#
+# Storage is PostgreSQL, as in production: Dex v2.46.1's memory storage
+# deadlocks when a local account's refresh token is rotated (its
+# UpdateRefreshToken holds the storage lock while the password connector
+# reads the password through the same lock). tests/common replaces
+# DEX_DB_HOST with the database container's name.
+issuer: http://dex.test:5556/dex
+storage:
+  type: postgres
+  config:
+    host: DEX_DB_HOST
+    port: 5432
+    database: postgres
+    user: postgres
+    password: sekisho
+    ssl:
+      mode: disable
+web:
+  http: 0.0.0.0:5556
+grpc:
+  addr: 0.0.0.0:5557
+enablePasswordDB: true
+oauth2:
+  skipApprovalScreen: true
+expiry:
+  refreshTokens:
+    reuseInterval: 3s

@@ -1,0 +1,30 @@
+[package]
+name = "sekisho-auth"
+description = "Sekisho's sign-in: its OAuth 2.1 server and its client for Dex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true, features = ["form", "json"] }
+sekisho-core = { workspace = true }
+sekisho-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tonic = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+bcrypt = { workspace = true }
+sha2 = { workspace = true }
+testcontainers = { workspace = true }
+time = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }

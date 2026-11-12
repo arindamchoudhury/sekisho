@@ -1,7 +1,8 @@
 //! gRPC types for the Envoy protocols agentgateway speaks to Sekisho's hooks:
 //! the rate-limit service ([`ratelimit`]) and external processing
-//! ([`ext_proc`]). Generated at build time from protos vendored from
-//! agentgateway v1.7.0.
+//! ([`ext_proc`]), generated at build time from protos vendored from
+//! agentgateway v1.7.0; and the client for Dex's management API ([`dex`]),
+//! from Dex v2.46.1.
 
 /// The generated code, nested by protobuf package as it expects.
 #[allow(clippy::all, clippy::pedantic, missing_docs)]
@@ -23,6 +24,12 @@ pub mod envoy {
             }
         }
     }
+}
+
+/// Dex's gRPC API (protobuf package `api`), client side only.
+#[allow(clippy::all, clippy::pedantic, missing_docs)]
+pub mod dex {
+    tonic::include_proto!("api");
 }
 
 pub use envoy::service::common::v3 as common;
