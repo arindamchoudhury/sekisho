@@ -17,7 +17,7 @@ D15	Local accounts required	local account	README design plans comparison memory
 D16	Dex as the sign-in layer	\bdex\b	README design plans comparison memory claude
 D17	Sekisho runs its own OAuth server	oauth	README design plans claude
 D18	Web UI React + TypeScript	react	README design plans comparison memory claude
-D19	Release 1 coding tools: Claude Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code, Kilo CLI (decided 2026-11-10)	\bkilo\bREADME design plans comparison claude
+D19	Release 1 coding tools: Claude Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code, Kilo CLI (decided 2026-11-10)	\bkilo\b	README design plans comparison claude
 D20	Git mode with pull requests (GitHub first)	pull request	README design plans comparison
 D21	Each model maps to one provider; routing in release 2	routing	design comparison
 D22	One provider per API format per environment	one provider per	design plan1 comparison
@@ -80,3 +80,21 @@ D78	The rate-limit service answers at once and records spend on a task of its ow
 D79	Each estimated charge is logged; a request with no price anywhere is logged as a warning (our call)	logged as a warning	design plan1c
 D80	A stream agentgateway never reports is charged its estimate by the rate-limit service once the stream hook's tally ends; a later report is refused (our call)	never reports	design plan1c
 D81	A stream that ended before any answer reached the client (agentgateway's own error) is charged nothing (our call)	before any answer reached the client	design plan1c
+D82	Session tokens are checked by Sekisho's extAuthz on model routes, not by agentgateway's jwtAuth, and extAuthz names the person each charge goes to (our call, plan 2)	checks session tokens itself	design
+D83	Session tokens are Ed25519 JWTs; signing keys rotate every 30 days and on demand; a new key is published a minute before it signs (our call)	published a minute before	design
+D84	Refresh tokens rotate on every use; a session ends after 30 days without a refresh; a rotated token presented again ends the session, except within 10 s (our call)	30 days without a refresh	design plan2
+D85	One Dex refresh token per user, shared by their sessions, replayed under a lock on a task the client can't cancel (our call, from ACH)	one Dex refresh token per user	design
+D86	A daily check at Dex of every owner of an active environment key (our call, from ACH)	daily check at Dex	design
+D87	Dex's sessions_enabled stays off; only api_connectors_crud is on; Dex sign-ins end by RevokeRefresh (our call)	sessions_enabled.{0,30}stays off	design
+D88	Sekisho registers itself as a client of Dex through Dex's gRPC API (our call)	registers itself as a client of Dex	design
+D89	Users are matched by Dex's subject or a local account's Dex user ID, never linked by email (our call, as Obot)	never links? accounts by email|never linked by email	design
+D90	Sekisho groups can hold any user; Dex's connectors set which upstream claim carries groups (our call)	Sekisho groups can hold any user	design
+D91	Admins by mark or SEKISHO_ADMIN_GROUPS, read live; environment access only through access groups, no implicit access for admins (our call)	no implicit access	design
+D92	The bootstrap token only creates the first admin on /setup; sekisho admin-link recovers a lost admin (our call, as Obot)	admin-link	design plans plan2
+D93	Setup links work once for 7 days; passwords of 12 characters to 72 bytes, bcrypt at cost 12 for Dex; a reset ends the person's sessions (our call)	bcrypt at cost 12	design
+D94	Environment owners arrive in plan 2 with offboarding; catalog entries' owners stay in plan 3	environment owners	plans plan2
+D95	Offboarding disables the person and hands everything to one new owner; users are disabled, never deleted, in release 1 (our call)	disabled, never deleted	design
+D96	A key is invalid while its owner is disabled, refused at Dex or outside the access groups, and works again once access returns (our call)	works again once access returns	design
+D97	Keys are created by their owner; admins list, suspend, resume and revoke anyone's keys (our call)	created by their owner	design plan2
+D98	OAuth details: 60 s codes with PKCE S256, 10-minute device codes, the pre-registered sekisho-cli client with loopback redirects (our call)	sekisho-cli	design plan2
+D99	Dex's gRPC port is never published; browsers reach Dex at its issuer, Sekisho over the private network (our call)	gRPC port is never published	design

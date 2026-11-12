@@ -24,6 +24,7 @@ declare -A F=(
   [plan1]=.private/superpowers/plans/2026-11-08-plan-1-governed-gateway-core.md
   [plan1b]=.private/superpowers/plans/2026-11-10-plan-1b-bedrock-and-azure.md
   [plan1c]=.private/superpowers/plans/2026-11-11-plan-1c-spend-accuracy.md
+  [plan2]=.private/superpowers/plans/2026-11-12-plan-2-sign-in-and-people.md
   [plans]=.private/superpowers/plans/README.md
   [comparison]=.private/comparison.md
   [inventory]=.private/research/feature-inventory.md
