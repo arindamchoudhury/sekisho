@@ -103,3 +103,7 @@ D101	Gemini CLI's own remote-agent files for A2A agents are placed in release 2 
 D102	Every local MCP server names an exact package version or image digest; an entry without one is refused at sync (decided 2026-11-12)	exact (package )?versions?	README design plans
 D103	How local MCP servers are pinned: Obot's three runtimes only, npm @version and Python == or @, container tags resolved to digests at sync, plugins' MCP servers checked too (our call)	resolved to (its |their )?digests?	design plans
 D104	Dex's HTTP 500 at refresh is unavailable, never a refusal: with Dex v2.46.1 the daily check catches only dead Dex tokens, leavers are offboarded in Sekisho (decided 2026-11-12)	dead Dex tokens?	design plan2
+D105	Each A2A agent's MCP tool has a name of its own on the environment's MCP endpoint (our call)	name of its own	design plans
+D106	An A2A agent's MCP tool goes through the same checks as the A2A route: access, the caller's identity and the call's record, once (our call)	same checks as the A2A route	design plans
+D107	Long A2A tasks: progress at least every 30 seconds, an MCP task for clients that declare the MCP tasks extension and a plain call for the rest, resubscribe or GetTask after a dropped stream (our call)	MCP tasks extension	design plans
+D108	A2A answers keep non-text parts: data parts as JSON, files as MCP resource links or embedded resources (our call)	non-text parts	design plans
