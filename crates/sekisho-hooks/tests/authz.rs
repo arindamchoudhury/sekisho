@@ -50,10 +50,19 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: Vec::new(),
+        owner: None,
     };
-    store.upsert_environment(spec).await.unwrap().spec.name
+    store
+        .upsert_environment(
+            spec,
+            sekisho_testkit::people::person(store, "admin@example.com", &["eng"]).await,
+        )
+        .await
+        .unwrap()
+        .spec
+        .name
 }
 
 async fn hook() -> Hook {
@@ -61,15 +70,30 @@ async fn hook() -> Hook {
     let data = env(&store, "data-team").await;
     let ml = env(&store, "ml-team").await;
     let (key, token) = store
-        .create_key(&data, "alice@example.com", "ci", None)
+        .create_key(
+            &data,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (_, other_env_token) = store
-        .create_key(&ml, "alice@example.com", "ci", None)
+        .create_key(
+            &ml,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (_, expiring_now_token) = store
-        .create_key(&data, "bob@example.com", "short", Some(*NOW))
+        .create_key(
+            &data,
+            sekisho_testkit::people::person(&store, "bob@example.com", &["eng"]).await,
+            "short",
+            Some(*NOW),
+        )
         .await
         .unwrap();
 
@@ -172,7 +196,8 @@ async fn authz_allows_active_key() {
     let r = call(&app, PATH, Some(&bearer(&app.token))).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.headers["x-sekisho-key"], app.key.as_str());
-    assert_eq!(r.headers["x-sekisho-person"], "alice@example.com");
+    let alice = sekisho_testkit::people::person(&app.store, "alice@example.com", &["eng"]).await;
+    assert_eq!(r.headers["x-sekisho-person"], alice.to_string().as_str());
     assert_eq!(r.headers["x-sekisho-env"], "data-team");
     // Any method and any path under the environment, and a lowercase scheme.
     for (method, path) in [
@@ -367,7 +392,7 @@ async fn only_applicable_budgets_refuse() {
         &app.store,
         "bob",
         BudgetScope::Person {
-            person: "bob@example.com".into(),
+            person: sekisho_testkit::people::person(&app.store, "bob@example.com", &["eng"]).await,
             environment: None,
         },
         "0",
@@ -378,7 +403,8 @@ async fn only_applicable_budgets_refuse() {
         &app.store,
         "alice-ml",
         BudgetScope::Person {
-            person: "alice@example.com".into(),
+            person: sekisho_testkit::people::person(&app.store, "alice@example.com", &["eng"])
+                .await,
             environment: Some(ml),
         },
         "0",
@@ -391,7 +417,8 @@ async fn only_applicable_budgets_refuse() {
         &app.store,
         "alice",
         BudgetScope::Person {
-            person: "alice@example.com".into(),
+            person: sekisho_testkit::people::person(&app.store, "alice@example.com", &["eng"])
+                .await,
             environment: None,
         },
         "0",

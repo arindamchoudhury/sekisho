@@ -114,7 +114,7 @@ pub async fn exhausted_budget(
     now: OffsetDateTime,
 ) -> Result<Option<BudgetStatus>, StoreError> {
     let budgets = store
-        .applicable_budgets(&key.environment, &key.id, &key.owner)
+        .applicable_budgets(&key.environment, Some(&key.id), key.owner)
         .await?;
     if budgets.is_empty() {
         return Ok(None);
@@ -168,7 +168,7 @@ impl IntoResponse for Decision {
                     }
                 };
                 set("x-sekisho-key", key.id.as_str());
-                set("x-sekisho-person", &key.owner);
+                set("x-sekisho-person", &key.owner.to_string());
                 set("x-sekisho-env", key.environment.as_str());
                 return (status, headers).into_response();
             }

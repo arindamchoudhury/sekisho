@@ -12,6 +12,7 @@ use sekisho_store::{ChangeKind, Store, StoreError};
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
+use uuid::Uuid;
 
 /// How often the cache reloads even without notifications, in case one was
 /// lost.
@@ -22,7 +23,8 @@ pub const SAFETY_NET: Duration = Duration::from_secs(30);
 pub struct CachedKey {
     pub id: EnvKeyId,
     pub environment: EnvName,
-    pub owner: String,
+    /// The user the key belongs to.
+    pub owner: Uuid,
     pub secret_sha256: [u8; 32],
     pub expires_at: Option<OffsetDateTime>,
     pub suspended: bool,
@@ -55,7 +57,7 @@ impl AuthCache {
 
     /// Reads everything again and swaps it in. On error the old data stays.
     pub async fn reload(&self, store: &Store) -> Result<(), StoreError> {
-        let snapshot = store.auth_snapshot().await?;
+        let snapshot = store.auth_snapshot(OffsetDateTime::now_utc()).await?;
         let keys = snapshot
             .keys
             .into_iter()
@@ -74,7 +76,7 @@ impl AuthCache {
             .collect();
         let data = Arc::new(Data {
             keys,
-            environments: snapshot.environments.into_iter().collect(),
+            environments: snapshot.environments.into_iter().map(|e| e.name).collect(),
         });
         *self.data.write().unwrap_or_else(PoisonError::into_inner) = data;
         Ok(())

@@ -23,10 +23,16 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: Vec::new(),
+        owner: None,
     };
-    store.upsert_environment(spec).await.unwrap().spec.name
+    store
+        .upsert_environment(spec, common::admin(store).await)
+        .await
+        .unwrap()
+        .spec
+        .name
 }
 
 fn new_budget(
@@ -51,9 +57,9 @@ async fn budget(store: &Store, scope: BudgetScope, usd: &str, kind: WindowKind) 
         .unwrap()
 }
 
-fn person(person: &str, environment: Option<&EnvName>) -> BudgetScope {
+fn person(person: Uuid, environment: Option<&EnvName>) -> BudgetScope {
     BudgetScope::Person {
-        person: person.into(),
+        person,
         environment: environment.cloned(),
     }
 }
@@ -71,25 +77,37 @@ fn fields(err: StoreError) -> Vec<String> {
 #[tokio::test]
 async fn applicable_budgets_by_scope() {
     let (store, _sb) = common::store().await;
+    let alice_id = common::person(&store, "alice@example.com", &["eng"]).await;
+    let bob_id = common::person(&store, "bob@example.com", &["eng"]).await;
     let data = env(&store, "data-team").await;
     let ml = env(&store, "ml-team").await;
     let (key, _) = store
-        .create_key(&data, "alice@example.com", "ci", None)
+        .create_key(
+            &data,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (other_key, _) = store
-        .create_key(&data, "bob@example.com", "ci-2", None)
+        .create_key(
+            &data,
+            common::person(&store, "bob@example.com", &["eng"]).await,
+            "ci-2",
+            None,
+        )
         .await
         .unwrap();
     for (name, scope) in [
         ("env", BudgetScope::Environment(data.clone())),
         ("key", BudgetScope::Key(key.id.clone())),
-        ("person-in-env", person("alice@example.com", Some(&data))),
-        ("person-global", person("alice@example.com", None)),
-        ("person-other-env", person("alice@example.com", Some(&ml))),
+        ("person-in-env", person(alice_id, Some(&data))),
+        ("person-global", person(alice_id, None)),
+        ("person-other-env", person(alice_id, Some(&ml))),
         ("other-env", BudgetScope::Environment(ml.clone())),
         ("other-key", BudgetScope::Key(other_key.id.clone())),
-        ("other-person", person("bob@example.com", None)),
+        ("other-person", person(bob_id, None)),
     ] {
         store
             .create_budget(new_budget(name, scope, "10", WindowKind::Month, true))
@@ -97,7 +115,7 @@ async fn applicable_budgets_by_scope() {
             .unwrap();
     }
     let applicable: HashSet<String> = store
-        .applicable_budgets(&data, &key.id, "alice@example.com")
+        .applicable_budgets(&data, Some(&key.id), alice_id)
         .await
         .unwrap()
         .into_iter()
@@ -202,6 +220,7 @@ async fn threshold_crossed_exactly_once() {
 async fn concurrent_charges_across_budgets_in_any_order() {
     // Two budgets charged together in opposite orders must neither deadlock nor lose spend.
     let (store, _sb) = common::store().await;
+    let alice_id = common::person(&store, "alice@example.com", &["eng"]).await;
     let env = env(&store, "data-team").await;
     let a = budget(
         &store,
@@ -210,13 +229,7 @@ async fn concurrent_charges_across_budgets_in_any_order() {
         WindowKind::Month,
     )
     .await;
-    let b = budget(
-        &store,
-        person("alice@example.com", None),
-        "1",
-        WindowKind::Month,
-    )
-    .await;
+    let b = budget(&store, person(alice_id, None), "1", WindowKind::Month).await;
     let tasks: Vec<_> = (0..40)
         .map(|i| {
             let s = store.clone();
@@ -317,18 +330,24 @@ async fn rolling_window_counts_from_creation() {
 #[tokio::test]
 async fn budget_crud_validation_and_notifications() {
     let (store, _sb) = common::store().await;
+    let alice_id = common::person(&store, "alice@example.com", &["eng"]).await;
     let data = env(&store, "data-team").await;
     let (key, _) = store
-        .create_key(&data, "alice@example.com", "ci", None)
+        .create_key(
+            &data,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let mut rx = store.listen().await.unwrap();
 
-    let mut bad = new_budget("", person("", None), "1", WindowKind::Week, true);
+    let mut bad = new_budget("", person(alice_id, None), "1", WindowKind::Week, true);
     bad.limit = MicroUsd(-1);
     assert_eq!(
         fields(store.create_budget(bad).await.unwrap_err()),
-        ["name", "person", "limit"]
+        ["name", "limit"]
     );
     let unknown_env = BudgetScope::Environment(EnvName::parse("nope").unwrap());
     assert_eq!(
@@ -340,7 +359,7 @@ async fn budget_crud_validation_and_notifications() {
         ),
         ["environment"]
     );
-    let unknown_person_env = person("alice@example.com", Some(&EnvName::parse("nope").unwrap()));
+    let unknown_person_env = person(alice_id, Some(&EnvName::parse("nope").unwrap()));
     assert_eq!(
         fields(
             store
@@ -397,7 +416,7 @@ async fn budget_crud_validation_and_notifications() {
     let alice = store
         .create_budget(new_budget(
             "alice",
-            person("alice@example.com", Some(&data)),
+            person(alice_id, Some(&data)),
             "2",
             WindowKind::Day,
             true,
@@ -442,6 +461,7 @@ async fn budget_crud_validation_and_notifications() {
 #[tokio::test]
 async fn charge_edge_cases() {
     let (store, _sb) = common::store().await;
+    let alice_id = common::person(&store, "alice@example.com", &["eng"]).await;
     let env = env(&store, "data-team").await;
     let a = budget(
         &store,
@@ -450,13 +470,7 @@ async fn charge_edge_cases() {
         WindowKind::Month,
     )
     .await;
-    let b = budget(
-        &store,
-        person("alice@example.com", None),
-        "1",
-        WindowKind::Week,
-    )
-    .await;
+    let b = budget(&store, person(alice_id, None), "1", WindowKind::Week).await;
 
     let both = store
         .charge(&[a.id, b.id], MicroUsd(250), NOW)

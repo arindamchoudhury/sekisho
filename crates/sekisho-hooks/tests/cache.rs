@@ -13,10 +13,19 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: Vec::new(),
+        owner: None,
     };
-    store.upsert_environment(spec).await.unwrap().spec.name
+    store
+        .upsert_environment(
+            spec,
+            sekisho_testkit::people::person(store, "admin@example.com", &["eng"]).await,
+        )
+        .await
+        .unwrap()
+        .spec
+        .name
 }
 
 /// Waits up to `within` for `done`, polling every 20 ms.
@@ -36,7 +45,12 @@ async fn revocation_reaches_other_replica_within_one_second() {
     let (store, _) = sekisho_testkit::store().await;
     let env = env(&store, "data-team").await;
     let (key, _) = store
-        .create_key(&env, "alice@example.com", "ci", None)
+        .create_key(
+            &env,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let a = AuthCache::load(&store).await.unwrap();
@@ -60,11 +74,21 @@ async fn load_reflects_the_store() {
     let data = env(&store, "data-team").await;
     let expires = OffsetDateTime::now_utc() + time::Duration::days(30);
     let (ci, token) = store
-        .create_key(&data, "alice@example.com", "ci", Some(expires))
+        .create_key(
+            &data,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            Some(expires),
+        )
         .await
         .unwrap();
     let (old, _) = store
-        .create_key(&data, "bob@example.com", "old", None)
+        .create_key(
+            &data,
+            sekisho_testkit::people::person(&store, "bob@example.com", &["eng"]).await,
+            "old",
+            None,
+        )
         .await
         .unwrap();
     store.set_suspended(&ci.id, true).await.unwrap();
@@ -77,7 +101,7 @@ async fn load_reflects_the_store() {
         Some(CachedKey {
             id: ci.id.clone(),
             environment: data.clone(),
-            owner: "alice@example.com".into(),
+            owner: ci.owner,
             secret_sha256: hash_secret(&secret),
             expires_at: ci.expires_at,
             suspended: true,
@@ -100,7 +124,12 @@ async fn changes_reach_the_cache() {
     let ml = env(&store, "ml-team").await;
     eventually(second, "new environment", || cache.environment_exists(&ml)).await;
     let (key, _) = store
-        .create_key(&ml, "alice@example.com", "ci", None)
+        .create_key(
+            &ml,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     eventually(second, "new key", || cache.key(&key.id).is_some()).await;
@@ -126,7 +155,12 @@ async fn safety_net_catches_unannounced_changes() {
     let (store, _) = sekisho_testkit::store().await;
     let data = env(&store, "data-team").await;
     let (key, _) = store
-        .create_key(&data, "alice@example.com", "ci", None)
+        .create_key(
+            &data,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let cache = AuthCache::load(&store).await.unwrap();

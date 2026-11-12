@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use sekisho_core::names::{EnvName, ModelName};
-use sekisho_store::{Environment, EnvironmentSpec};
+use sekisho_store::{Environment, EnvironmentSpec, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -32,6 +32,9 @@ pub struct EnvironmentPut {
     access_groups: Vec<String>,
     #[serde(default)]
     models: Vec<String>,
+    /// The owner's user ID. Without one, the stored owner stays.
+    #[serde(default)]
+    owner: Option<Uuid>,
     #[serde(default, rename = "id")]
     _id: Option<Value>,
     #[serde(default, rename = "created_at")]
@@ -49,6 +52,8 @@ pub struct EnvironmentBody {
     notice: String,
     access_groups: Vec<String>,
     models: Vec<String>,
+    /// `null` only for an environment saved before owners existed.
+    owner: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -65,6 +70,7 @@ impl From<Environment> for EnvironmentBody {
             notice: e.spec.notice,
             access_groups: e.spec.access_groups,
             models: e.spec.models.iter().map(ToString::to_string).collect(),
+            owner: e.owner,
             created_at: e.created_at,
             updated_at: e.updated_at,
         }
@@ -103,15 +109,35 @@ pub async fn put(
         return Err(fields.fail());
     };
     fields.finish()?;
-    let environment = state
-        .store()
-        .upsert_environment(EnvironmentSpec {
-            name,
-            description: body.description,
-            notice: body.notice,
-            access_groups: body.access_groups,
-            models,
-        })
+    let store = state.store();
+    // The admin API has no signed-in user until sign-in arrives (plan 2), so
+    // an environment without an owner yet has to name one.
+    let actor = match body.owner {
+        Some(owner) => owner,
+        None => match store.get_environment(&name).await {
+            Ok(Environment {
+                owner: Some(owner), ..
+            }) => owner,
+            Ok(_) | Err(StoreError::NotFound) => {
+                let mut fields = Fields::default();
+                fields.push("owner", "name the environment's owner (a user ID)");
+                return Err(fields.fail());
+            }
+            Err(e) => return Err(e.into()),
+        },
+    };
+    let environment = store
+        .upsert_environment(
+            EnvironmentSpec {
+                name,
+                description: body.description,
+                notice: body.notice,
+                access_groups: body.access_groups,
+                models,
+                owner: body.owner,
+            },
+            actor,
+        )
         .await?;
     Ok(Json(environment.into()))
 }

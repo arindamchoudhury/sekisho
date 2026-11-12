@@ -46,13 +46,27 @@ async fn rig() -> Rig {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: Vec::new(),
+        owner: None,
     };
-    let env = store.upsert_environment(spec).await.unwrap().spec.name;
+    let env = store
+        .upsert_environment(
+            spec,
+            sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await,
+        )
+        .await
+        .unwrap()
+        .spec
+        .name;
     let expires = OffsetDateTime::now_utc() + time::Duration::days(1);
     let (key, token) = store
-        .create_key(&env, "alice@example.com", "ci", Some(expires))
+        .create_key(
+            &env,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            Some(expires),
+        )
         .await
         .unwrap();
     let cache = AuthCache::load(&store).await.unwrap();

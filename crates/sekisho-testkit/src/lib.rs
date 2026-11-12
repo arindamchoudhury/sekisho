@@ -1,9 +1,10 @@
 //! Test support for Sekisho's crates.
 //!
 //! [`store`] gives a migrated `Store` on a throwaway PostgreSQL 18 container.
-//! It needs Docker.
+//! It needs Docker. [`people`] signs people in to it.
 
 pub mod eventstream;
+pub mod people;
 
 use std::ops::Deref;
 use std::time::Duration;

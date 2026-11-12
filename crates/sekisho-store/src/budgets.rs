@@ -16,9 +16,10 @@ use crate::{Result, Store, StoreError};
 /// Whose spend a budget limits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BudgetScope {
-    /// One person, within one environment or (`None`) across all of them.
+    /// One person (a user ID), within one environment or (`None`) across
+    /// all of them.
     Person {
-        person: String,
+        person: Uuid,
         environment: Option<EnvName>,
     },
     /// Everyone using the environment, pooled.
@@ -72,7 +73,7 @@ impl BudgetStatus {
 /// Expands to the budget query up to its filter.
 macro_rules! select_budgets {
     () => {
-        "select b.id, b.name, b.scope, e.name as environment, b.key_id, b.person, \
+        "select b.id, b.name, b.scope, e.name as environment, b.key_id, b.person_id, \
          b.limit_micro_usd, b.window_kind, b.calendar, b.created_at \
          from budgets b left join environments e on e.id = b.environment_id"
     };
@@ -81,11 +82,6 @@ macro_rules! select_budgets {
 fn validate(new: &NewBudget) -> Vec<FieldError> {
     let mut errors = Vec::new();
     check_label(&mut errors, "name", &new.name);
-    if let BudgetScope::Person { person, .. } = &new.scope
-        && person.trim().is_empty()
-    {
-        errors.push(FieldError::new("person", "must not be empty"));
-    }
     if new.limit.0 < 0 {
         errors.push(FieldError::new("limit", "must not be negative"));
     }
@@ -118,7 +114,7 @@ fn from_row(row: &PgRow) -> Result<Budget> {
         }
         "person" => BudgetScope::Person {
             person: row
-                .try_get::<Option<String>, _>("person")?
+                .try_get::<Option<Uuid>, _>("person_id")?
                 .ok_or_else(|| bad_column("budget person", "null"))?,
             environment: environment()?,
         },
@@ -177,15 +173,26 @@ impl Store {
                 person,
                 environment,
             } => {
+                let known: bool =
+                    sqlx::query_scalar("select exists (select 1 from users where id = $1)")
+                        .bind(person)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if !known {
+                    return Err(StoreError::Validation(vec![FieldError::new(
+                        "person",
+                        format!("no user {person}"),
+                    )]));
+                }
                 let environment = match environment {
                     Some(env) => Some(environment_id(&mut tx, env).await?),
                     None => None,
                 };
-                ("person", environment, None, Some(person.as_str()))
+                ("person", environment, None, Some(*person))
             }
         };
         let row = sqlx::query(
-            "insert into budgets (name, scope, environment_id, key_id, person, limit_micro_usd, \
+            "insert into budgets (name, scope, environment_id, key_id, person_id, limit_micro_usd, \
              window_kind, calendar) values ($1, $2, $3, $4, $5, $6, $7, $8) \
              returning id, created_at",
         )
@@ -246,25 +253,25 @@ impl Store {
         Ok(())
     }
 
-    /// The budgets a request through `key` by `person` in `env` counts
-    /// against: the environment's, the key's, and the person's in this
-    /// environment or across all.
+    /// The budgets a request by `person` in `env` counts against: the
+    /// environment's, the key's (for a request through a key rather than a
+    /// session), and the person's in this environment or across all.
     pub async fn applicable_budgets(
         &self,
         env: &EnvName,
-        key: &EnvKeyId,
-        person: &str,
+        key: Option<&EnvKeyId>,
+        person: Uuid,
     ) -> Result<Vec<Budget>> {
         sqlx::query(concat!(
             select_budgets!(),
             " where (b.scope = 'environment' and e.name = $1) \
              or (b.scope = 'key' and b.key_id = $2) \
-             or (b.scope = 'person' and b.person = $3 \
+             or (b.scope = 'person' and b.person_id = $3 \
                  and (b.environment_id is null or e.name = $1)) \
              order by b.name, b.created_at"
         ))
         .bind(env.as_str())
-        .bind(key.as_str())
+        .bind(key.map(EnvKeyId::as_str))
         .bind(person)
         .fetch_all(&self.pool)
         .await?

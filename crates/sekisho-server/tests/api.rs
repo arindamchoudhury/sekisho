@@ -14,6 +14,9 @@ struct TestApp {
     base: String,
     http: reqwest::Client,
     store: TestStore,
+    /// A person in the group `eng`, which `put_env` gives environments: the
+    /// owner of the tests' environments and keys.
+    owner: Uuid,
 }
 
 struct Reply {
@@ -41,10 +44,12 @@ async fn app() -> TestApp {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    let owner = sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await;
     TestApp {
         base: format!("http://{addr}"),
         http: reqwest::Client::new(),
         store,
+        owner,
     }
 }
 
@@ -132,7 +137,7 @@ impl TestApp {
         self.admin(
             "PUT",
             &format!("/api/v1/environments/{name}"),
-            Some(json!({ "models": models })),
+            Some(json!({ "models": models, "access_groups": ["eng"], "owner": self.owner })),
         )
         .await
     }
@@ -392,7 +397,8 @@ async fn providers_models_and_environments_round_trip() {
 
     let put = app
         .admin("PUT", "/api/v1/environments/data-team", Some(json!({
-            "api_version": "sekisho/v1alpha1", "description": "Data team", "notice": "Be kind.", "access_groups": ["data"], "models": ["mock-model"]
+            "api_version": "sekisho/v1alpha1", "description": "Data team", "notice": "Be kind.", "access_groups": ["data"], "models": ["mock-model"],
+            "owner": app.owner
         })))
         .await;
     assert_eq!(put.status, 200, "{}", put.text);
@@ -469,6 +475,113 @@ async fn providers_models_and_environments_round_trip() {
 }
 
 #[tokio::test]
+async fn owners_and_persons_are_user_ids() {
+    let app = app().await;
+    // Until sign-in arrives, a new environment names its owner.
+    let r = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/data-team",
+            Some(json!({ "access_groups": ["eng"] })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["fields"][0]["field"]),
+        (422, &json!("owner")),
+        "{}",
+        r.text
+    );
+    let unknown = Uuid::nil();
+    let r = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/data-team",
+            Some(json!({ "owner": unknown })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["fields"][0]["field"]),
+        (422, &json!("owner")),
+        "{}",
+        r.text
+    );
+    let r = app.put_env("data-team", &[]).await;
+    assert_eq!(
+        (r.status, &r.body["owner"]),
+        (200, &json!(app.owner)),
+        "{}",
+        r.text
+    );
+    // Saved again without an owner, it keeps the stored one.
+    let r = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/data-team",
+            Some(json!({ "access_groups": ["eng"] })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["owner"]),
+        (200, &json!(app.owner)),
+        "{}",
+        r.text
+    );
+
+    let keys = "/api/v1/environments/data-team/keys";
+    let outsider = sekisho_testkit::people::person(&app.store, "bob@example.com", &["ops"]).await;
+    for (owner, field) in [(json!(unknown), "owner"), (json!(outsider), "environment")] {
+        let r = app
+            .admin("POST", keys, Some(json!({ "owner": owner, "name": "ci" })))
+            .await;
+        assert_eq!(
+            (r.status, &r.body["fields"][0]["field"]),
+            (422, &json!(field)),
+            "{}",
+            r.text
+        );
+    }
+    let r = app
+        .admin(
+            "POST",
+            keys,
+            Some(json!({ "owner": app.owner, "name": "ci" })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, &r.body["owner"]),
+        (201, &json!(app.owner)),
+        "{}",
+        r.text
+    );
+
+    let budget = |person: Value| {
+        json!({
+            "name": "p", "scope": "person", "person": person, "limit": "1", "window": "day"
+        })
+    };
+    for person in [json!("alice@example.com"), json!(unknown)] {
+        let r = app
+            .admin("POST", "/api/v1/budgets", Some(budget(person)))
+            .await;
+        assert_eq!(
+            (r.status, &r.body["fields"][0]["field"]),
+            (422, &json!("person")),
+            "{}",
+            r.text
+        );
+    }
+    let r = app
+        .admin("POST", "/api/v1/budgets", Some(budget(json!(app.owner))))
+        .await;
+    assert_eq!(
+        (r.status, &r.body["person"]),
+        (201, &json!(app.owner)),
+        "{}",
+        r.text
+    );
+}
+
+#[tokio::test]
 async fn key_token_shown_once() {
     let app = app().await;
     assert_eq!(app.put_env("data-team", &[]).await.status, 200);
@@ -476,7 +589,7 @@ async fn key_token_shown_once() {
         .admin(
             "POST",
             "/api/v1/environments/data-team/keys",
-            Some(json!({ "owner": "alice@example.com", "name": "ci" })),
+            Some(json!({ "owner": app.owner, "name": "ci" })),
         )
         .await;
     assert_eq!(created.status, 201, "{}", created.text);
@@ -610,7 +723,7 @@ async fn budgets_and_status() {
             "key",
         ),
         (
-            json!({ "name": "x", "scope": "person", "person": "alice", "limit": "lots", "window": "day", "calendar": true }),
+            json!({ "name": "x", "scope": "person", "person": app.owner, "limit": "lots", "window": "day", "calendar": true }),
             "limit",
         ),
         (
@@ -618,7 +731,7 @@ async fn budgets_and_status() {
             "scope",
         ),
         (
-            json!({ "name": "x", "scope": "person", "person": "alice", "limit": "1", "window": "year", "calendar": true }),
+            json!({ "name": "x", "scope": "person", "person": app.owner, "limit": "1", "window": "year", "calendar": true }),
             "window",
         ),
     ] {
@@ -668,7 +781,7 @@ async fn config_version_bumps_on_env_change_only() {
         app.admin(
             "POST",
             "/api/v1/environments/data-team/keys",
-            Some(json!({ "owner": "alice@example.com", "name": "ci" }))
+            Some(json!({ "owner": app.owner, "name": "ci" }))
         )
         .await
         .status,

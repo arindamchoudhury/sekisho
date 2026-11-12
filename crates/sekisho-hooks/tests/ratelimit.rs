@@ -78,12 +78,26 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: Vec::new(),
+        owner: None,
     };
-    let env = store.upsert_environment(spec).await.unwrap().spec.name;
+    let env = store
+        .upsert_environment(
+            spec,
+            sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await,
+        )
+        .await
+        .unwrap()
+        .spec
+        .name;
     let (key, token) = store
-        .create_key(&env, "alice@example.com", "ci", None)
+        .create_key(
+            &env,
+            sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let mut budgets = Vec::new();
@@ -93,7 +107,7 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
         (
             "alice",
             BudgetScope::Person {
-                person: "alice@example.com".into(),
+                person: key.owner,
                 environment: None,
             },
         ),

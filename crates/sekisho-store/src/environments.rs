@@ -20,12 +20,18 @@ pub struct EnvironmentSpec {
     pub notice: String,
     pub access_groups: Vec<String>,
     pub models: Vec<ModelName>,
+    /// The user who owns it. `None` keeps the stored owner, or makes whoever
+    /// saves it the owner when there is none.
+    pub owner: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Environment {
     pub id: Uuid,
+    /// As stored: `spec.owner` is [`Environment::owner`].
     pub spec: EnvironmentSpec,
+    /// `None` only for an environment saved before plan 2 and not since.
+    pub owner: Option<Uuid>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -34,8 +40,8 @@ pub struct Environment {
 /// `group by e.id`.
 macro_rules! select_environments {
     () => {
-        "select e.id, e.name, e.description, e.notice, e.access_groups, e.created_at, \
-         e.updated_at, coalesce(array_agg(m.name order by em.position) \
+        "select e.id, e.name, e.description, e.notice, e.access_groups, e.owner_id, \
+         e.created_at, e.updated_at, coalesce(array_agg(m.name order by em.position) \
          filter (where m.id is not null), '{}') as models \
          from environments e \
          left join environment_models em on em.environment_id = e.id \
@@ -108,6 +114,7 @@ fn from_row(row: &PgRow) -> Result<Environment> {
         .iter()
         .map(|m| ModelName::parse(m).map_err(|_| bad_column("model name", m)))
         .collect::<Result<_>>()?;
+    let owner: Option<Uuid> = row.try_get("owner_id")?;
     Ok(Environment {
         id: row.try_get("id")?,
         spec: EnvironmentSpec {
@@ -116,7 +123,9 @@ fn from_row(row: &PgRow) -> Result<Environment> {
             notice: row.try_get("notice")?,
             access_groups: row.try_get("access_groups")?,
             models,
+            owner,
         },
+        owner,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -124,10 +133,30 @@ fn from_row(row: &PgRow) -> Result<Environment> {
 
 impl Store {
     /// Creates the environment, or replaces the spec of the one with this
-    /// name (keeping its id, keys and budgets).
-    pub async fn upsert_environment(&self, spec: EnvironmentSpec) -> Result<Environment> {
+    /// name (keeping its id, keys and budgets). `actor` is who saves it: the
+    /// owner of a new environment unless the spec names one, and of an
+    /// environment that has none. The owner must be an enabled user.
+    pub async fn upsert_environment(
+        &self,
+        mut spec: EnvironmentSpec,
+        actor: Uuid,
+    ) -> Result<Environment> {
         let names: Vec<String> = spec.models.iter().map(|m| m.as_str().to_owned()).collect();
         let mut tx = self.pool.begin().await?;
+        let stored_owner: Option<Uuid> =
+            sqlx::query_scalar("select owner_id from environments where name = $1")
+                .bind(spec.name.as_str())
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
+        let owner = spec.owner.or(stored_owner).unwrap_or(actor);
+        // Locked before the environment (users before environments, as in
+        // offboarding), so offboarding the owner waits for this save.
+        let owner_disabled: Option<bool> =
+            sqlx::query_scalar("select disabled_at is not null from users where id = $1 for share")
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?;
         // The share lock makes a concurrent delete_model of a listed model
         // wait, then find this environment and refuse.
         let rows = sqlx::query(
@@ -152,19 +181,28 @@ impl Store {
                 },
             );
         }
-        check(validate(&spec, &known))?;
+        let mut errors = validate(&spec, &known);
+        match owner_disabled {
+            None => errors.push(FieldError::new("owner", format!("no user {owner}"))),
+            Some(true) => errors.push(FieldError::new("owner", format!("{owner} is disabled"))),
+            Some(false) => {}
+        }
+        check(errors)?;
+        spec.owner = Some(owner);
 
         let row = sqlx::query(
-            "insert into environments (name, description, notice, access_groups) \
-             values ($1, $2, $3, $4) \
+            "insert into environments (name, description, notice, access_groups, owner_id) \
+             values ($1, $2, $3, $4, $5) \
              on conflict (name) do update set description = excluded.description, \
-             notice = excluded.notice, access_groups = excluded.access_groups, updated_at = now() \
+             notice = excluded.notice, access_groups = excluded.access_groups, \
+             owner_id = excluded.owner_id, updated_at = now() \
              returning id, created_at, updated_at",
         )
         .bind(spec.name.as_str())
         .bind(&spec.description)
         .bind(&spec.notice)
         .bind(&spec.access_groups)
+        .bind(owner)
         .fetch_one(&mut *tx)
         .await?;
         let id: Uuid = row.try_get("id")?;
@@ -187,6 +225,7 @@ impl Store {
         Ok(Environment {
             id,
             spec,
+            owner: Some(owner),
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })

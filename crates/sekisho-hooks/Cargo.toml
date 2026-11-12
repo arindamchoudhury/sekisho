@@ -19,6 +19,7 @@ tiktoken = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
+uuid = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 
@@ -29,4 +30,3 @@ sqlx = { workspace = true }
 time = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
-uuid = { workspace = true }

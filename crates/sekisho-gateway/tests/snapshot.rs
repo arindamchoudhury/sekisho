@@ -86,13 +86,17 @@ async fn snapshot_reflects_the_store() {
         ("empty", vec![]),
     ] {
         store
-            .upsert_environment(EnvironmentSpec {
-                name: EnvName::parse(env).unwrap(),
-                description: String::new(),
-                notice: String::new(),
-                access_groups: Vec::new(),
-                models: models.into_iter().map(model).collect(),
-            })
+            .upsert_environment(
+                EnvironmentSpec {
+                    name: EnvName::parse(env).unwrap(),
+                    description: String::new(),
+                    notice: String::new(),
+                    access_groups: Vec::new(),
+                    models: models.into_iter().map(model).collect(),
+                    owner: None,
+                },
+                sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
+            )
             .await
             .unwrap();
     }
@@ -229,17 +233,21 @@ async fn bedrock_routes_carry_their_credential_and_format() {
             .unwrap();
     }
     store
-        .upsert_environment(EnvironmentSpec {
-            name: EnvName::parse("cloud").unwrap(),
-            description: String::new(),
-            notice: String::new(),
-            access_groups: Vec::new(),
-            models: vec![
-                model("openai.gpt-oss-120b-1:0"),
-                model("claude-sonnet-5-5"),
-                model("openai.gpt-oss-20b-1:0"),
-            ],
-        })
+        .upsert_environment(
+            EnvironmentSpec {
+                name: EnvName::parse("cloud").unwrap(),
+                description: String::new(),
+                notice: String::new(),
+                access_groups: Vec::new(),
+                models: vec![
+                    model("openai.gpt-oss-120b-1:0"),
+                    model("claude-sonnet-5-5"),
+                    model("openai.gpt-oss-20b-1:0"),
+                ],
+                owner: None,
+            },
+            sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
+        )
         .await
         .unwrap();
 
@@ -312,13 +320,17 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
         .await
         .unwrap();
     store
-        .upsert_environment(EnvironmentSpec {
-            name: EnvName::parse("cloud").unwrap(),
-            description: String::new(),
-            notice: String::new(),
-            access_groups: Vec::new(),
-            models: vec![model("gpt-deployment")],
-        })
+        .upsert_environment(
+            EnvironmentSpec {
+                name: EnvName::parse("cloud").unwrap(),
+                description: String::new(),
+                notice: String::new(),
+                access_groups: Vec::new(),
+                models: vec![model("gpt-deployment")],
+                owner: None,
+            },
+            sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
+        )
         .await
         .unwrap();
 

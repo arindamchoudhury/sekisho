@@ -8,10 +8,14 @@ mod budgets;
 mod environments;
 mod error;
 mod gateway_config;
+mod groups;
 mod keys;
 mod models;
 pub mod notify;
+mod offboarding;
 mod providers;
+mod sessions;
+mod users;
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -19,12 +23,15 @@ use sqlx::postgres::PgPoolOptions;
 pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
-pub use keys::{AuthSnapshot, EnvKey};
+pub use keys::{AuthSnapshot, EnvAccess, EnvKey};
 pub use models::{Model, ModelPricing, NewModel};
 pub use notify::ChangeKind;
+pub use offboarding::Offboarded;
 pub use providers::{
     CredentialKind, NewProvider, Provider, ProviderCredential, ProviderOptions, ProviderUpdate,
 };
+pub use sessions::{ENDED_SESSIONS_KEPT, end_user_sessions};
+pub use users::{LOCAL_CONNECTOR, SignIn, SignInOutcome, User, UserAccess};
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 

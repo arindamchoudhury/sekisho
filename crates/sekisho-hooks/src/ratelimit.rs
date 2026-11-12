@@ -386,7 +386,7 @@ impl Charger {
 
     /// Adds `cost` to every budget `key`'s requests in `env` count against.
     async fn charge_budgets(&self, key: &CachedKey, env: &EnvName, cost: MicroUsd) {
-        let budgets = match retried(|| self.store.applicable_budgets(env, &key.id, &key.owner))
+        let budgets = match retried(|| self.store.applicable_budgets(env, Some(&key.id), key.owner))
             .await
         {
             Ok(budgets) => budgets,

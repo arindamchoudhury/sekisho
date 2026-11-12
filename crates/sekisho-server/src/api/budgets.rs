@@ -13,7 +13,8 @@ use uuid::Uuid;
 use super::{ApiError, ApiJson, Fields};
 use crate::app::AppState;
 
-/// `scope` is `person` (with `person`, and `environment` to limit it to one),
+/// `scope` is `person` (with `person`, a user ID, and `environment` to limit
+/// it to one),
 /// `environment` (with `environment`) or `key` (with `key`). `limit` is USD.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,7 +63,7 @@ impl From<Budget> for BudgetBody {
                 environment,
             } => (
                 "person",
-                Some(person),
+                Some(person.to_string()),
                 environment.map(|e| e.to_string()),
                 None,
             ),
@@ -116,7 +117,11 @@ fn scope(fields: &mut Fields, body: &NewBudgetBody) -> Option<BudgetScope> {
     match body.scope.as_str() {
         "person" => {
             not_for(fields, "key", &body.key);
-            let person = fields.required("person", body.person.clone());
+            let person = fields
+                .required("person", body.person.clone())
+                .and_then(|p| {
+                    fields.check("person", Uuid::parse_str(&p).map_err(|_| "not a user ID"))
+                });
             let env = match &body.environment {
                 Some(e) => Some(environment(fields, e)?),
                 None => None,

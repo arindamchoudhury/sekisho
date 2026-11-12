@@ -6,6 +6,7 @@ use sekisho_core::names::EnvName;
 use sekisho_store::EnvKey;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::{ApiError, ApiJson};
 use crate::app::AppState;
@@ -13,7 +14,8 @@ use crate::app::AppState;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewKeyBody {
-    owner: String,
+    /// The owner's user ID; they must be able to use the environment.
+    owner: Uuid,
     name: String,
     #[serde(default, with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
@@ -23,9 +25,9 @@ pub struct NewKeyBody {
 pub struct KeyBody {
     id: String,
     environment: String,
-    owner: String,
+    owner: Uuid,
     name: String,
-    /// active, suspended, expired or revoked, now.
+    /// active, invalid, suspended, expired or revoked, now.
     state: &'static str,
     suspended: bool,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -78,7 +80,7 @@ pub async fn create(
     let environment = EnvName::parse(&environment).map_err(|_| ApiError::NotFound)?;
     let (key, token) = state
         .store()
-        .create_key(&environment, &body.owner, &body.name, body.expires_at)
+        .create_key(&environment, body.owner, &body.name, body.expires_at)
         .await?;
     Ok((
         StatusCode::CREATED,

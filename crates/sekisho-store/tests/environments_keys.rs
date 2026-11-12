@@ -24,11 +24,12 @@ fn spec(name: &str, models: &[&str]) -> EnvironmentSpec {
         name: env_name(name),
         description: String::new(),
         notice: String::new(),
-        access_groups: Vec::new(),
+        access_groups: vec!["eng".into()],
         models: models
             .iter()
             .map(|m| ModelName::parse(m).unwrap())
             .collect(),
+        owner: None,
     }
 }
 
@@ -112,8 +113,12 @@ async fn upsert_and_read_environment() {
     want.description = "Data team".into();
     want.notice = "Do not paste customer data.".into();
     want.access_groups = vec!["data".into(), "ml".into()];
+    want.owner = Some(common::admin(&store).await);
 
-    let created = store.upsert_environment(want.clone()).await.unwrap();
+    let created = store
+        .upsert_environment(want.clone(), common::admin(&store).await)
+        .await
+        .unwrap();
     assert_eq!(created.spec, want);
     let got = store.get_environment(&want.name).await.unwrap();
     assert_eq!(got, created);
@@ -125,7 +130,11 @@ async fn upsert_and_read_environment() {
     // A second upsert replaces the spec and keeps the identity.
     let mut changed = spec("data-team", &["claude-haiku-5-5"]);
     changed.description = "Data and ML".into();
-    let updated = store.upsert_environment(changed.clone()).await.unwrap();
+    changed.owner = want.owner;
+    let updated = store
+        .upsert_environment(changed.clone(), common::admin(&store).await)
+        .await
+        .unwrap();
     assert_eq!(
         (updated.id, updated.created_at),
         (created.id, created.created_at)
@@ -136,7 +145,10 @@ async fn upsert_and_read_environment() {
         changed
     );
 
-    let empty = store.upsert_environment(spec("empty", &[])).await.unwrap();
+    let empty = store
+        .upsert_environment(spec("empty", &[]), common::admin(&store).await)
+        .await
+        .unwrap();
     let names: Vec<_> = store
         .list_environments()
         .await
@@ -160,17 +172,25 @@ async fn environment_input_is_validated() {
     )
     .await;
     let err = store
-        .upsert_environment(spec(
-            "data-team",
-            &["claude-sonnet-5-5", "gpt-5", "claude-sonnet-5-5"],
-        ))
+        .upsert_environment(
+            spec(
+                "data-team",
+                &["claude-sonnet-5-5", "gpt-5", "claude-sonnet-5-5"],
+            ),
+            common::admin(&store).await,
+        )
         .await
         .unwrap_err();
     assert_eq!(fields(err), ["models[1]", "models[2]"]); // unknown, then listed twice
     let mut groups = spec("data-team", &[]);
     groups.access_groups = vec!["".into(), "data".into(), "data".into()];
     assert_eq!(
-        fields(store.upsert_environment(groups).await.unwrap_err()),
+        fields(
+            store
+                .upsert_environment(groups, common::admin(&store).await)
+                .await
+                .unwrap_err()
+        ),
         ["access_groups[0]", "access_groups[2]"]
     );
     assert!(matches!(
@@ -203,7 +223,10 @@ async fn two_providers_same_format_rejected() {
     )
     .await;
     let err = store
-        .upsert_environment(spec("data-team", &["m-a", "m-b"]))
+        .upsert_environment(
+            spec("data-team", &["m-a", "m-b"]),
+            common::admin(&store).await,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -224,7 +247,10 @@ async fn two_providers_same_format_rejected() {
     assert_eq!(
         fields(
             store
-                .upsert_environment(spec("data-team", &["gpt-5", "mock-model"]))
+                .upsert_environment(
+                    spec("data-team", &["gpt-5", "mock-model"]),
+                    common::admin(&store).await
+                )
                 .await
                 .unwrap_err()
         ),
@@ -233,7 +259,10 @@ async fn two_providers_same_format_rejected() {
 
     // One provider per format is fine, across formats.
     store
-        .upsert_environment(spec("data-team", &["m-a", "gpt-5"]))
+        .upsert_environment(
+            spec("data-team", &["m-a", "gpt-5"]),
+            common::admin(&store).await,
+        )
         .await
         .unwrap();
 }
@@ -282,19 +311,22 @@ async fn bedrock_formats_count_per_provider() {
             .unwrap();
     }
     store
-        .upsert_environment(spec(
-            "cloud",
-            &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock"],
-        ))
+        .upsert_environment(
+            spec("cloud", &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock"]),
+            common::admin(&store).await,
+        )
         .await
         .unwrap();
 
     provider_with_models(&store, &sb, "openai", ProviderKind::OpenAi, &["gpt-5"]).await;
     let err = store
-        .upsert_environment(spec(
-            "cloud",
-            &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock", "gpt-5"],
-        ))
+        .upsert_environment(
+            spec(
+                "cloud",
+                &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock", "gpt-5"],
+            ),
+            common::admin(&store).await,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -315,7 +347,10 @@ async fn delete_model_in_use_is_refused() {
     )
     .await;
     store
-        .upsert_environment(spec("data-team", &["claude-sonnet-5-5"]))
+        .upsert_environment(
+            spec("data-team", &["claude-sonnet-5-5"]),
+            common::admin(&store).await,
+        )
         .await
         .unwrap();
     let model = ModelName::parse("claude-sonnet-5-5").unwrap();
@@ -326,7 +361,7 @@ async fn delete_model_in_use_is_refused() {
     );
 
     store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap();
     store.delete_model(&model).await.unwrap();
@@ -336,23 +371,25 @@ async fn delete_model_in_use_is_refused() {
 async fn key_lifecycle() {
     let (store, _sb) = common::store().await;
     let env = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     let (key, token) = store
-        .create_key(&env, "alice@example.com", "ci", None)
+        .create_key(
+            &env,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     assert!(token.starts_with("sek_"));
+    let alice = common::person(&store, "alice@example.com", &["eng"]).await;
     assert_eq!(
-        (
-            key.environment.clone(),
-            key.owner.as_str(),
-            key.name.as_str()
-        ),
-        (env.clone(), "alice@example.com", "ci")
+        (key.environment.clone(), key.owner, key.name.as_str()),
+        (env.clone(), alice, "ci")
     );
     assert_eq!(found_state(&store, &key.id).await, KeyState::Active);
     store.set_suspended(&key.id, true).await.unwrap();
@@ -379,13 +416,18 @@ async fn key_lifecycle() {
 async fn token_secret_not_stored() {
     let (store, _sb) = common::store().await;
     let env = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     let (key, token) = store
-        .create_key(&env, "alice@example.com", "ci", None)
+        .create_key(
+            &env,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (id, secret) = parse_token(&token).unwrap();
@@ -409,7 +451,7 @@ async fn token_secret_not_stored() {
 async fn key_inputs_and_lookups() {
     let (store, _sb) = common::store().await;
     let env = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
@@ -417,7 +459,12 @@ async fn key_inputs_and_lookups() {
     let unknown_env = env_name("nope");
     assert!(matches!(
         store
-            .create_key(&unknown_env, "alice@example.com", "ci", None)
+            .create_key(
+                &unknown_env,
+                common::person(&store, "alice@example.com", &["eng"]).await,
+                "ci",
+                None
+            )
             .await,
         Err(StoreError::NotFound)
     ));
@@ -428,14 +475,19 @@ async fn key_inputs_and_lookups() {
 
     let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
     let err = store
-        .create_key(&env, "", "a\u{7}b", Some(past))
+        .create_key(&env, common::admin(&store).await, "a\u{7}b", Some(past))
         .await
         .unwrap_err();
-    assert_eq!(fields(err), ["owner", "name", "expires_at"]);
+    assert_eq!(fields(err), ["name", "expires_at"]);
     assert_eq!(
         fields(
             store
-                .create_key(&env, "alice@example.com", "", None)
+                .create_key(
+                    &env,
+                    common::person(&store, "alice@example.com", &["eng"]).await,
+                    "",
+                    None
+                )
                 .await
                 .unwrap_err()
         ),
@@ -444,15 +496,30 @@ async fn key_inputs_and_lookups() {
 
     let soon = OffsetDateTime::now_utc() + time::Duration::hours(1);
     let (ci, _) = store
-        .create_key(&env, "alice@example.com", "ci", Some(soon))
+        .create_key(
+            &env,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            Some(soon),
+        )
         .await
         .unwrap();
     let (deploy, _) = store
-        .create_key(&env, "bob@example.com", "deploy", None)
+        .create_key(
+            &env,
+            common::person(&store, "bob@example.com", &["eng"]).await,
+            "deploy",
+            None,
+        )
         .await
         .unwrap();
     let err = store
-        .create_key(&env, "carol@example.com", "ci", None)
+        .create_key(
+            &env,
+            common::person(&store, "carol@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -484,33 +551,44 @@ async fn key_inputs_and_lookups() {
 async fn delete_environment_cascades() {
     let (store, _sb) = common::store().await;
     let env = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap();
     let other = store
-        .upsert_environment(spec("ml-team", &[]))
+        .upsert_environment(spec("ml-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     let (key, _) = store
-        .create_key(&env.spec.name, "alice@example.com", "ci", None)
+        .create_key(
+            &env.spec.name,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (kept, _) = store
-        .create_key(&other, "alice@example.com", "ci", None)
+        .create_key(
+            &other,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     // Budgets arrive in Task 5; insert one per scope directly.
     sqlx::query(
-        "insert into budgets (name, scope, environment_id, key_id, person, limit_micro_usd, window_kind, calendar) values \
+        "insert into budgets (name, scope, environment_id, key_id, person_id, limit_micro_usd, window_kind, calendar) values \
          ('env', 'environment', $1, null, null, 1, 'month', true), \
          ('key', 'key', null, $2, null, 1, 'month', true), \
-         ('person-here', 'person', $1, null, 'alice@example.com', 1, 'month', true), \
-         ('person-everywhere', 'person', null, null, 'alice@example.com', 1, 'month', true)",
+         ('person-here', 'person', $1, null, $3, 1, 'month', true), \
+         ('person-everywhere', 'person', null, null, $3, 1, 'month', true)",
     )
     .bind(env.id)
     .bind(key.id.as_str())
+    .bind(key.owner)
     .execute(store.pool())
     .await
     .unwrap();
@@ -546,16 +624,23 @@ async fn delete_environment_cascades() {
 #[tokio::test]
 async fn writes_notify_and_failures_do_not() {
     let (store, _sb) = common::store().await;
+    common::admin(&store).await;
+    common::person(&store, "alice@example.com", &["eng"]).await;
     let mut rx = store.listen().await.unwrap();
     let env = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     assert_eq!(next_change(&mut rx).await, ChangeKind::Environments);
     let (key, _) = store
-        .create_key(&env, "alice@example.com", "ci", None)
+        .create_key(
+            &env,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(next_change(&mut rx).await, ChangeKind::Keys);
@@ -566,13 +651,18 @@ async fn writes_notify_and_failures_do_not() {
 
     assert!(
         store
-            .upsert_environment(spec("data-team", &["gpt-5"]))
+            .upsert_environment(spec("data-team", &["gpt-5"]), common::admin(&store).await)
             .await
             .is_err()
     );
     assert!(
         store
-            .create_key(&env, "alice@example.com", "ci", None)
+            .create_key(
+                &env,
+                common::person(&store, "alice@example.com", &["eng"]).await,
+                "ci",
+                None
+            )
             .await
             .is_err()
     );
@@ -589,29 +679,47 @@ async fn writes_notify_and_failures_do_not() {
 async fn auth_snapshot_has_every_key_and_environment() {
     let (store, _sb) = common::store().await;
     let data = store
-        .upsert_environment(spec("data-team", &[]))
+        .upsert_environment(spec("data-team", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     let empty = store
-        .upsert_environment(spec("empty", &[]))
+        .upsert_environment(spec("empty", &[]), common::admin(&store).await)
         .await
         .unwrap()
         .spec
         .name;
     let (live, token) = store
-        .create_key(&data, "alice@example.com", "ci", None)
+        .create_key(
+            &data,
+            common::person(&store, "alice@example.com", &["eng"]).await,
+            "ci",
+            None,
+        )
         .await
         .unwrap();
     let (gone, _) = store
-        .create_key(&data, "bob@example.com", "old", None)
+        .create_key(
+            &data,
+            common::person(&store, "bob@example.com", &["eng"]).await,
+            "old",
+            None,
+        )
         .await
         .unwrap();
     store.revoke_key(&gone.id).await.unwrap();
 
-    let snapshot = store.auth_snapshot().await.unwrap();
-    assert_eq!(snapshot.environments, vec![data, empty]);
+    let snapshot = store
+        .auth_snapshot(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let names: Vec<EnvName> = snapshot
+        .environments
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(names, vec![data, empty]);
     let (_, secret) = parse_token(&token).unwrap();
     let ids: Vec<&str> = snapshot.keys.iter().map(|(k, _)| k.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
