@@ -100,3 +100,5 @@ D98	OAuth details: 60 s codes with PKCE S256, 10-minute device codes, the pre-re
 D99	Dex's gRPC port is never published; browsers reach Dex at its issuer, Sekisho over the private network (our call)	gRPC port is never published	design
 D100	Every coding tool reaches an environment's A2A agents as tools on its MCP endpoint, served by Sekisho and relayed over A2A (decided 2026-11-12)	tools? on (its|the environment.s) MCP endpoint	README design plans
 D101	Gemini CLI's own remote-agent files for A2A agents are placed in release 2 (our call)	remote-agent files	design plans
+D102	Every local MCP server names an exact package version or image digest; an entry without one is refused at sync (decided 2026-11-12)	exact (package )?versions?	README design plans
+D103	How local MCP servers are pinned: Obot's three runtimes only, npm @version and Python == or @, container tags resolved to digests at sync, plugins' MCP servers checked too (our call)	resolved to (its |their )?digests?	design plans

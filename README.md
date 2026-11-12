@@ -79,6 +79,9 @@ and what they carried.
   pinned to commits. The MCP and skill catalogs use Obot-compatible formats;
   plugins use Claude Code's plugin and marketplace format.
   - Every catalog entry has an owner.
+  - Every local MCP server names an exact package version or image digest,
+    so a new release can't reach developers until an admin applies it. An
+    entry without one is refused.
   - An admin can quarantine an entry. It leaves every environment at once and
     its owner is alerted. `sekisho status` warns developers who still have it
     installed, and their next `sekisho use` removes it.
