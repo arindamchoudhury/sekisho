@@ -25,10 +25,12 @@ pub enum ChangeKind {
     Users,
     /// A session ended.
     Sessions,
+    /// Signing keys were made or deleted.
+    SigningKeys,
 }
 
 impl ChangeKind {
-    pub const ALL: [ChangeKind; 7] = [
+    pub const ALL: [ChangeKind; 8] = [
         ChangeKind::Providers,
         ChangeKind::Models,
         ChangeKind::Environments,
@@ -36,6 +38,7 @@ impl ChangeKind {
         ChangeKind::Budgets,
         ChangeKind::Users,
         ChangeKind::Sessions,
+        ChangeKind::SigningKeys,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -47,6 +50,7 @@ impl ChangeKind {
             ChangeKind::Budgets => "budgets",
             ChangeKind::Users => "users",
             ChangeKind::Sessions => "sessions",
+            ChangeKind::SigningKeys => "signing_keys",
         }
     }
 

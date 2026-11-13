@@ -146,7 +146,7 @@ fn from_row(row: &PgRow) -> Result<User> {
     })
 }
 
-async fn read_user(conn: &mut PgConnection, id: &Uuid) -> Result<User> {
+pub(crate) async fn read_user(conn: &mut PgConnection, id: &Uuid) -> Result<User> {
     let row = sqlx::query(concat!(select_users!(), " where u.id = $1 group by u.id"))
         .bind(id)
         .fetch_optional(conn)

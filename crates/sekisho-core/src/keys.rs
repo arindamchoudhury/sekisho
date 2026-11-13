@@ -80,6 +80,11 @@ pub fn generate_key() -> GeneratedKey {
     }
 }
 
+/// `N` random bytes from the OS, such as for device user codes.
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    os_random()
+}
+
 /// 32 random bytes from the OS, base64url without padding: the secret part of
 /// refresh tokens, authorisation codes and setup links.
 pub fn random_secret() -> String {
@@ -313,6 +318,14 @@ mod tests {
         assert_eq!(with_access(KeyState::Active, false), KeyState::Invalid);
         assert_eq!(with_access(KeyState::Active, true), KeyState::Active);
         assert_eq!(with_access(KeyState::Invalid, true), KeyState::Invalid);
+    }
+
+    #[test]
+    fn random_bytes_come_from_the_os() {
+        let a: [u8; 16] = random_bytes();
+        let b: [u8; 16] = random_bytes();
+        assert_ne!(a, b);
+        assert_ne!(a, [0; 16]);
     }
 
     #[test]

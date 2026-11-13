@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::error::{FieldError, bad_column, check, check_label, violates};
 use crate::notify::{ChangeKind, notify};
 use crate::sessions::ENDED_SESSIONS_KEPT;
+use crate::signing_keys;
 use crate::users::{UserAccess, accesses, user_accesses};
 use crate::{Result, Store, StoreError};
 
@@ -63,7 +64,7 @@ pub struct AuthSnapshot {
     pub users: Vec<UserAccess>,
     /// Sessions ended within [`ENDED_SESSIONS_KEPT`], by ID.
     pub ended_sessions: Vec<Uuid>,
-    /// The published signing keys (plan 2 Task 4).
+    /// The signing keys published at the snapshot's time.
     pub public_keys: Vec<PublicKey>,
 }
 
@@ -288,6 +289,7 @@ impl Store {
                 .bind(now - ENDED_SESSIONS_KEPT)
                 .fetch_all(&mut *tx)
                 .await?;
+        let public_keys = signing_keys::published(&mut tx, now).await?;
         tx.commit().await?;
         let access: HashMap<Uuid, Access> =
             users.iter().map(|u| (u.id, u.access.clone())).collect();
@@ -307,7 +309,7 @@ impl Store {
             environments,
             users,
             ended_sessions,
-            public_keys: Vec::new(),
+            public_keys,
         })
     }
 
