@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 
 use rand::TryRng;
 use rand::rngs::SysRng;
-use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use sekisho_core::pricing::Usage;
 use serde_json::Value;
 use tokio::sync::Notify;
 
+use crate::ratelimit::Payer;
 use crate::tokens::count_text;
 
 /// A tally nobody watches, untouched for this long, is dropped: no charge
@@ -89,7 +89,8 @@ pub struct ProviderUsage {
 /// call without the output count, every count it had).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Start {
-    pub key: EnvKeyId,
+    /// Whom the request is charged to.
+    pub payer: Payer,
     pub env: EnvName,
     pub model: String,
     /// The output count is always 0 here.
@@ -607,7 +608,10 @@ mod tests {
 
     fn start(prompt: u64) -> Start {
         Start {
-            key: EnvKeyId::parse("aaaaaaaaaaaa").unwrap(),
+            payer: Payer {
+                person: uuid::Uuid::nil(),
+                key: EnvKeyId::parse("aaaaaaaaaaaa"),
+            },
             env: EnvName::parse("data-team").unwrap(),
             model: "gpt-priced".into(),
             usage: Usage {

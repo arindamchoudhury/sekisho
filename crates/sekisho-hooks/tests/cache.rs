@@ -8,6 +8,8 @@ use sekisho_store::{EnvironmentSpec, Store};
 use time::OffsetDateTime;
 use tokio::time::{Instant, sleep};
 
+const ISSUER: &str = "https://sekisho.test";
+
 async fn env(store: &Store, name: &str) -> EnvName {
     let spec = EnvironmentSpec {
         name: EnvName::parse(name).unwrap(),
@@ -53,9 +55,9 @@ async fn revocation_reaches_other_replica_within_one_second() {
         )
         .await
         .unwrap();
-    let a = AuthCache::load(&store).await.unwrap();
+    let a = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     a.spawn_refresh(store.clone());
-    let b = AuthCache::load(&store).await.unwrap();
+    let b = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     b.spawn_refresh(store.clone());
     // Let both refresh tasks subscribe and do their first reload, so the
     // revocation below can only reach them by notification.
@@ -94,7 +96,7 @@ async fn load_reflects_the_store() {
     store.set_suspended(&ci.id, true).await.unwrap();
     store.revoke_key(&old.id).await.unwrap();
 
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     let (_, secret) = parse_token(&token).unwrap();
     assert_eq!(
         cache.key(&ci.id),
@@ -117,7 +119,7 @@ async fn load_reflects_the_store() {
 #[tokio::test]
 async fn changes_reach_the_cache() {
     let (store, _) = sekisho_testkit::store().await;
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     cache.spawn_refresh(store.clone());
     let second = Duration::from_secs(1);
 
@@ -163,7 +165,7 @@ async fn safety_net_catches_unannounced_changes() {
         )
         .await
         .unwrap();
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     cache.spawn_refresh_every(store.clone(), Duration::from_millis(200));
     // A change written without a notification, as if the NOTIFY were lost.
     sqlx::query("update env_keys set suspended = true where id = $1")
@@ -180,7 +182,7 @@ async fn safety_net_catches_unannounced_changes() {
 #[tokio::test]
 async fn refresh_stops_when_the_cache_is_dropped() {
     let (store, _) = sekisho_testkit::store().await;
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     let task = cache.spawn_refresh_every(store.clone(), Duration::from_millis(100));
     let weak = Arc::downgrade(&cache);
     drop(cache);
@@ -192,4 +194,80 @@ async fn refresh_stops_when_the_cache_is_dropped() {
         .await
         .expect("the refresh task ends")
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_ended_session_reaches_other_replicas_within_one_second() {
+    let (store, sb) = sekisho_testkit::store().await;
+    let alice = sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await;
+    let (_, session) = sekisho_testkit::people::session_token(&store, &sb, ISSUER, alice).await;
+    let a = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    a.spawn_refresh(store.clone());
+    let b = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    b.spawn_refresh(store.clone());
+    assert!(!a.session_ended(&session) && !b.session_ended(&session));
+    // Let both refresh tasks subscribe before the change.
+    sleep(Duration::from_millis(300)).await;
+    store
+        .end_session(&session, "logout", OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    eventually(Duration::from_secs(1), "the ended session", || {
+        a.session_ended(&session) && b.session_ended(&session)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ended_sessions_leave_the_cache_after_65_minutes() {
+    let (store, sb) = sekisho_testkit::store().await;
+    let alice = sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await;
+    let (_, session) = sekisho_testkit::people::session_token(&store, &sb, ISSUER, alice).await;
+    let ended_ago = |minutes: i64| {
+        let store = store.clone();
+        async move {
+            sqlx::query(
+                "update sessions set end_reason = 'logout',                  ended_at = now() - make_interval(mins => $2) where id = $1",
+            )
+            .bind(session)
+            .bind(i32::try_from(minutes).unwrap())
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+    };
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    ended_ago(64).await;
+    cache.reload(&store).await.unwrap();
+    assert!(cache.session_ended(&session));
+    // Any token of a session ended 65 minutes ago has expired anyway.
+    ended_ago(66).await;
+    cache.reload(&store).await.unwrap();
+    assert!(!cache.session_ended(&session));
+}
+
+#[tokio::test]
+async fn the_cache_holds_people_environments_and_published_keys() {
+    let (store, sb) = sekisho_testkit::store().await;
+    let data = env(&store, "data-team").await;
+    let alice = sekisho_testkit::people::person(&store, "alice@example.com", &["eng"]).await;
+    let boss = sekisho_testkit::people::admin(&store, "boss@example.com").await;
+    sekisho_testkit::people::session_token(&store, &sb, ISSUER, alice).await;
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    assert_eq!(cache.issuer(), ISSUER);
+    let user = cache.user(&alice).expect("alice");
+    assert!(user.access.groups.contains("eng") && !user.admin_mark);
+    assert!(cache.user(&boss).unwrap().admin_mark);
+    let environment = cache.environment(&data).expect("data-team");
+    assert_eq!(environment.access_groups, ["eng"]);
+    assert!(environment.owner.is_some());
+    let published = store
+        .published_keys(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert_eq!(
+        cache.public_key(&published[0].kid),
+        Some(published[0].clone())
+    );
+    assert_eq!(cache.public_key("0000000000000000"), None);
 }

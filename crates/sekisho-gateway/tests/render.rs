@@ -500,7 +500,10 @@ fn spend_is_charged_to_the_key_extauthz_verified() {
     let policies = &routes(&doc)[0]["policies"];
     assert_eq!(
         policies["extAuthz"]["protocol"]["http"]["metadata"],
-        serde_json::json!({ "key": "response.headers[\"x-sekisho-key\"]" })
+        serde_json::json!({
+            "key": "response.headers[\"x-sekisho-key\"]",
+            "person": "response.headers[\"x-sekisho-person\"]",
+        })
     );
     // The charge secret lets the charging hook refuse descriptors that
     // didn't come from this install's agentgateway.
@@ -509,12 +512,43 @@ fn spend_is_charged_to_the_key_extauthz_verified() {
         serde_json::json!([
             { "key": "env", "value": "\"data-team\"" },
             { "key": "key", "value": "extauthz.key" },
+            { "key": "person", "value": "extauthz.person" },
             { "key": "secret", "value": "\"test-charge-secret\"" },
             { "key": "model", "value": "llm.requestModel" },
             { "key": "request", "value": "default(extproc.sekisho_request, \"\")" },
             { "key": "measure", "value": "\"input\"" }
         ])
     );
+}
+
+/// Spend is charged to the person extAuthz named (the key's owner, or a
+/// session's user), on every descriptor of every route.
+#[test]
+fn descriptors_name_the_person() {
+    let yaml = render(&fixtures::every_kind(), &RenderOptions::default());
+    assert_eq!(validate(&yaml), Ok(()));
+    let doc = parse(&yaml);
+    let mut seen = 0;
+    for route in routes(&doc) {
+        let Some(descriptors) = route["policies"]["remoteRateLimit"]["descriptors"].as_array()
+        else {
+            continue; // the bare test route has no hooks
+        };
+        for descriptor in descriptors {
+            let person: Vec<_> = descriptor["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["key"] == "person")
+                .collect();
+            assert_eq!(
+                person,
+                [&serde_json::json!({ "key": "person", "value": "extauthz.person" })]
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0);
 }
 
 /// The hook trusts the environment the route names, not the client's path.
@@ -1011,7 +1045,11 @@ fn descriptors_report_each_measure() {
         .as_array()
         .unwrap()
         .clone();
-    let measure = |d: &Value| d["entries"][5]["value"].as_str().unwrap().to_owned();
+    let measure = |d: &Value| {
+        let entries = d["entries"].as_array().unwrap();
+        let entry = entries.iter().find(|e| e["key"] == "measure").unwrap();
+        entry["value"].as_str().unwrap().to_owned()
+    };
     assert_eq!(
         descriptors.iter().map(measure).collect::<Vec<_>>(),
         [
@@ -1049,10 +1087,12 @@ fn descriptors_report_each_measure() {
             .collect();
         assert_eq!(
             keys,
-            ["env", "key", "secret", "model", "request", "measure"]
+            [
+                "env", "key", "person", "secret", "model", "request", "measure"
+            ]
         );
         assert_eq!(
-            d["entries"][4]["value"],
+            d["entries"][5]["value"],
             "default(extproc.sekisho_request, \"\")"
         );
     }

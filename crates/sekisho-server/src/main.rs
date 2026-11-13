@@ -79,7 +79,10 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .context("connecting to SEKISHO_DATABASE_URL")?;
 
-    let cache = AuthCache::load(&store)
+    // Session tokens name SEKISHO_PUBLIC_URL as their issuer once sign-in
+    // arrives (plan 2 Task 9). Until then no signing key exists, so every
+    // session token is refused as signed by an unknown key.
+    let cache = AuthCache::load(&store, String::new())
         .await
         .context("loading keys for the hooks")?;
     cache.spawn_refresh(store.clone());
@@ -102,6 +105,7 @@ async fn serve() -> anyhow::Result<()> {
     };
     let guard = StreamGuard {
         cache,
+        store: store.clone(),
         clock,
         tallies,
     };

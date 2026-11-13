@@ -6,8 +6,9 @@
 //! agentgateway's catalog cost in micro-USD, each costed when the request
 //! ends (all 0 on the first call), and the prompt count, sent on the first
 //! call. Every descriptor has the same entries: the route's `env`, the `key`
-//! id that `extAuthz` verified, the install's charge `secret`, the requested
-//! `model`, and the `request` ID Sekisho's stream hook gave the request.
+//! id that `extAuthz` verified (`none` for a session) and the `person` it
+//! named, the install's charge `secret`, the requested `model`, and the
+//! `request` ID Sekisho's stream hook gave the request.
 //!
 //! agentgateway v1.7.0 sends no second call for a stream that ends before
 //! the provider's usage (the client hung up, or a revoked key cut it). So
@@ -28,6 +29,7 @@
 //! happen in `extAuthz`, whose answers reach the client with a message.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,8 +43,9 @@ use sekisho_proto::ratelimit::{RateLimitDescriptor, RateLimitRequest, RateLimitR
 use sekisho_store::{ModelPricing, Store, StoreError};
 use time::OffsetDateTime;
 use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
-use crate::cache::{AuthCache, CachedKey};
+use crate::cache::AuthCache;
 use crate::catalog::catalog_rates;
 use crate::tally::{Recorded, STALLED, Start, Tallies, Tally};
 use crate::tokens::answer_tokens;
@@ -66,6 +69,23 @@ const COSTED: [Measure; 5] = [
     Measure::Output,
     Measure::Catalog,
 ];
+
+/// Whom a request is charged to: the person `extAuthz` named, and the key
+/// for a request made with one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Payer {
+    pub person: Uuid,
+    pub key: Option<EnvKeyId>,
+}
+
+impl fmt::Display for Payer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.key {
+            Some(key) => write!(f, "key {key}"),
+            None => write!(f, "person {}", self.person),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Charger {
@@ -105,7 +125,7 @@ impl RateLimitService for Charger {
 
 /// One call's report of a request.
 struct Report {
-    key: CachedKey,
+    payer: Payer,
     env: EnvName,
     /// The model the client asked for (`llm.requestModel`).
     model: String,
@@ -132,7 +152,7 @@ impl Report {
 
     fn start(&self, usage: Usage, from_response: bool) -> Start {
         Start {
-            key: self.key.id.clone(),
+            payer: self.payer.clone(),
             env: self.env.clone(),
             model: self.model.clone(),
             usage,
@@ -158,7 +178,7 @@ impl Charger {
                 // Another Sekisho's stream hook has it, or it is gone: a
                 // stream that ends early can't be estimated here.
                 tracing::debug!(
-                    key = %report.key.id, model = report.model,
+                    payer = %report.payer, model = report.model,
                     "no tally here for a request's start"
                 );
             }
@@ -170,7 +190,7 @@ impl Charger {
         {
             if !report.request.is_empty() && !self.tallies.reported(&report.request) {
                 tracing::warn!(
-                    key = %report.key.id, model = report.model,
+                    payer = %report.payer, model = report.model,
                     "agentgateway reported a request already charged an estimate: not charged again"
                 );
                 return;
@@ -185,16 +205,16 @@ impl Charger {
                 return;
             }
             tracing::warn!(
-                key = %report.key.id, model = report.model,
+                payer = %report.payer, model = report.model,
                 "no tally for a request without an output count: charging its prompt alone"
             );
-            self.estimate(&report.key.id, &report.model, usage, None)
+            self.estimate(&report.payer, &report.model, usage, None)
                 .await
         };
         if let Some(cost) = cost
             && cost.0 > 0
         {
-            self.charge_budgets(&report.key, &report.env, cost).await;
+            self.charge_budgets(&report.payer, &report.env, cost).await;
         }
     }
 
@@ -225,35 +245,32 @@ impl Charger {
         else {
             return; // reported
         };
-        let Some(key) = self.cache.key(&start.key) else {
-            tracing::warn!(key = %start.key, "spend not recorded: the key is no longer known");
-            return;
-        };
+        let payer = &start.payer;
         match tally.status {
             // agentgateway's own error (an unreachable provider): ext_proc
             // never sees it, nothing reached the client, nothing was billed.
             None => {
-                tracing::debug!(key = %key.id, model = start.model, "no answer reached the client: nothing charged");
+                tracing::debug!(%payer, model = start.model, "no answer reached the client: nothing charged");
                 return;
             }
             // A provider error isn't billed.
             Some(status) if !(200..300).contains(&status) => {
-                tracing::debug!(key = %key.id, model = start.model, status, "an error answer: nothing charged");
+                tracing::debug!(%payer, model = start.model, status, "an error answer: nothing charged");
                 return;
             }
             Some(_) => {}
         }
         if let Some(cost) = self
-            .estimate(&key.id, &start.model, start.usage, Some(tally))
+            .estimate(payer, &start.model, start.usage, Some(tally))
             .await
             && cost.0 > 0
         {
-            self.charge_budgets(&key, &start.env, cost).await;
+            self.charge_budgets(payer, &start.env, cost).await;
         }
     }
 
     /// Reads one call. `None` (logged) when it isn't from this install's
-    /// agentgateway or names no known key.
+    /// agentgateway or names no person.
     fn report(&self, request: &RateLimitRequest) -> Option<Report> {
         let mut counts = HashMap::new();
         for descriptor in &request.descriptors {
@@ -281,21 +298,36 @@ impl Charger {
         }
         // Every descriptor of a call carries the same request entries.
         let first = request.descriptors.first()?;
-        // The key id comes from Sekisho's own extAuthz answer (`extauthz.key`),
-        // never from the client, so no secret is needed. Revoked or suspended
-        // keys are still charged for what they used.
-        let Some(key) = entry(first, "key")
-            .and_then(EnvKeyId::parse)
-            .and_then(|id| self.cache.key(&id))
-        else {
-            tracing::warn!("spend not recorded: no known key in the descriptors");
+        // The person and key come from Sekisho's own extAuthz answer
+        // (`extauthz.person`, `extauthz.key`), never from the client. Revoked
+        // or suspended keys are still charged for what they used.
+        let Some(person) = entry(first, "person").and_then(|p| Uuid::parse_str(p).ok()) else {
+            tracing::warn!("spend not recorded: no person in the descriptors");
             return None;
         };
-        let env = entry(first, "env")
+        let key = match entry(first, "key") {
+            Some("none") => None,
+            Some(key) => match EnvKeyId::parse(key) {
+                Some(id) => Some(id),
+                None => {
+                    tracing::warn!("spend not recorded: the descriptors' key is not a key id");
+                    return None;
+                }
+            },
+            None => {
+                tracing::warn!("spend not recorded: no key entry in the descriptors");
+                return None;
+            }
+        };
+        let Some(env) = entry(first, "env")
             .and_then(|e| EnvName::parse(e).ok())
-            .unwrap_or_else(|| key.environment.clone());
+            .or_else(|| Some(self.cache.key(key.as_ref()?)?.environment))
+        else {
+            tracing::warn!("spend not recorded: no environment in the descriptors");
+            return None;
+        };
         Some(Report {
-            key,
+            payer: Payer { person, key },
             env,
             model: entry(first, "model").unwrap_or_default().to_owned(),
             request: entry(first, "request").unwrap_or_default().to_owned(),
@@ -305,22 +337,22 @@ impl Charger {
 
     /// The model's admin prices and provider. `Err` (logged) when the
     /// database kept failing; `Ok(None)` for a model Sekisho doesn't have.
-    async fn pricing(&self, key: &EnvKeyId, model: &str) -> Result<Option<ModelPricing>, ()> {
+    async fn pricing(&self, payer: &Payer, model: &str) -> Result<Option<ModelPricing>, ()> {
         let Ok(name) = ModelName::parse(model) else {
             return Ok(None); // not a name Sekisho could have
         };
         retried(|| self.store.model_pricing(&name))
             .await
             .map_err(|error| {
-                tracing::error!(%key, model, %error, "spend not recorded: reading the model's prices failed");
+                tracing::error!(%payer, model, %error, "spend not recorded: reading the model's prices failed");
             })
     }
 
     /// What a request agentgateway reported costs: the admin's prices, else
     /// agentgateway's catalog cost.
     async fn reported_cost(&self, report: &Report, output: u64) -> Option<MicroUsd> {
-        let (key, model) = (&report.key.id, report.model.as_str());
-        let pricing = self.pricing(key, model).await.ok()?;
+        let (payer, model) = (&report.payer, report.model.as_str());
+        let pricing = self.pricing(payer, model).await.ok()?;
         let admin = pricing
             .as_ref()
             .and_then(|p| Some(p.prices?.rates(p.format)));
@@ -333,12 +365,12 @@ impl Charger {
             (None, Some(&catalog)) => match i64::try_from(catalog) {
                 Ok(cost) => Some(MicroUsd(cost)),
                 Err(_) => {
-                    tracing::error!(%key, model, catalog, "spend not recorded: cost too large");
+                    tracing::error!(%payer, model, catalog, "spend not recorded: cost too large");
                     None
                 }
             },
             (None, None) => {
-                tracing::warn!(%key, model, "spend not recorded: no price for this model");
+                tracing::warn!(%payer, model, "spend not recorded: no price for this model");
                 None
             }
         }
@@ -350,12 +382,12 @@ impl Charger {
     /// from the stream win where they got through.
     async fn estimate(
         &self,
-        key: &EnvKeyId,
+        payer: &Payer,
         model: &str,
         mut usage: Usage,
         tally: Option<Tally>,
     ) -> Option<MicroUsd> {
-        let pricing = self.pricing(key, model).await.ok()?;
+        let pricing = self.pricing(payer, model).await.ok()?;
         usage.output = 0;
         if let Some(tally) = tally {
             if let Some(prompt) = tally.usage.prompt {
@@ -372,26 +404,30 @@ impl Charger {
             None => catalog_rates(p.kind, p.format, model),
         });
         let Some(rates) = rates else {
-            tracing::warn!(%key, model, "spend not recorded: no price for this model");
+            tracing::warn!(%payer, model, "spend not recorded: no price for this model");
             return None;
         };
         let cost = rates.cost(&usage);
         tracing::info!(
-            %key, model, input = usage.input, cache_read = usage.cache_read,
+            %payer, model, input = usage.input, cache_read = usage.cache_read,
             cache_write = usage.cache_write, output = usage.output, micro_usd = cost.0,
             "estimated a request agentgateway never reported"
         );
         Some(cost)
     }
 
-    /// Adds `cost` to every budget `key`'s requests in `env` count against.
-    async fn charge_budgets(&self, key: &CachedKey, env: &EnvName, cost: MicroUsd) {
-        let budgets = match retried(|| self.store.applicable_budgets(env, Some(&key.id), key.owner))
-            .await
+    /// Adds `cost` to every budget the payer's requests in `env` count
+    /// against.
+    async fn charge_budgets(&self, payer: &Payer, env: &EnvName, cost: MicroUsd) {
+        let budgets = match retried(|| {
+            self.store
+                .applicable_budgets(env, payer.key.as_ref(), payer.person)
+        })
+        .await
         {
             Ok(budgets) => budgets,
             Err(error) => {
-                tracing::error!(key = %key.id, cost = cost.0, %error, "spend not recorded: reading budgets failed");
+                tracing::error!(%payer, cost = cost.0, %error, "spend not recorded: reading budgets failed");
                 return;
             }
         };
@@ -406,7 +442,7 @@ impl Charger {
             .await;
             if let Err(error) = charged {
                 tracing::error!(
-                    key = %key.id, budget = %budget.name, cost = cost.0, %error,
+                    %payer, budget = %budget.name, cost = cost.0, %error,
                     "spend not recorded for this budget: the database kept failing"
                 );
             }

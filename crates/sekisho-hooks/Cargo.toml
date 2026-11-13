@@ -24,6 +24,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 sekisho-testkit = { workspace = true }
 sqlx = { workspace = true }

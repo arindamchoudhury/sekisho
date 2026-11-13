@@ -5,15 +5,19 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::EnvName;
+use sekisho_core::secret_box::SecretBox;
+use sekisho_core::session_token::{AUDIENCE, SessionClaims, SigningKey, issue};
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_hooks::authz::{HooksState, router};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_store::{BudgetScope, EnvironmentSpec, NewBudget, Store};
 use sekisho_testkit::TestStore;
+use sekisho_testkit::people::{person, session_token_at};
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::time::{Instant, sleep};
+use uuid::Uuid;
 
 /// The hook's clock. Keys may expire exactly now.
 /// The hook's clock: a day after the real now (whole seconds), so a key can
@@ -24,12 +28,16 @@ static NOW: LazyLock<OffsetDateTime> = LazyLock::new(|| {
         .unwrap()
 });
 const PATH: &str = "/env/data-team/openai/v1/chat/completions";
+const ISSUER: &str = "https://sekisho.test";
 
 struct Hook {
     base: String,
     http: reqwest::Client,
     store: TestStore,
+    secret_box: SecretBox,
     cache: Arc<AuthCache>,
+    /// The owner of `token`.
+    alice: Uuid,
     /// alice's active key in data-team.
     token: String,
     key: EnvKeyId,
@@ -66,7 +74,7 @@ async fn env(store: &Store, name: &str) -> EnvName {
 }
 
 async fn hook() -> Hook {
-    let (store, _) = sekisho_testkit::store().await;
+    let (store, secret_box) = sekisho_testkit::store().await;
     let data = env(&store, "data-team").await;
     let ml = env(&store, "ml-team").await;
     let (key, token) = store
@@ -97,7 +105,7 @@ async fn hook() -> Hook {
         .await
         .unwrap();
 
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     cache.spawn_refresh(store.clone());
     let state = HooksState {
         cache: Arc::clone(&cache),
@@ -111,7 +119,9 @@ async fn hook() -> Hook {
         base: format!("http://{addr}"),
         http: reqwest::Client::new(),
         store,
+        secret_box,
         cache,
+        alice: key.owner,
         token,
         key: key.id,
         other_env_token,
@@ -486,4 +496,237 @@ async fn environment_comes_from_the_route_not_the_path() {
             "{env:?}"
         );
     }
+}
+
+/// A session for `user` and its token, issued at the hook's clock, with the
+/// cache reloaded so it knows the signing key.
+async fn session(app: &Hook, user: Uuid) -> (String, Uuid) {
+    let made = session_token_at(&app.store, &app.secret_box, ISSUER, user, *NOW).await;
+    app.cache.reload(&app.store).await.unwrap();
+    made
+}
+
+fn reason(r: &Reply) -> &str {
+    r.json["reason"].as_str().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_session_token_is_allowed_and_names_its_person() {
+    let app = hook().await;
+    let (token, _) = session(&app, app.alice).await;
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!(r.status, 200, "{}", r.json);
+    assert_eq!(r.headers["x-sekisho-key"], "none");
+    assert_eq!(
+        r.headers["x-sekisho-person"],
+        app.alice.to_string().as_str()
+    );
+    assert_eq!(r.headers["x-sekisho-env"], "data-team");
+}
+
+#[tokio::test]
+async fn forged_and_foreign_tokens_are_refused() {
+    let app = hook().await;
+    let (_, session) = session(&app, app.alice).await;
+    let key = app
+        .store
+        .active_signing_key(&app.secret_box, *NOW)
+        .await
+        .unwrap()
+        .unwrap();
+    let claims = |iss: &str, exp: i64| SessionClaims {
+        iss: iss.into(),
+        sub: app.alice.to_string(),
+        aud: AUDIENCE.into(),
+        sid: session.to_string(),
+        client_id: "sekisho-cli".into(),
+        iat: NOW.unix_timestamp(),
+        exp,
+    };
+    let later = NOW.unix_timestamp() + 3600;
+    let same_kid = SigningKey::from_seed(key.kid().to_owned(), [7; 32]);
+    let hs256 = {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some(key.kid().to_owned());
+        jsonwebtoken::encode(
+            &header,
+            &claims(ISSUER, later),
+            &jsonwebtoken::EncodingKey::from_secret(&key.public().x),
+        )
+        .unwrap()
+    };
+    let tampered = {
+        let good = issue(&key, &claims(ISSUER, later));
+        let other = issue(
+            &key,
+            &SessionClaims {
+                sub: Uuid::nil().to_string(),
+                ..claims(ISSUER, later)
+            },
+        );
+        let signature = good.rsplit('.').next().unwrap().to_owned();
+        format!("{}.{signature}", other.rsplit_once('.').unwrap().0)
+    };
+    let cases = [
+        (
+            "another key with the same kid",
+            issue(&same_kid, &claims(ISSUER, later)),
+            "invalid_token",
+        ),
+        (
+            "an unknown key",
+            issue(&SigningKey::generate(), &claims(ISSUER, later)),
+            "invalid_token",
+        ),
+        (
+            "another issuer",
+            issue(&key, &claims("https://evil.test", later)),
+            "invalid_token",
+        ),
+        ("HS256 keyed with the public key", hs256, "invalid_token"),
+        (
+            "alg none",
+            "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln".to_owned(),
+            "invalid_token",
+        ),
+        ("a signature over other claims", tampered, "invalid_token"),
+        (
+            "expired",
+            issue(&key, &claims(ISSUER, NOW.unix_timestamp())),
+            "token_expired",
+        ),
+    ];
+    for (what, token, want) in &cases {
+        let r = call(&app, PATH, Some(&bearer(token))).await;
+        assert_eq!((r.status, reason(&r)), (401, *want), "{what}: {}", r.json);
+        assert_eq!(r.json["error"], "unauthorized", "{what}");
+    }
+    // A token is checked before any database read: with the database gone,
+    // the answers are the same.
+    app.store.pool().close().await;
+    for (what, token, want) in &cases {
+        let r = call(&app, PATH, Some(&bearer(token))).await;
+        assert_eq!(
+            (r.status, reason(&r)),
+            (401, *want),
+            "{what} without a database"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_ended_session_or_disabled_user_is_401_session_ended() {
+    let app = hook().await;
+    let (ended, session_id) = session(&app, app.alice).await;
+    app.store
+        .end_session(&session_id, "logout", OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    app.cache.reload(&app.store).await.unwrap();
+    let r = call(&app, PATH, Some(&bearer(&ended))).await;
+    assert_eq!((r.status, reason(&r)), (401, "session_ended"), "{}", r.json);
+
+    let bob = person(&app.store, "bob@example.com", &["eng"]).await;
+    let (token, _) = session(&app, bob).await;
+    assert_eq!(call(&app, PATH, Some(&bearer(&token))).await.status, 200);
+    app.store
+        .set_disabled(&bob, true, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    app.cache.reload(&app.store).await.unwrap();
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!((r.status, reason(&r)), (401, "session_ended"), "{}", r.json);
+
+    // Disabling ends sessions too; a disabled user is refused even where
+    // their session row was left open.
+    let carol = person(&app.store, "carol@example.com", &["eng"]).await;
+    let (token, _) = session(&app, carol).await;
+    sqlx::query("update users set disabled_at = now() where id = $1")
+        .bind(carol)
+        .execute(app.store.pool())
+        .await
+        .unwrap();
+    app.cache.reload(&app.store).await.unwrap();
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!((r.status, reason(&r)), (401, "session_ended"), "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_session_without_access_is_403_no_access() {
+    let app = hook().await;
+    let carol = person(&app.store, "carol@example.com", &["ops"]).await;
+    let (token, _) = session(&app, carol).await;
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!((r.status, reason(&r)), (403, "no_access"), "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_key_whose_owner_lost_access_is_403_invalid_until_access_returns() {
+    let app = hook().await;
+    let token = bearer(&app.token);
+    person(&app.store, "alice@example.com", &[]).await; // left eng
+    app.cache.reload(&app.store).await.unwrap();
+    let r = call(&app, PATH, Some(&token)).await;
+    assert_eq!((r.status, reason(&r)), (403, "invalid"), "{}", r.json);
+    person(&app.store, "alice@example.com", &["eng"]).await;
+    app.cache.reload(&app.store).await.unwrap();
+    assert_eq!(call(&app, PATH, Some(&token)).await.status, 200);
+    app.store
+        .set_disabled(&app.alice, true, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    app.cache.reload(&app.store).await.unwrap();
+    let r = call(&app, PATH, Some(&token)).await;
+    assert_eq!((r.status, reason(&r)), (403, "invalid"), "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_new_users_first_request_is_found() {
+    let app = hook().await;
+    // The signing key first, so making it announces nothing later.
+    session(&app, app.alice).await;
+    // A user the cache hasn't loaded: written without a notification, as if
+    // they signed in on another replica a moment ago.
+    let dave: Uuid = sqlx::query_scalar(
+        "insert into users (email, dex_subject, idp_groups) \
+         values ('dave@example.com', 'test|dave', '{eng}') returning id",
+    )
+    .fetch_one(app.store.pool())
+    .await
+    .unwrap();
+    let (token, _) = session_token_at(&app.store, &app.secret_box, ISSUER, dave, *NOW).await;
+    assert!(app.cache.user(&dave).is_none());
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!(r.status, 200, "{}", r.json);
+    assert!(
+        app.cache
+            .user_or_load(&app.store, &dave)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn person_budgets_refuse_a_session() {
+    let app = hook().await;
+    let (token, _) = session(&app, app.alice).await;
+    assert_eq!(call(&app, PATH, Some(&bearer(&token))).await.status, 200);
+    budget(
+        &app.store,
+        "alice",
+        BudgetScope::Person {
+            person: app.alice,
+            environment: None,
+        },
+        "0",
+    )
+    .await;
+    let r = call(&app, PATH, Some(&bearer(&token))).await;
+    assert_eq!(
+        (r.status, &r.json["error"]),
+        (429, &serde_json::json!("budget_exhausted")),
+        "{}",
+        r.json
+    );
 }

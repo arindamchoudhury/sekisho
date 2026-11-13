@@ -2,10 +2,13 @@
 //! path and `Authorization` header; a 2xx answer lets the request through and
 //! any other answer goes back to the client as is.
 //!
-//! Checks, in order: a well-formed `Bearer sek_…` token (else 401); a known
-//! key with the right secret, for the calling route's environment
-//! (`x-sekisho-env`), that is active (else 403 with a reason); no used-up
-//! budget (else 429).
+//! Checks, in order: a well-formed `Bearer` credential (else 401). For an
+//! environment key: known, with the right secret (else 403 `unknown_key`),
+//! for the calling route's environment (`x-sekisho-env`), active, and owned
+//! by someone who may use the environment (else 403 with a reason). For a
+//! session token: valid and unexpired, its session not ended and its user
+//! enabled (else 401 with a reason), and its user may use the environment
+//! (else 403 `no_access`). Then no used-up budget (else 429).
 
 use std::sync::Arc;
 
@@ -14,14 +17,16 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use sekisho_core::access::can_use;
 use sekisho_core::names::EnvName;
 use sekisho_store::{BudgetStatus, Store, StoreError};
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::cache::{AuthCache, CachedKey};
-use crate::credential::{Credential, refusal, resolve};
+use crate::cache::AuthCache;
+use crate::credential::{Authenticated, Refusal, authenticate, refusal};
+use crate::ratelimit::Payer;
 
 /// The header each route adds to the hook request, naming its environment.
 pub const ROUTE_ENV_HEADER: &str = "x-sekisho-env";
@@ -41,8 +46,12 @@ pub fn router(state: HooksState) -> Router {
 }
 
 enum Decision {
-    Allow(CachedKey),
-    Unauthorized,
+    Allow {
+        payer: Payer,
+        env: EnvName,
+    },
+    /// With a reason for a session token.
+    Unauthorized(Option<&'static str>),
     Forbidden(&'static str),
     BudgetExhausted(BudgetStatus),
     Unavailable,
@@ -50,7 +59,7 @@ enum Decision {
 
 async fn check(State(state): State<HooksState>, req: Request) -> Response {
     let decision = decide(&state, req.headers()).await;
-    if !matches!(decision, Decision::Allow(_)) {
+    if !matches!(decision, Decision::Allow { .. }) {
         tracing::debug!(path = req.uri().path(), status = ?decision.status(), "request refused");
     }
     decision.into_response()
@@ -80,21 +89,61 @@ fn route_environment(headers: &HeaderMap) -> Option<EnvName> {
 }
 
 async fn decide(state: &HooksState, headers: &HeaderMap) -> Decision {
-    let key = match resolve(&state.cache, single_authorization(headers)) {
-        Credential::Malformed => return Decision::Unauthorized,
-        Credential::Unknown => return Decision::Forbidden("unknown_key"),
-        Credential::Known(key) => key,
-    };
-    match route_environment(headers) {
-        Some(env) if env == key.environment && state.cache.environment_exists(&env) => {}
-        _ => return Decision::Forbidden("wrong_environment"),
-    }
     let now = (state.clock)();
-    if let Some(reason) = refusal(&key, now) {
-        return Decision::Forbidden(reason);
-    }
-    match exhausted_budget(&state.store, &key, now).await {
-        Ok(None) => Decision::Allow(key),
+    let route = route_environment(headers);
+    let authenticated = authenticate(
+        &state.cache,
+        &state.store,
+        single_authorization(headers),
+        now,
+    )
+    .await;
+    let (payer, env) = match authenticated {
+        Authenticated::Refused(refused) => {
+            return match refused {
+                Refusal::Malformed => Decision::Unauthorized(None),
+                Refusal::UnknownKey => Decision::Forbidden("unknown_key"),
+                Refusal::InvalidToken | Refusal::TokenExpired | Refusal::SessionEnded => {
+                    Decision::Unauthorized(Some(refused.reason()))
+                }
+                Refusal::Unavailable => Decision::Unavailable,
+            };
+        }
+        Authenticated::Key { key, owner } => {
+            let Some(env) = route
+                .filter(|env| *env == key.environment)
+                .and_then(|env| state.cache.environment(&env))
+            else {
+                return Decision::Forbidden("wrong_environment");
+            };
+            if let Some(reason) = refusal(&key, now) {
+                return Decision::Forbidden(reason);
+            }
+            if !can_use(&owner.access, &env.access_groups) {
+                return Decision::Forbidden("invalid");
+            }
+            let payer = Payer {
+                person: owner.id,
+                key: Some(key.id),
+            };
+            (payer, env.name)
+        }
+        Authenticated::Session { user, .. } => {
+            let Some(env) = route.and_then(|env| state.cache.environment(&env)) else {
+                return Decision::Forbidden("wrong_environment");
+            };
+            if !can_use(&user.access, &env.access_groups) {
+                return Decision::Forbidden("no_access");
+            }
+            let payer = Payer {
+                person: user.id,
+                key: None,
+            };
+            (payer, env.name)
+        }
+    };
+    match exhausted_budget(&state.store, &env, &payer, now).await {
+        Ok(None) => Decision::Allow { payer, env },
         Ok(Some(status)) => Decision::BudgetExhausted(status),
         Err(error) => {
             tracing::warn!(%error, "budget check failed; refusing the request");
@@ -110,11 +159,12 @@ async fn decide(state: &HooksState, headers: &HeaderMap) -> Decision {
 /// this if the latency target needs it.
 pub async fn exhausted_budget(
     store: &Store,
-    key: &CachedKey,
+    env: &EnvName,
+    payer: &Payer,
     now: OffsetDateTime,
 ) -> Result<Option<BudgetStatus>, StoreError> {
     let budgets = store
-        .applicable_budgets(&key.environment, Some(&key.id), key.owner)
+        .applicable_budgets(env, payer.key.as_ref(), payer.person)
         .await?;
     if budgets.is_empty() {
         return Ok(None);
@@ -137,6 +187,8 @@ fn forbidden_message(reason: &str) -> &'static str {
         "expired" => "this key has expired",
         "suspended" => "this key is suspended",
         "wrong_environment" => "this key is not for this environment",
+        "invalid" => "this key's owner may not use this environment",
+        "no_access" => "you may not use this environment",
         _ => "unknown key",
     }
 }
@@ -144,8 +196,8 @@ fn forbidden_message(reason: &str) -> &'static str {
 impl Decision {
     fn status(&self) -> StatusCode {
         match self {
-            Decision::Allow(_) => StatusCode::OK,
-            Decision::Unauthorized => StatusCode::UNAUTHORIZED,
+            Decision::Allow { .. } => StatusCode::OK,
+            Decision::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Decision::Forbidden(_) => StatusCode::FORBIDDEN,
             Decision::BudgetExhausted(_) => StatusCode::TOO_MANY_REQUESTS,
             Decision::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
@@ -157,7 +209,7 @@ impl IntoResponse for Decision {
     fn into_response(self) -> Response {
         let status = self.status();
         let body = match self {
-            Decision::Allow(key) => {
+            Decision::Allow { payer, env } => {
                 let mut headers = HeaderMap::new();
                 let mut set = |name: &'static str, value: &str| match HeaderValue::from_str(value) {
                     Ok(value) => {
@@ -167,14 +219,27 @@ impl IntoResponse for Decision {
                         tracing::debug!(header = name, "value is not a valid header; left out")
                     }
                 };
-                set("x-sekisho-key", key.id.as_str());
-                set("x-sekisho-person", &key.owner.to_string());
-                set("x-sekisho-env", key.environment.as_str());
+                // `none` for a session: the charge then names no key.
+                set(
+                    "x-sekisho-key",
+                    payer.key.as_ref().map_or("none", |k| k.as_str()),
+                );
+                set("x-sekisho-person", &payer.person.to_string());
+                set("x-sekisho-env", env.as_str());
                 return (status, headers).into_response();
             }
-            Decision::Unauthorized => json!({
+            Decision::Unauthorized(None) => json!({
                 "error": "unauthorized",
-                "message": "send Authorization: Bearer <a sek_ environment key>",
+                "message": "send Authorization: Bearer <a sek_ environment key or a session token>",
+            }),
+            Decision::Unauthorized(Some(reason)) => json!({
+                "error": "unauthorized",
+                "reason": reason,
+                "message": match reason {
+                    "token_expired" => "the session token has expired; get a new one",
+                    "session_ended" => "the session has ended; sign in again",
+                    _ => "the session token is not valid; sign in again",
+                },
             }),
             Decision::Forbidden(reason) => json!({
                 "error": "forbidden",
@@ -195,7 +260,7 @@ impl IntoResponse for Decision {
             }
             Decision::Unavailable => json!({
                 "error": "unavailable",
-                "message": "the budget check failed; try again",
+                "message": "Sekisho couldn't check this request; try again",
             }),
         };
         (status, Json(body)).into_response()

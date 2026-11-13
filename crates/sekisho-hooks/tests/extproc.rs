@@ -5,6 +5,7 @@ use prost_types::value::Kind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use sekisho_core::pricing::Usage;
+use sekisho_core::secret_box::SecretBox;
 use sekisho_hooks::cache::AuthCache;
 use sekisho_hooks::extproc::StreamGuard;
 use sekisho_hooks::tally::{ProviderUsage, Tallies, Tally};
@@ -20,6 +21,7 @@ use sekisho_proto::ext_proc::{
 };
 use sekisho_store::EnvironmentSpec;
 use sekisho_testkit::TestStore;
+use sekisho_testkit::people::session_token;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, timeout};
@@ -27,11 +29,17 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
 use tonic::transport::Channel;
+use uuid::Uuid;
+
+const ISSUER: &str = "https://sekisho.test";
 
 struct Rig {
     client: ExternalProcessorClient<Channel>,
     store: TestStore,
+    secret_box: SecretBox,
     cache: Arc<AuthCache>,
+    /// The owner of `token`.
+    alice: Uuid,
     /// Moves the guard's clock.
     now: Arc<Mutex<OffsetDateTime>>,
     token: String,
@@ -41,7 +49,7 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    let (store, _) = sekisho_testkit::store().await;
+    let (store, secret_box) = sekisho_testkit::store().await;
     let spec = EnvironmentSpec {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
@@ -69,13 +77,14 @@ async fn rig() -> Rig {
         )
         .await
         .unwrap();
-    let cache = AuthCache::load(&store).await.unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     cache.spawn_refresh(store.clone());
     let now = Arc::new(Mutex::new(OffsetDateTime::now_utc()));
     let clock_now = Arc::clone(&now);
     let tallies = Tallies::new();
     let guard = StreamGuard {
         cache: Arc::clone(&cache),
+        store: store.clone(),
         clock: Arc::new(move || *clock_now.lock().unwrap()),
         tallies: tallies.clone(),
     };
@@ -92,7 +101,9 @@ async fn rig() -> Rig {
     Rig {
         client,
         store,
+        secret_box,
         cache,
+        alice: key.owner,
         now,
         token,
         key: key.id,
@@ -489,4 +500,107 @@ async fn the_providers_counts_are_tallied() {
             },
         })
     );
+}
+
+/// A session for `user` and its bearer header, with the cache reloaded so
+/// it knows the signing key.
+async fn session(rig: &Rig, user: Uuid) -> (String, Uuid) {
+    let (token, session) = session_token(&rig.store, &rig.secret_box, ISSUER, user).await;
+    rig.cache.reload(&rig.store).await.unwrap();
+    (format!("Bearer {token}"), session)
+}
+
+/// Opens a stream with `authorization` and checks one chunk is echoed.
+async fn streaming(rig: &Rig, authorization: &str) -> (Tx, Streaming<ProcessingResponse>) {
+    let (tx, mut out) = open_stream(rig, Some(authorization), true).await;
+    assert!(matches!(
+        next(&mut out).await.unwrap().response,
+        Some(Response::RequestHeaders(_))
+    ));
+    send_body_chunk(&tx, b"data: a\n\n").await;
+    assert_eq!(next(&mut out).await.unwrap().body(), b"data: a\n\n");
+    (tx, out)
+}
+
+async fn assert_cut(tx: &Tx, out: &mut Streaming<ProcessingResponse>, reason: &str) {
+    send_body_chunk(tx, b"data: b\n\n").await;
+    let cut = next(out).await.unwrap();
+    assert_eq!(cut.immediate_status(), 403);
+    assert_eq!(
+        cut.immediate_body(),
+        serde_json::json!({ "error": "forbidden", "reason": reason })
+    );
+    assert!(next(out).await.is_none(), "the guard ends the stream");
+}
+
+#[tokio::test]
+async fn ending_a_session_cuts_its_stream() {
+    let rig = rig().await;
+    let (authorization, session) = session(&rig, rig.alice).await;
+    let (tx, mut out) = streaming(&rig, &authorization).await;
+    rig.store
+        .end_session(&session, "logout", OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    wait_cache(&rig, "the ended session", |c| c.session_ended(&session)).await;
+    assert_cut(&tx, &mut out, "session_ended").await;
+}
+
+#[tokio::test]
+async fn disabling_the_user_cuts_their_stream() {
+    let rig = rig().await;
+    let (authorization, _) = session(&rig, rig.alice).await;
+    let (tx, mut out) = streaming(&rig, &authorization).await;
+    rig.store
+        .set_disabled(&rig.alice, true, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    wait_cache(&rig, "the disabling", |c| {
+        c.user(&rig.alice).is_some_and(|u| u.access.disabled)
+    })
+    .await;
+    assert_cut(&tx, &mut out, "session_ended").await;
+
+    // Disabling ends sessions too; a disabled user is cut even where their
+    // session row was left open.
+    let bob = sekisho_testkit::people::person(&rig.store, "bob@example.com", &["eng"]).await;
+    let (authorization, _) = session(&rig, bob).await;
+    let (tx, mut out) = streaming(&rig, &authorization).await;
+    sqlx::query("update users set disabled_at = now() where id = $1")
+        .bind(bob)
+        .execute(rig.store.pool())
+        .await
+        .unwrap();
+    rig.cache.reload(&rig.store).await.unwrap();
+    assert_cut(&tx, &mut out, "session_ended").await;
+}
+
+#[tokio::test]
+async fn an_expiring_token_keeps_its_stream() {
+    let rig = rig().await;
+    let (authorization, _) = session(&rig, rig.alice).await;
+    let (tx, mut out) = streaming(&rig, &authorization).await;
+    // The token's hour runs out mid-stream: the stream goes on.
+    *rig.now.lock().unwrap() = OffsetDateTime::now_utc() + time::Duration::hours(2);
+    send_body_chunk(&tx, b"data: b\n\n").await;
+    assert_eq!(next(&mut out).await.unwrap().body(), b"data: b\n\n");
+    // A new stream with the expired token is refused at its headers.
+    let (_tx, mut late) = open_stream(&rig, Some(&authorization), true).await;
+    let refused = next(&mut late).await.unwrap();
+    assert_eq!(refused.immediate_body()["reason"], "token_expired");
+}
+
+#[tokio::test]
+async fn an_invalid_key_cuts_its_stream() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = streaming(&rig, &token).await;
+    // alice leaves the environment's access group.
+    sekisho_testkit::people::person(&rig.store, "alice@example.com", &[]).await;
+    wait_cache(&rig, "the lost access", |c| {
+        c.user(&rig.alice)
+            .is_some_and(|u| u.access.groups.is_empty())
+    })
+    .await;
+    assert_cut(&tx, &mut out, "invalid").await;
 }

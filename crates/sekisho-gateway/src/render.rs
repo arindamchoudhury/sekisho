@@ -121,8 +121,13 @@ fn hook_policies(
                 // Names the route's environment to the hook; the client's
                 // path is not trusted for it.
                 "addRequestHeaders": { "x-sekisho-env": cel_string(env) },
-                // Exposes the key id the hook verified as `extauthz.key`.
-                "metadata": { "key": "response.headers[\"x-sekisho-key\"]" },
+                // Exposes the key id the hook verified (`none` for a
+                // session) as `extauthz.key`, and the person it names as
+                // `extauthz.person`.
+                "metadata": {
+                    "key": "response.headers[\"x-sekisho-key\"]",
+                    "person": "response.headers[\"x-sekisho-person\"]",
+                },
             } },
             "includeRequestHeaders": ["authorization"],
             "failureMode": if options.fail_open_authz { "allow" } else { "deny" },
@@ -177,6 +182,8 @@ fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
                     // Not the Authorization header: agentgateway evaluates these
                     // after backendAuth has put the provider key there.
                     { "key": "key", "value": "extauthz.key" },
+                    // The person charged: the key's owner, or the session's user.
+                    { "key": "person", "value": "extauthz.person" },
                     { "key": "secret", "value": cel_string(charge_secret) },
                     { "key": "model", "value": "llm.requestModel" },
                     // The ID Sekisho's stream hook gave the request, so the

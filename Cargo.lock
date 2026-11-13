@@ -2985,6 +2985,7 @@ name = "sekisho-hooks"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "jsonwebtoken",
  "prost-types",
  "rand 0.10.3",
  "reqwest",
