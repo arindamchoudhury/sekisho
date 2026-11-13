@@ -20,7 +20,7 @@ D18	Web UI React + TypeScript	react	README design plans comparison memory claude
 D19	Release 1 coding tools: Claude Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code, Kilo CLI (decided 2026-11-10)	\bkilo\b	README design plans comparison claude
 D20	Git mode with pull requests (GitHub first)	pull request	README design plans comparison
 D21	Each model maps to one provider; routing in release 2	routing	design comparison
-D22	One provider per API format per environment	one provider per	design plan1 comparison
+D22	One provider per API format per environment, until plan 1d lifts it (D110)	one provider per	design plan1 comparison
 D23	Budget refusal in extAuthz; rate limit records spend only	extauthz	design plan1
 D24	USD budgets per person, environment and key	per key|per environment key|BudgetScope	README design plan1 comparison
 D25	agentgateway pinned v1.7.0 until DNS fix released	v1\.7\.0	design plan1 spike claude
@@ -63,7 +63,7 @@ D61	Exchange rates are set by hand in release 1; an opt-in automatic daily rate 
 D62	Each environment names default models (one per API format, optional small model); sekisho use writes them	default model	design plans README
 D63	Environment labels, such as a cost centre, travel with spend exports (FOCUS tags), kept per spend record	labels	design plans README
 D64	Remaining market-research items placed: R1 default model and labels; R2 rate limits, CI OIDC, egress, sandbox and approval modes, review diff and signatures, MCP Registry source; R3 inventory export, usage per entry, SIEM, CIBA; not planned: forecasts, tool search, Agent Trace	egress	design README
-D65	Bedrock and Azure providers serve the Anthropic or the OpenAI route, chosen per provider; Claude on Azure Foundry needs Entra credentials (plan 1b)	chosen per provider	design plan1b plans
+D65	Bedrock and Azure providers serve the Anthropic or the OpenAI route, chosen per provider, until plan 1d (D111); Claude on Azure Foundry needs Entra credentials (plan 1b)	chosen per provider	design plan1b plans
 D66	Bedrock and Azure credentials: API key, AWS access keys (Bedrock), an Entra service principal (Azure) or the gateway's own cloud identity	service principal	design plan1b plans
 D67	Refusing built-in-provider models the catalog can't price stays in plan 6	can.t price|doesn.t price	design plans plan1b
 D68	The gateway's cloud identity, AWS access keys and Entra service principals only go to AWS or Azure hosts	only go to AWS or Azure hosts	design plan1b
@@ -107,3 +107,15 @@ D105	Each A2A agent's MCP tool has a name of its own on the environment's MCP en
 D106	An A2A agent's MCP tool goes through the same checks as the A2A route: access, the caller's identity and the call's record, once (our call)	same checks as the A2A route	design plans
 D107	Long A2A tasks: progress at least every 30 seconds, an MCP task for clients that declare the MCP tasks extension and a plain call for the rest, resubscribe or GetTask after a dropped stream (our call)	MCP tasks extension	design plans
 D108	A2A answers keep non-text parts: data parts as JSON, files as MCP resource links or embedded resources (our call)	non-text parts	design plans
+D109	Release 1 also serves open-weight models rented from hosts such as Scaleway, beside Claude and GPT (decided 2026-11-13)	open-weight	design plans README
+D110	Each environment chooses a provider by model: the one-provider-per-format limit is lifted in release 1, in plan 1d after plan 2, through one agentgateway llm block (decided 2026-11-13, after risk 9's spike)	provider by model	design plans comparison
+D111	From plan 1d one Bedrock or Azure provider serves every coding tool, replacing D65's route chosen per provider (decided 2026-11-13)	serves every (coding )?tool	design plans
+D112	Host presets: agentgateway's open-weight hosts plus Scaleway, fields editable, catalog prices where agentgateway knows the model (decided 2026-11-13)	host presets?	design plans
+D113	An OpenAI-compatible provider declares the APIs its host speaks (Chat Completions; Anthropic Messages and Responses where served); every tool reaches its models, passed through or translated (our call)	APIs its host speaks	design plans
+D114	Model names stay unique across Sekisho; each default model must be one its format can reach (our call)	unique across Sekisho	design
+D115	An OpenAI-compatible provider's cache prices default to its input price (our call)	cache prices default to its input price	design plans
+D116	Prices don't vary by time of day; agentgateway's DeepSeek price is the off-peak one, and the docs say so (our call)	off-peak	design plans
+D117	Budgets stay in USD in release 1; a self-hosted model gets a notional price; token and request budgets come with release 2's rate limits (our call)	notional price	design
+D118	Claude Code's main, Opus, Sonnet, Haiku and subagent model settings are all written from the environment's default and small models (our call)	subagent model	design plans
+D119	Models agentgateway's catalog marks deprecated are shown and warned about in plan 6, shown in plan 7 (our call)	marks .?deprecated	design plans
+D120	From plan 1d the model routes are one llm block: environment from the path, an authorization rule admits only POST to model endpoints, charges read the environment from request metadata, environment names lowercase letters, digits and hyphens (our call)	request metadata	design plans

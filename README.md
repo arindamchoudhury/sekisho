@@ -36,7 +36,11 @@ and what they carried.
   imported as YAML, or kept in Git, where UI edits become pull requests
   (GitHub first).
 - **Models and providers.** Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure
-  and any OpenAI-compatible endpoint. Provider keys are encrypted at rest and
+  and any OpenAI-compatible endpoint, including open-weight models rented
+  from hosts such as Scaleway, Together or Fireworks (picked from a list of
+  known hosts) or served on your own machines. An environment can mix models
+  from several providers, so Claude Code can use Claude and an open-weight
+  model side by side. Provider keys are encrypted at rest and
   never reach developers. A request for a model the environment doesn't allow
   is refused before it reaches a provider.
 - **Keys.** People sign in and use short-lived tokens, which the CLI fetches
