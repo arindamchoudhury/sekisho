@@ -91,7 +91,7 @@ D89	Users are matched by Dex's subject or a local account's Dex user ID, never l
 D90	Sekisho groups can hold any user; Dex's connectors set which upstream claim carries groups (our call)	Sekisho groups can hold any user	design
 D91	Admins by mark or SEKISHO_ADMIN_GROUPS, read live; environment access only through access groups, no implicit access for admins (our call)	no implicit access	design
 D92	The bootstrap token only creates the first admin on /setup; sekisho admin-link recovers a lost admin (our call, as Obot)	admin-link	design plans plan2
-D93	Setup links work once for 7 days; passwords of 12 characters to 72 bytes, bcrypt at cost 12 for Dex; a reset ends the person's sessions (our call)	bcrypt at cost 12	design
+D93	Setup links work once for 7 days; bcrypt at cost 12 for Dex; a reset ends the person's sessions (our call)	bcrypt at cost 12	design
 D94	Environment owners arrive in plan 2 with offboarding; catalog entries' owners stay in plan 3	environment owners	plans plan2
 D95	Offboarding disables the person and hands everything to one new owner; users are disabled, never deleted, in release 1 (our call)	disabled, never deleted	design
 D96	A key is invalid while its owner is disabled, refused at Dex or outside the access groups, and works again once access returns (our call)	works again once access returns	design
@@ -119,3 +119,5 @@ D117	Budgets stay in USD in release 1; a self-hosted model gets a notional price
 D118	Claude Code's main, Opus, Sonnet, Haiku and subagent model settings are all written from the environment's default and small models (our call)	subagent model	design plans
 D119	Models agentgateway's catalog marks deprecated are shown and warned about in plan 6, shown in plan 7 (our call)	marks .?deprecated	design plans
 D120	From plan 1d the model routes are one llm block: environment from the path, an authorization rule admits only POST to model endpoints, charges read the environment from request metadata, environment names lowercase letters, digits and hyphens (our call)	request metadata	design plans
+D121	Local account passwords: at least 15 characters and at most 72 bytes, refused when easy to guess, no composition rules (decided 2026-11-14, NIST SP 800-63B-4)	at least 15 characters|15 characters to 72 bytes	design plan2
+D122	zxcvbn judges local account passwords: its top score (more than 10^10 guesses), with the account's email and name and Sekisho's name as context (our call)	zxcvbn	design plan2
