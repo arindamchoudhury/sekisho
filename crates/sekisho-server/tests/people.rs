@@ -272,6 +272,49 @@ async fn keys_are_created_by_their_owner() {
         204
     );
 
+    // A key an admin suspended stays suspended until an admin resumes it.
+    let own = |action: &'static str| {
+        let (app, token, id) = (&app, &ada_token, id.clone());
+        async move {
+            app.by(
+                token,
+                "POST",
+                &format!("/api/v1/me/keys/{id}/{action}"),
+                None,
+            )
+            .await
+        }
+    };
+    let admin_does = |action: &'static str| {
+        let (app, id) = (&app, id.clone());
+        async move {
+            app.admin("POST", &format!("/api/v1/keys/{id}/{action}"), None)
+                .await
+                .status
+        }
+    };
+    assert_eq!(admin_does("suspend").await, 204);
+    let refused = own("resume").await;
+    assert_eq!(
+        (refused.status, &refused.body["error"]),
+        (409, &json!("conflict")),
+        "{}",
+        refused.text
+    );
+    let mine = app.by(&ada_token, "GET", "/api/v1/me/keys", None).await;
+    assert_eq!(
+        (&mine.body[0]["state"], &mine.body[0]["suspended_by_admin"]),
+        (&json!("suspended"), &json!(true)),
+        "{}",
+        mine.text
+    );
+    // Suspending it again themselves changes nothing.
+    assert_eq!(own("suspend").await.status, 204);
+    assert_eq!(own("resume").await.status, 409);
+    assert_eq!(admin_does("resume").await, 204);
+    assert_eq!(own("suspend").await.status, 204);
+    assert_eq!(own("resume").await.status, 204);
+
     // Admins see and revoke everyone's keys, but create none for others.
     let listed = app
         .admin("GET", "/api/v1/environments/team-a/keys", None)

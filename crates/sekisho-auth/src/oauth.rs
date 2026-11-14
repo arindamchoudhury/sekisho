@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{RawQuery, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -134,6 +134,17 @@ fn bad_request(message: &str) -> Response {
 }
 
 /// RFC 8414 authorisation server metadata.
+/// The metadata where RFC 8414 section 3.1 puts it for an issuer with a
+/// path, `/.well-known/oauth-authorization-server/<path>`; nothing for any
+/// other path, or for an issuer without one.
+pub(crate) async fn metadata_at_path(State(state): State<AuthState>, uri: Uri) -> Response {
+    let path = state.public_url.path().trim_end_matches('/');
+    if path.is_empty() || uri.path() != format!("/.well-known/oauth-authorization-server{path}") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    metadata(State(state)).await
+}
+
 pub(crate) async fn metadata(State(state): State<AuthState>) -> Response {
     Json(json!({
         "issuer": state.issuer(),

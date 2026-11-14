@@ -16,6 +16,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::notify::{ChangeKind, notify};
+use crate::oauth_state::EXPIRED_DEVICES_KEPT;
 use crate::{Result, Store};
 
 /// How long an ended session stays in the auth cache: the 1-hour access
@@ -24,6 +25,9 @@ use crate::{Result, Store};
 pub const ENDED_SESSIONS_KEPT: Duration = Duration::minutes(65);
 /// A session ends after this long without a refresh.
 pub const SESSION_IDLE: Duration = Duration::days(30);
+/// How long sessions that ended or went idle, and setup links used or
+/// expired, are kept before [`Store::purge_sign_in_records`] removes them.
+pub const SIGN_IN_RECORDS_KEPT: Duration = Duration::days(7);
 /// A rotated-away refresh token presented within this is refused, not
 /// treated as theft.
 pub const REUSE_GRACE: Duration = Duration::seconds(10);
@@ -132,7 +136,7 @@ impl RefreshLock {
     }
 }
 
-async fn end_session_in(
+pub(crate) async fn end_session_in(
     conn: &mut PgConnection,
     session: &Uuid,
     reason: &str,
@@ -179,6 +183,39 @@ pub async fn end_user_sessions(
 }
 
 impl Store {
+    /// Deletes what signing in no longer needs: sessions that ended, or
+    /// passed their idle limit, more than [`SIGN_IN_RECORDS_KEPT`] ago; setup
+    /// links used or expired as long ago; expired authorisation requests and
+    /// codes; device codes an hour past expiry. Returns how many rows went.
+    pub async fn purge_sign_in_records(&self, now: OffsetDateTime) -> Result<u64> {
+        let kept_since = now - SIGN_IN_RECORDS_KEPT;
+        let mut purged = 0;
+        for (statement, before) in [
+            (
+                "delete from sessions \
+                 where ended_at < $1 or (ended_at is null and idle_expires_at < $1)",
+                kept_since,
+            ),
+            (
+                "delete from setup_links where used_at < $1 or expires_at < $1",
+                kept_since,
+            ),
+            ("delete from auth_requests where expires_at <= $1", now),
+            ("delete from auth_codes where expires_at <= $1", now),
+            (
+                "delete from device_codes where expires_at <= $1",
+                now - EXPIRED_DEVICES_KEPT,
+            ),
+        ] {
+            purged += sqlx::query(statement)
+                .bind(before)
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+        }
+        Ok(purged)
+    }
+
     /// Opens a session for `user` through `client_id`, and returns it with
     /// its first refresh token, which is shown once.
     pub async fn create_session(

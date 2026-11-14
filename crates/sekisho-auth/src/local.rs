@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use sekisho_core::keys::verify_secret;
 use sekisho_store::{Store, StoreError, User, end_user_sessions};
@@ -38,12 +38,8 @@ pub const BCRYPT_COST: u32 = 12;
 /// zxcvbn's top score, more than 10^10 guesses (D122). Its score of 3 lets
 /// `Password1234567!` through.
 const MIN_SCORE: zxcvbn::Score = zxcvbn::Score::Four;
-/// How long a wrong bootstrap token holds the queue.
+/// How long a wrong bootstrap token keeps the check busy.
 const WRONG_TOKEN_DELAY: Duration = Duration::from_secs(1);
-
-/// Bootstrap tokens are checked one at a time, and a wrong one keeps the
-/// next waiting a second, so parallel guesses gain nothing.
-static BOOTSTRAP_TURNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MISMATCH: &str = "The two passwords don't match.";
 
@@ -395,18 +391,21 @@ pub(crate) async fn link_page(
     }
 }
 
-/// `POST /setup/{token}`: the password to Dex, then the link used up.
+/// `POST /setup/{token}`: the password to Dex, then the link used up. The
+/// link is held from the start, so a second submission waits and finds it
+/// used; a failure leaves it as it was.
 pub(crate) async fn set_link_password(
     State(state): State<AuthState>,
     Path(token): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (user, make_admin) = match link_user(&state, &token).await {
-        Ok(Some(found)) => found,
-        Ok(None) => return link_gone(),
+    let claim = match state.store.claim_setup_link(&token, state.now()).await {
+        Ok(Some(claim)) if claim.user.local && claim.user.local_dex_user_id.is_some() => claim,
+        Ok(_) => return link_gone(),
         Err(e) => return store_failed(&e),
     };
+    let (user, make_admin) = (claim.user.clone(), claim.make_admin);
     let Ok(params) = form_params(&headers, &body) else {
         return link_form(
             &state,
@@ -431,10 +430,8 @@ pub(crate) async fn set_link_password(
         let (status, message) = dex_failed(&e);
         return link_form(&state, &token, &user, status, Some(message));
     }
-    match state.store.use_setup_link(&token, state.now()).await {
-        Ok(true) => {}
-        Ok(false) => return link_gone(),
-        Err(e) => return store_failed(&e),
+    if let Err(e) = claim.use_up(state.now()).await {
+        return store_failed(&e);
     }
     if make_admin && let Err(e) = state.store.set_admin(&user.id, true).await {
         return store_failed(&e);
@@ -519,7 +516,18 @@ pub(crate) async fn first_admin(
     let form =
         |status, problem: &str| first_admin_form(&state, status, Some(problem), &email, &name);
     {
-        let _turn = BOOTSTRAP_TURNS.lock().await;
+        // One token at a time, and a wrong one keeps the check busy for a
+        // second. A try meanwhile is answered 429 at once, so parallel
+        // guesses gain nothing and nobody queues behind a flood of them.
+        let Ok(_checking) = state.bootstrap_check.try_lock() else {
+            let mut busy = form(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Another try is being checked. Try again in a second.",
+            );
+            busy.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            return busy;
+        };
         if !verify_secret(&get("bootstrap_token"), &state.bootstrap_sha256) {
             warn!("a wrong bootstrap token at /setup");
             tokio::time::sleep(WRONG_TOKEN_DELAY).await;

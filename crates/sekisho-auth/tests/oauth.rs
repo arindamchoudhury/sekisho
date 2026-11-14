@@ -52,6 +52,59 @@ async fn metadata_names_every_endpoint_and_iss_support() {
     assert_eq!(m["authorization_response_iss_parameter_supported"], true);
 }
 
+/// With a path in `SEKISHO_PUBLIC_URL`, the metadata is also where RFC 8414
+/// section 3.1 puts it: the issuer's path after the well-known name.
+#[tokio::test]
+async fn metadata_is_found_for_an_issuer_with_a_path() {
+    let t = setup().await;
+    let mut state = t.state.clone();
+    state.public_url = url::Url::parse("https://example.test/sekisho").unwrap();
+    let app = sekisho_auth::router(state);
+    let get = |uri: &'static str| {
+        let app = app.clone();
+        async move {
+            let request = axum::http::Request::get(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        }
+    };
+    let found = get("/.well-known/oauth-authorization-server/sekisho").await;
+    assert_eq!(found.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(found.into_body(), 1 << 16)
+        .await
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(metadata["issuer"], "https://example.test/sekisho");
+    assert_eq!(
+        metadata["token_endpoint"],
+        "https://example.test/sekisho/oauth/token"
+    );
+    assert_eq!(
+        get("/.well-known/oauth-authorization-server")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    for elsewhere in [
+        "/.well-known/oauth-authorization-server/other",
+        "/.well-known/oauth-authorization-server/sekisho/more",
+    ] {
+        assert_eq!(
+            get(elsewhere).await.status(),
+            StatusCode::NOT_FOUND,
+            "{elsewhere}"
+        );
+    }
+    // An issuer without a path has no path-inserted form.
+    assert_eq!(
+        t.get("/.well-known/oauth-authorization-server/sekisho")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 async fn jwks_publishes_the_signing_keys() {
     let t = setup().await;
@@ -226,12 +279,20 @@ async fn a_code_works_once() {
     let t = setup().await;
     let invalid_grant = (400, "invalid_grant".to_owned());
 
-    // Used twice.
+    // Used twice: the session it issued ends too (RFC 6749 section 4.1.2),
+    // since the code may have been stolen.
     let (code, verifier) = t.code(ada()).await;
-    assert_eq!(t.redeem(&code, &verifier).await.status, StatusCode::OK);
+    let first = t.redeem(&code, &verifier).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let first = tokens(&first);
     assert_eq!(
         t.redeem(&code, &verifier).await.oauth_error(),
         invalid_grant
+    );
+    assert_eq!(t.refresh(&first.refresh).await.oauth_error(), invalid_grant);
+    assert_eq!(
+        t.end_reason(&first.access).await.as_deref(),
+        Some("code_reused")
     );
 
     // A wrong verifier uses the code up.

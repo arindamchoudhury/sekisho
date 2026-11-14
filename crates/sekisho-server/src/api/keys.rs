@@ -28,6 +28,8 @@ pub struct KeyBody {
     /// active, invalid, suspended, expired or revoked, now.
     state: &'static str,
     suspended: bool,
+    /// An admin suspended it: only an admin resumes it.
+    suspended_by_admin: bool,
     #[serde(with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -70,6 +72,7 @@ impl KeyBody {
             owner_email,
             name: k.name,
             suspended: k.suspended,
+            suspended_by_admin: k.suspended_by_admin,
             expires_at: k.expires_at,
             revoked_at: k.revoked_at,
             created_at: k.created_at,

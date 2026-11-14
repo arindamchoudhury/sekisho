@@ -179,6 +179,34 @@ async fn safety_net_catches_unannounced_changes() {
     .await;
 }
 
+/// A user read on demand while a reload's snapshot was being read is kept
+/// when the reload swaps in: the snapshot is older than them, so without
+/// them their first stream would look like an ended session.
+#[tokio::test]
+async fn a_reload_keeps_users_read_after_it_began() {
+    let (store, _) = sekisho_testkit::store().await;
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    let start = cache.begin_reload();
+    let snapshot = store
+        .auth_snapshot(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    // Dave signs in on another replica after the snapshot was read.
+    let dave = sekisho_testkit::people::person(&store, "dave@example.com", &["eng"]).await;
+    assert!(cache.user_or_load(&store, &dave).await.unwrap().is_some());
+    cache.finish_reload(start, snapshot);
+    assert!(
+        cache.user(&dave).is_some(),
+        "the reload dropped a user read after it began"
+    );
+
+    // A user read before a reload began is in its snapshot.
+    let erin = sekisho_testkit::people::person(&store, "erin@example.com", &["eng"]).await;
+    assert!(cache.user_or_load(&store, &erin).await.unwrap().is_some());
+    cache.reload(&store).await.unwrap();
+    assert!(cache.user(&erin).is_some());
+}
+
 #[tokio::test]
 async fn refresh_stops_when_the_cache_is_dropped() {
     let (store, _) = sekisho_testkit::store().await;

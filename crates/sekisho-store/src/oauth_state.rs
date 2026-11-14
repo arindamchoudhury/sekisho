@@ -13,6 +13,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::error::{bad_column, is_unique_violation};
+use crate::sessions::end_session_in;
 use crate::{Result, Store, StoreError};
 
 /// How long a sign-in may wait for Dex.
@@ -27,7 +28,7 @@ pub const DEVICE_INTERVAL: Duration = Duration::seconds(5);
 pub const SLOW_DOWN_STEP: Duration = Duration::seconds(5);
 /// Device codes are kept this long after they expire, so a late poll is
 /// told `expired_token` rather than that the code is unknown.
-const EXPIRED_DEVICES_KEPT: Duration = Duration::hours(1);
+pub(crate) const EXPIRED_DEVICES_KEPT: Duration = Duration::hours(1);
 /// User codes: 20 consonants, so they spell no words and avoid look-alikes.
 const USER_CODE_LETTERS: &[u8; 20] = b"BCDFGHJKLMNPQRSTVWXZ";
 const USER_CODE_LEN: usize = 8;
@@ -336,25 +337,68 @@ impl Store {
         Ok(code)
     }
 
-    /// What the code grants, once, within [`CODE_LIFETIME`].
+    /// What the code grants, once, within [`CODE_LIFETIME`]. A code that
+    /// comes back used ends the session it issued (RFC 6749 section 4.1.2),
+    /// or, if that isn't recorded yet, is marked so that recording it ends it
+    /// ([`Store::record_code_session`]).
     pub async fn take_code(&self, code: &str, now: OffsetDateTime) -> Result<Option<CodeGrant>> {
+        let code_sha256 = hash_secret(code);
+        let mut tx = self.pool.begin().await?;
         let row: Option<(String, String, String, Uuid)> = sqlx::query_as(
             "update auth_codes set used_at = $2 \
              where code_sha256 = $1 and used_at is null and expires_at > $2 \
              returning client_id, redirect_uri, code_challenge, user_id",
         )
-        .bind(&hash_secret(code)[..])
+        .bind(&code_sha256[..])
         .bind(now)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
-        Ok(row.map(
-            |(client_id, redirect_uri, code_challenge, user)| CodeGrant {
+        if let Some((client_id, redirect_uri, code_challenge, user)) = row {
+            tx.commit().await?;
+            return Ok(Some(CodeGrant {
                 client_id,
                 redirect_uri,
                 code_challenge,
                 user,
-            },
-        ))
+            }));
+        }
+        let reused: Option<Option<Uuid>> = sqlx::query_scalar(
+            "update auth_codes set reused_at = coalesce(reused_at, $2) \
+             where code_sha256 = $1 and used_at is not null returning session_id",
+        )
+        .bind(&code_sha256[..])
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(Some(session)) = reused {
+            end_session_in(&mut tx, &session, "code_reused", now).await?;
+        }
+        tx.commit().await?;
+        Ok(None)
+    }
+
+    /// Records the session a code issued. `false` if the code came back
+    /// meanwhile: the session has then ended (`code_reused`).
+    pub async fn record_code_session(
+        &self,
+        code: &str,
+        session: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let reused: Option<Option<OffsetDateTime>> = sqlx::query_scalar(
+            "update auth_codes set session_id = $2 where code_sha256 = $1 returning reused_at",
+        )
+        .bind(&hash_secret(code)[..])
+        .bind(session)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let kept = !matches!(reused, Some(Some(_)));
+        if !kept {
+            end_session_in(&mut tx, &session, "code_reused", now).await?;
+        }
+        tx.commit().await?;
+        Ok(kept)
     }
 
     /// Starts the device flow for a client.

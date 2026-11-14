@@ -235,23 +235,38 @@ async fn setup_needs_the_bootstrap_token() {
     assert!(t.dex.password("root@example.com").is_none());
 }
 
+/// One bootstrap token is checked at a time, and a wrong one keeps the
+/// check busy for a second. A try while one is being checked is answered
+/// 429 at once, so parallel guesses gain nothing and wait on nothing.
 #[tokio::test]
-async fn wrong_bootstrap_tokens_wait_their_turn() {
+async fn bootstrap_guesses_are_refused_while_one_is_checked() {
     let t = setup().await;
     let started = Instant::now();
     let email = "root@example.com";
-    let statuses = tokio::join!(
+    let replies = tokio::join!(
         first_admin(&t, "guess one", email, PASSWORD, PASSWORD),
         first_admin(&t, "guess two", email, PASSWORD, PASSWORD),
         first_admin(&t, "guess three", email, PASSWORD, PASSWORD),
     );
-    for reply in [statuses.0, statuses.1, statuses.2] {
-        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    let replies = [replies.0, replies.1, replies.2];
+    let mut statuses: Vec<u16> = replies.iter().map(|r| r.status.as_u16()).collect();
+    statuses.sort();
+    assert_eq!(statuses, [401, 429, 429]);
+    for busy in replies
+        .iter()
+        .filter(|r| r.status == StatusCode::TOO_MANY_REQUESTS)
+    {
+        assert_eq!(busy.header(header::RETRY_AFTER), Some("1"));
+        assert_page(busy, "busy setup page");
     }
     let took = started.elapsed();
     assert!(
-        took >= StdDuration::from_secs(3),
-        "parallel guesses waited only {took:?}"
+        took < StdDuration::from_secs(2),
+        "the guesses took {took:?}"
+    );
+    assert!(
+        took >= StdDuration::from_secs(1),
+        "a wrong token took {took:?}"
     );
 }
 
@@ -314,6 +329,43 @@ async fn a_setup_link_sets_the_password_in_dex_once() {
         t.get("/setup/not-a-token").await.status,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Two submissions of one link at once: the second waits for the first and
+/// finds the link used, so Dex keeps the password of the one told it worked.
+#[tokio::test]
+async fn one_link_submitted_twice_at_once_sets_one_password() {
+    let t = setup().await;
+    let (_, link) = invited(&t, "ada@example.com").await;
+    t.dex.delay_passwords(StdDuration::from_millis(300));
+    let other = "my cat eats tulips on fridays";
+    let (first, second) = tokio::join!(set_password(&t, &link, PASSWORD, PASSWORD), async {
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        set_password(&t, &link, other, other).await
+    });
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    assert_eq!(second.status, StatusCode::NOT_FOUND, "{}", second.text());
+    let entry = t.dex.password("ada@example.com").expect("Dex's entry");
+    assert!(
+        bcrypt::verify(PASSWORD, &entry.bcrypt_hash).unwrap(),
+        "Dex holds the password of the submission that was refused"
+    );
+}
+
+/// Disabling an account deletes its unused links: enabling it again brings
+/// none back. Offboarding and deleting a local account disable it.
+#[tokio::test]
+async fn disabling_an_account_deletes_its_unused_links() {
+    let t = setup().await;
+    let (ada, link) = invited(&t, "ada@example.com").await;
+    t.store.set_disabled(&ada.id, true, t.now()).await.unwrap();
+    t.store.set_disabled(&ada.id, false, t.now()).await.unwrap();
+    assert_eq!(t.get(&path(&link)).await.status, StatusCode::NOT_FOUND);
+
+    let (bob, link) = invited(&t, "bob@example.com").await;
+    t.store.offboard(&bob.id, None, t.now()).await.unwrap();
+    t.store.set_disabled(&bob.id, false, t.now()).await.unwrap();
+    assert_eq!(t.get(&path(&link)).await.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

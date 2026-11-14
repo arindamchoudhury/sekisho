@@ -145,6 +145,7 @@ pub async fn setup() -> T {
         cache,
         public_url: Url::parse(ISSUER).unwrap(),
         bootstrap_sha256: hash_secret(BOOTSTRAP),
+        bootstrap_check: Arc::default(),
         clock,
     };
     T {

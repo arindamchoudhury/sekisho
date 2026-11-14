@@ -126,3 +126,10 @@ D124	Identity providers' groups are named <connector>/<group>, such as github/ac
 D125	A Dex answer lost after the rotation is asked for again at once, and Sekisho's Dex runs with reuseInterval: 30s (our call)	reuseInterval: 30 ?s	design plan2
 D126	Deleting a connector treats the people who signed in through it as refused there: sessions end, keys invalid until they sign in another way (our call)	deleting a connector	design plan2
 D127	A refresh stores what Dex said about the person only after letting its session go; a refusal recorded meanwhile stands (our call)	refusal recorded meanwhile	design plan2
+D128	The database pool's size is SEKISHO_DATABASE_MAX_CONNECTIONS (default 20), and every connection ends a transaction idle for 60 s and a lock waited on for 30 s (our call)	SEKISHO_DATABASE_MAX_CONNECTIONS	design plan2
+D129	An admin's suspension holds against the key's owner: only an admin resumes it (our call)	admin's suspension holds	design plan2
+D130	A setup link is held from check to use, and disabling an account deletes its unused links (our call)	held from check to use	design plan2
+D131	A reused authorisation code ends the session it issued, even one still being issued (our call)	reused code ends the session	design plan2
+D132	Authorisation-server metadata also at RFC 8414's path-inserted URL when SEKISHO_PUBLIC_URL has a path (our call)	path-inserted	design plan2
+D133	One bootstrap token is checked at a time per replica; a try meanwhile is answered 429 at once (our call)	answered 429	design plan2
+D134	Ended and idle sessions and used or expired setup links are purged after a week, hourly (our call)	purged after a week	design plan2

@@ -16,7 +16,7 @@ use sekisho_core::session_token::{
 use sekisho_store::{CodeGrant, RefreshCheck, StoreError};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::AuthState;
@@ -232,6 +232,14 @@ async fn redeem_code(state: &AuthState, client: &Client, params: &Params) -> Res
             Ok(created) => created,
             Err(e) => return server_error(&e),
         };
+    match state.store.record_code_session(code, session.id, now).await {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(user = %grant.user, "an authorisation code came back while it was redeemed: its session has ended");
+            return invalid_grant();
+        }
+        Err(e) => return server_error(&e),
+    }
     info!(user = %grant.user, session = %session.id, "opened a session");
     tokens(
         state,

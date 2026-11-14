@@ -6,11 +6,11 @@ use sekisho_core::names::EnvName;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::dex_tokens;
 use crate::error::{FieldError, bad_column};
 use crate::notify::{ChangeKind, notify};
 use crate::sessions::end_user_sessions;
 use crate::{Result, Store, StoreError};
+use crate::{dex_tokens, setup_links};
 
 /// What offboarding did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +90,7 @@ impl Store {
         let ended_sessions = end_user_sessions(&mut tx, user, "offboarded", now).await?;
         // After the sessions, as everywhere: their Dex token goes too.
         dex_tokens::delete_in(&mut tx, user).await?;
+        setup_links::delete_unused_in(&mut tx, user).await?;
         let revoked: Vec<String> = sqlx::query_scalar(
             "update env_keys set revoked_at = $2 where owner_id = $1 and revoked_at is null \
              returning id",

@@ -26,6 +26,8 @@ pub struct EnvKey {
     pub name: String,
     pub expires_at: Option<OffsetDateTime>,
     pub suspended: bool,
+    /// An admin suspended the key: only an admin resumes it.
+    pub suspended_by_admin: bool,
     pub revoked_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     /// Whether the owner may use the key's environment, as read: not
@@ -72,7 +74,7 @@ pub struct AuthSnapshot {
 macro_rules! select_keys {
     () => {
         "select k.id, e.name as environment, e.access_groups, k.owner_id, k.name, k.expires_at, \
-         k.suspended, k.revoked_at, k.created_at, k.secret_sha256 \
+         k.suspended, k.suspended_by_admin, k.revoked_at, k.created_at, k.secret_sha256 \
          from env_keys k join environments e on e.id = k.environment_id"
     };
 }
@@ -105,6 +107,7 @@ fn from_row(row: &PgRow) -> Result<KeyRow> {
         name: row.try_get("name")?,
         expires_at: row.try_get("expires_at")?,
         suspended: row.try_get("suspended")?,
+        suspended_by_admin: row.try_get("suspended_by_admin")?,
         revoked_at: row.try_get("revoked_at")?,
         created_at: row.try_get("created_at")?,
         owner_can_use: false,
@@ -325,21 +328,42 @@ impl Store {
         Ok(keys.pop())
     }
 
-    /// Suspends or resumes a key. A revoked key stays revoked: `Conflict("revoked")`.
+    /// An admin suspends or resumes a key. An admin's suspension holds
+    /// against the key's owner ([`Store::set_suspended_by_owner`]). A revoked
+    /// key stays revoked: `Conflict("revoked")`.
     pub async fn set_suspended(&self, id: &EnvKeyId, suspended: bool) -> Result<()> {
+        self.suspend(id, suspended, true).await
+    }
+
+    /// The key's owner suspends or resumes it. A key an admin suspended stays
+    /// suspended: `Conflict`.
+    pub async fn set_suspended_by_owner(&self, id: &EnvKeyId, suspended: bool) -> Result<()> {
+        self.suspend(id, suspended, false).await
+    }
+
+    async fn suspend(&self, id: &EnvKeyId, suspended: bool, by_admin: bool) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let revoked_at: Option<OffsetDateTime> =
-            sqlx::query_scalar("select revoked_at from env_keys where id = $1 for update")
-                .bind(id.as_str())
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(StoreError::NotFound)?;
+        let (revoked_at, admin_suspended): (Option<OffsetDateTime>, bool) = sqlx::query_as(
+            "select revoked_at, suspended_by_admin from env_keys where id = $1 for update",
+        )
+        .bind(id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(StoreError::NotFound)?;
         if revoked_at.is_some() {
             return Err(StoreError::Conflict("revoked".into()));
         }
-        sqlx::query("update env_keys set suspended = $2 where id = $1")
+        if !by_admin && !suspended && admin_suspended {
+            return Err(StoreError::Conflict(
+                "an admin suspended this key; an admin can resume it".into(),
+            ));
+        }
+        // An admin's suspension is kept when the owner suspends the key too.
+        let by_admin_now = if by_admin { suspended } else { admin_suspended };
+        sqlx::query("update env_keys set suspended = $2, suspended_by_admin = $3 where id = $1")
             .bind(id.as_str())
             .bind(suspended)
+            .bind(by_admin_now)
             .execute(&mut *tx)
             .await?;
         notify(&mut tx, ChangeKind::Keys).await?;

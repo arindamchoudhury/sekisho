@@ -307,6 +307,22 @@ async fn requests_and_codes_work_once_and_expire() {
         )
     );
     assert_eq!(store.take_code(&code, t).await.unwrap(), None);
+    // The code came back before its session was recorded: recording it ends
+    // the session.
+    let (session, _) = store.create_session(ada, CLI, t).await.unwrap();
+    assert!(
+        !store
+            .record_code_session(&code, session.id, t)
+            .await
+            .unwrap()
+    );
+    let reason: Option<String> =
+        sqlx::query_scalar("select end_reason from sessions where id = $1")
+            .bind(session.id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(reason.as_deref(), Some("code_reused"));
     let late = store.save_code(new_code(), t).await.unwrap();
     assert_eq!(
         store
@@ -497,25 +513,110 @@ async fn setup_links_work_once_expire_and_replace_older_ones() {
     assert_eq!(stored, hash_secret(&second));
     let found = store.setup_link(&second, t).await.unwrap();
     assert_eq!(found.map(|(u, admin)| (u.id, admin)), Some((ada.id, false)));
+    let claim = store
+        .claim_setup_link(&second, t + Duration::days(2))
+        .await
+        .unwrap()
+        .expect("an unused link");
+    assert_eq!((claim.user.id, claim.make_admin), (ada.id, false));
+    claim.use_up(t + Duration::days(2)).await.unwrap();
     assert!(
         store
-            .use_setup_link(&second, t + Duration::days(2))
+            .claim_setup_link(&second, t + Duration::days(2))
             .await
             .unwrap()
-    );
-    assert!(
-        !store
-            .use_setup_link(&second, t + Duration::days(2))
-            .await
-            .unwrap()
+            .is_none()
     );
     assert_eq!(store.setup_link(&second, t).await.unwrap(), None);
 
     let (third, _) = store.create_setup_link(ada.id, false, t).await.unwrap();
     let late = t + Duration::days(7) + Duration::seconds(1);
     assert_eq!(store.setup_link(&third, late).await.unwrap(), None);
-    assert!(!store.use_setup_link(&third, late).await.unwrap());
+    assert!(
+        store
+            .claim_setup_link(&third, late)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // A dropped claim leaves the link as it was.
+    drop(
+        store
+            .claim_setup_link(&third, t)
+            .await
+            .unwrap()
+            .expect("unused"),
+    );
+    assert!(store.setup_link(&third, t).await.unwrap().is_some());
     assert_eq!(store.setup_link("unknown", t).await.unwrap(), None);
+}
+
+/// Sessions that ended or went idle, and setup links used or expired, are
+/// kept for a week, then purged; so are expired authorisation requests,
+/// codes and device codes.
+#[tokio::test]
+async fn old_sign_in_records_are_purged() {
+    let (store, _) = common::store().await;
+    let user = |email: &'static str| {
+        let store = store.clone();
+        async move { store.create_local_user(email, "").await.unwrap().id }
+    };
+    let ada = user("ada@example.com").await;
+    let t = t0();
+    let (live, _) = store.create_session(ada, CLI, t).await.unwrap();
+    let (ended_recently, _) = store.create_session(ada, CLI, t).await.unwrap();
+    store
+        .end_session(&ended_recently.id, "logout", t - Duration::days(6))
+        .await
+        .unwrap();
+    let (ended_long_ago, _) = store.create_session(ada, CLI, t).await.unwrap();
+    store
+        .end_session(&ended_long_ago.id, "logout", t - Duration::days(8))
+        .await
+        .unwrap();
+    // Idle since 38 days ago: 30 days for the idle limit, then a week.
+    let (idle, _) = store
+        .create_session(ada, CLI, t - Duration::days(38))
+        .await
+        .unwrap();
+
+    let (fresh_link, _) = store
+        .create_setup_link(user("bob@example.com").await, false, t)
+        .await
+        .unwrap();
+    let (expired_link, _) = store
+        .create_setup_link(user("cy@example.com").await, false, t - Duration::days(15))
+        .await
+        .unwrap();
+    let (used_link, _) = store
+        .create_setup_link(user("di@example.com").await, false, t - Duration::days(9))
+        .await
+        .unwrap();
+    store
+        .claim_setup_link(&used_link, t - Duration::days(8))
+        .await
+        .unwrap()
+        .expect("unused")
+        .use_up(t - Duration::days(8))
+        .await
+        .unwrap();
+
+    store.purge_sign_in_records(t).await.unwrap();
+
+    let sessions: BTreeSet<Uuid> = sqlx::query_scalar("select id from sessions")
+        .fetch_all(store.pool())
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(sessions, [live.id, ended_recently.id].into());
+    assert!(!sessions.contains(&idle.id) && !sessions.contains(&ended_long_ago.id));
+    let links: Vec<Vec<u8>> = sqlx::query_scalar("select token_sha256 from setup_links")
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(links, [hash_secret(&fresh_link).to_vec()]);
+    let _ = expired_link;
 }
 
 #[tokio::test]

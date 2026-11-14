@@ -265,6 +265,15 @@ async fn sign_in_replaces_idp_groups_and_keeps_sekisho_groups() {
     assert!(quiet(&mut rx).await, "unchanged groups announce nothing");
     signed_in(&store, &github("gh|1", "ada@example.com", &["eng", "ml"])).await;
     assert_eq!(next_change(&mut rx).await, ChangeKind::Users);
+    // An identity provider that lists the same groups in another order
+    // changes nothing: groups are kept sorted.
+    let reordered = signed_in(
+        &store,
+        &github("gh|1", "ada@example.com", &["ml", "eng", "ml"]),
+    )
+    .await;
+    assert_eq!(reordered.idp_groups, ["github/eng", "github/ml"]);
+    assert!(quiet(&mut rx).await, "reordered groups announce nothing");
 }
 
 #[tokio::test]
@@ -785,7 +794,7 @@ async fn identity_provider_groups_carry_their_connector() {
         &github("gh|ada", "ada@example.com", &["eng", "acme:ops"]),
     )
     .await;
-    assert_eq!(ada.idp_groups, ["github/eng", "github/acme:ops"]);
+    assert_eq!(ada.idp_groups, ["github/acme:ops", "github/eng"]);
     let access = ada.access();
     assert!(access.groups.contains("github/eng"));
     assert!(!access.groups.contains("eng"));

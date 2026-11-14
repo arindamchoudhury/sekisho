@@ -4,6 +4,7 @@
 //! change notifications from any replica.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use sekisho_core::access::Access;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use sekisho_core::session_token::PublicKey;
-use sekisho_store::{ChangeKind, Store, StoreError};
+use sekisho_store::{AuthSnapshot, ChangeKind, Store, StoreError};
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
@@ -63,12 +64,19 @@ struct Data {
     public_keys: HashMap<String, PublicKey>,
 }
 
+/// When a reload began, from [`AuthCache::begin_reload`].
+#[derive(Debug)]
+pub struct ReloadStart(u64);
+
 pub struct AuthCache {
     /// Replaced as a whole on reload, so readers never see a partial update.
     data: RwLock<Arc<Data>>,
     /// Users read from the database since the last reload (they signed in on
-    /// another replica a moment ago).
-    loaded: Mutex<HashMap<Uuid, CachedUser>>,
+    /// another replica a moment ago), each with the count of reloads begun
+    /// when their read began.
+    loaded: Mutex<HashMap<Uuid, (u64, CachedUser)>>,
+    /// How many reloads have begun.
+    reloads: AtomicU64,
     /// `SEKISHO_PUBLIC_URL`, every session token's `iss`.
     issuer: String,
 }
@@ -90,6 +98,7 @@ impl AuthCache {
         let cache = Arc::new(Self {
             data: RwLock::new(Arc::default()),
             loaded: Mutex::new(HashMap::new()),
+            reloads: AtomicU64::new(0),
             issuer,
         });
         cache.reload(store).await?;
@@ -98,7 +107,22 @@ impl AuthCache {
 
     /// Reads everything again and swaps it in. On error the old data stays.
     pub async fn reload(&self, store: &Store) -> Result<(), StoreError> {
+        let start = self.begin_reload();
         let snapshot = store.auth_snapshot(OffsetDateTime::now_utc()).await?;
+        self.finish_reload(start, snapshot);
+        Ok(())
+    }
+
+    /// [`AuthCache::reload`]'s first step, taken before its snapshot is
+    /// read.
+    pub fn begin_reload(&self) -> ReloadStart {
+        ReloadStart(self.reloads.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    /// [`AuthCache::reload`]'s second step: swaps in a snapshot read after
+    /// `start`.
+    pub fn finish_reload(&self, start: ReloadStart, snapshot: AuthSnapshot) {
+        let ReloadStart(start) = start;
         let keys = snapshot
             .keys
             .into_iter()
@@ -149,12 +173,12 @@ impl AuthCache {
                 .collect(),
         });
         *self.data.write().unwrap_or_else(PoisonError::into_inner) = data;
-        // The snapshot has everyone read before it.
+        // The snapshot has everyone whose read began before it; those whose
+        // read began later may be newer than it.
         self.loaded
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        Ok(())
+            .retain(|_, (seen, _)| *seen >= start);
     }
 
     fn data(&self) -> Arc<Data> {
@@ -182,7 +206,7 @@ impl AuthCache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .cloned()
+            .map(|(_, user)| user.clone())
     }
 
     /// The user, read from the database once if the cache doesn't have them
@@ -196,6 +220,7 @@ impl AuthCache {
         if let Some(user) = self.user(id) {
             return Ok(Some(user));
         }
+        let seen = self.reloads.load(Ordering::SeqCst);
         let user = match store.user(id).await {
             Ok(user) => user,
             Err(StoreError::NotFound) => return Ok(None),
@@ -209,7 +234,7 @@ impl AuthCache {
         self.loaded
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(cached.id, cached.clone());
+            .insert(cached.id, (seen, cached.clone()));
         Ok(Some(cached))
     }
 

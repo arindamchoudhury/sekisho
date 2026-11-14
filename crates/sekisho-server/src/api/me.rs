@@ -146,8 +146,8 @@ pub async fn act(
         _ => return Err(ApiError::NotFound),
     }
     match action.as_str() {
-        "suspend" => store.set_suspended(&id, true).await?,
-        "resume" => store.set_suspended(&id, false).await?,
+        "suspend" => store.set_suspended_by_owner(&id, true).await?,
+        "resume" => store.set_suspended_by_owner(&id, false).await?,
         "revoke" => store.revoke_key(&id).await?,
         _ => return Err(ApiError::NotFound),
     }

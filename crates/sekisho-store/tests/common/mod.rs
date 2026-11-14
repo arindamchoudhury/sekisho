@@ -5,8 +5,8 @@
 pub use sekisho_testkit::people::person;
 pub use sekisho_testkit::{TEST_ENCRYPTION_KEY, TestStore, store};
 
-/// Who saves environments in these tests. `eng` is the access group the
-/// tests' environments have.
+/// Who saves environments in these tests. `github/eng`, the GitHub group
+/// they sign in with, is the access group the tests' environments have.
 #[allow(dead_code)]
 pub async fn admin(store: &sekisho_store::Store) -> uuid::Uuid {
     person(store, "admin@example.com", &["eng"]).await

@@ -43,6 +43,9 @@ pub struct AuthState {
     pub public_url: Url,
     /// SHA-256 of `SEKISHO_BOOTSTRAP_TOKEN`, for `/setup`.
     pub bootstrap_sha256: [u8; 32],
+    /// Held while a bootstrap token is checked, one at a time on this
+    /// replica; a try while it is held is answered 429.
+    pub bootstrap_check: Arc<tokio::sync::Mutex<()>>,
     pub clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
 }
 
@@ -75,6 +78,10 @@ pub fn router(state: AuthState) -> Router {
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth::metadata),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server/{*path}",
+            get(oauth::metadata_at_path),
         )
         .route("/oauth/jwks", get(oauth::jwks))
         .route("/oauth/authorize", get(oauth::authorize))

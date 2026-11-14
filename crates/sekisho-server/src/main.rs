@@ -23,7 +23,7 @@ use sekisho_server::app::{
     start_sign_in_upkeep,
 };
 use sekisho_server::config::ServerConfig;
-use sekisho_store::Store;
+use sekisho_store::{Store, StoreOptions};
 use time::OffsetDateTime;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
@@ -88,9 +88,14 @@ async fn main() -> ExitCode {
 
 async fn serve() -> anyhow::Result<()> {
     let config = ServerConfig::from_env()?;
-    let store = Store::connect(&config.database_url)
-        .await
-        .context("connecting to SEKISHO_DATABASE_URL")?;
+    let store = Store::connect(
+        &config.database_url,
+        StoreOptions {
+            max_connections: config.database_max_connections,
+        },
+    )
+    .await
+    .context("connecting to SEKISHO_DATABASE_URL")?;
 
     // A key signs from the start, before any replica answers a sign-in.
     store
@@ -266,9 +271,12 @@ async fn admin_link(email: &str) -> anyhow::Result<()> {
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .context("SEKISHO_PUBLIC_URL is not an http or https URL")?;
-    let store = Store::connect(&required_env("SEKISHO_DATABASE_URL")?)
-        .await
-        .context("connecting to SEKISHO_DATABASE_URL")?;
+    let store = Store::connect(
+        &required_env("SEKISHO_DATABASE_URL")?,
+        StoreOptions::default(),
+    )
+    .await
+    .context("connecting to SEKISHO_DATABASE_URL")?;
     let link =
         sekisho_auth::local::admin_link(&store, &public_url, email, OffsetDateTime::now_utc())
             .await
@@ -291,7 +299,7 @@ async fn admin_link(email: &str) -> anyhow::Result<()> {
 
 async fn migrate() -> anyhow::Result<()> {
     let url = required_env("SEKISHO_DATABASE_URL")?;
-    let store = Store::connect(&url)
+    let store = Store::connect(&url, StoreOptions::default())
         .await
         .context("connecting to SEKISHO_DATABASE_URL")?;
     store.migrate().await?;

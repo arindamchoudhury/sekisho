@@ -8,6 +8,7 @@ use sekisho_core::access::{GROUP_RULE, is_group_reference};
 use sekisho_core::keys::hash_secret;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_gateway::{HookTargets, RenderOptions};
+use sekisho_store::StoreOptions;
 use url::Url;
 
 use crate::app::Settings;
@@ -42,6 +43,9 @@ pub struct DexSettings {
 pub struct ServerConfig {
     /// May contain a password, so `Debug` leaves it out.
     pub database_url: String,
+    /// `SEKISHO_DATABASE_MAX_CONNECTIONS`, the pool's size: 1 to 1000,
+    /// default 20.
+    pub database_max_connections: u32,
     pub secret_box: SecretBox,
     pub listen: SocketAddr,
     pub hooks_http_listen: SocketAddr,
@@ -130,6 +134,19 @@ impl ServerConfig {
         };
 
         let database_url = required("SEKISHO_DATABASE_URL")?;
+        let database_max_connections = match var("SEKISHO_DATABASE_MAX_CONNECTIONS") {
+            None => StoreOptions::default().max_connections,
+            Some(v) => v
+                .parse::<u32>()
+                .ok()
+                .filter(|n| (1..=1000).contains(n))
+                .ok_or_else(|| {
+                    invalid(
+                        "SEKISHO_DATABASE_MAX_CONNECTIONS",
+                        "use a whole number from 1 to 1000".into(),
+                    )
+                })?,
+        };
         let secret_box = SecretBox::from_base64_key(&required("SEKISHO_ENCRYPTION_KEY")?)
             .map_err(|e| invalid("SEKISHO_ENCRYPTION_KEY", e.to_string()))?;
         let bootstrap_token = token("SEKISHO_BOOTSTRAP_TOKEN")?;
@@ -219,6 +236,7 @@ impl ServerConfig {
 
         Ok(Self {
             database_url,
+            database_max_connections,
             secret_box,
             listen: addr("SEKISHO_LISTEN", "0.0.0.0:8080")?,
             hooks_http_listen: addr("SEKISHO_HOOKS_HTTP_LISTEN", "0.0.0.0:9080")?,
@@ -279,6 +297,21 @@ mod tests {
         assert_eq!(c.settings.hooks.grpc, "sekisho:9081");
         assert_eq!(c.settings.render, RenderOptions::default());
         assert_eq!(c.settings.long_poll, std::time::Duration::from_secs(30));
+        assert_eq!(c.database_max_connections, 20);
+    }
+
+    #[test]
+    fn the_pool_size_is_set_or_refused() {
+        let mut vars = required();
+        vars.insert("SEKISHO_DATABASE_MAX_CONNECTIONS", "50");
+        assert_eq!(load(&vars).unwrap().database_max_connections, 50);
+        for bad in ["0", "-1", "lots", "1001"] {
+            vars.insert("SEKISHO_DATABASE_MAX_CONNECTIONS", bad);
+            assert!(
+                error(&vars).contains("SEKISHO_DATABASE_MAX_CONNECTIONS"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

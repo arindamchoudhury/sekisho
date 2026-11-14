@@ -14,7 +14,7 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use sekisho_core::secret_box::SecretBox;
-use sekisho_store::Store;
+use sekisho_store::{Store, StoreOptions};
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
@@ -56,7 +56,7 @@ pub async fn store() -> (TestStore, SecretBox) {
     let port = postgres.get_host_port_ipv4(5432).await.unwrap();
     // 127.0.0.1, not localhost: on Windows, localhost tries ::1 first.
     let url = format!("postgres://postgres:sekisho@127.0.0.1:{port}/postgres");
-    let store = Store::connect(&url)
+    let store = Store::connect(&url, StoreOptions::default())
         .await
         .expect("connect to test postgres");
     store.migrate().await.expect("migrate");

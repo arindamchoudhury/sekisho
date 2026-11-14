@@ -36,6 +36,8 @@ struct Inner {
     /// Refreshes of these subjects fail this way.
     refresh_failures: HashMap<String, DexError>,
     refresh_delay: Duration,
+    /// How long putting a password takes.
+    password_delay: Duration,
     /// Dex's `reuseInterval`.
     reuse_interval: Duration,
     /// Each rotated-away token, the token it was rotated to, and when.
@@ -174,6 +176,11 @@ impl FakeDex {
         self.inner().lost_answers = n;
     }
 
+    /// Putting a password takes this long, before Dex stores it.
+    pub fn delay_passwords(&self, delay: Duration) {
+        self.inner().password_delay = delay;
+    }
+
     /// Every code exchange takes this long to answer, after Dex has made the
     /// new refresh token.
     pub fn delay_sign_in(&self, delay: Duration) {
@@ -305,6 +312,8 @@ impl Dex for FakeDex {
     }
 
     async fn put_password(&self, p: &DexPassword) -> Result<(), DexError> {
+        let delay = self.inner().password_delay;
+        tokio::time::sleep(delay).await;
         self.grpc()?.passwords.insert(p.email.clone(), p.clone());
         Ok(())
     }

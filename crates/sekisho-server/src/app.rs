@@ -99,6 +99,7 @@ impl AppState {
             cache,
             public_url: settings.public_url,
             bootstrap_sha256,
+            bootstrap_check: Arc::default(),
             clock: Arc::new(OffsetDateTime::now_utc),
         };
         Self {
@@ -255,6 +256,12 @@ pub fn start_sign_in_upkeep(
                     let rotated = state.store().rotate_signing_key(state.secret_box(), now, false).await;
                     if let Err(error) = rotated {
                         tracing::error!(%error, "rotating the signing key failed");
+                    }
+                    // Hourly too: what signing in no longer needs.
+                    match state.store().purge_sign_in_records(now).await {
+                        Ok(0) => {}
+                        Ok(purged) => tracing::info!(purged, "purged old sign-in records"),
+                        Err(error) => tracing::error!(%error, "purging old sign-in records failed"),
                     }
                 }
                 _ = sweep.tick() => {

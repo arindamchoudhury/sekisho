@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::error::{FieldError, bad_column, check, is_unique_violation};
 use crate::notify::{ChangeKind, notify};
 use crate::sessions::end_user_sessions;
+use crate::setup_links;
 use crate::{Result, Store, StoreError};
 
 /// Dex's connector for local accounts.
@@ -217,12 +218,16 @@ pub(crate) async fn accesses(
         .collect())
 }
 
-/// The sign-in's groups, each named `<connector>/<group>`.
+/// The sign-in's groups, each named `<connector>/<group>`, sorted and once
+/// each: an identity provider that lists them in another order changes
+/// nothing.
 fn connector_groups(s: &SignIn) -> Vec<String> {
-    s.groups
+    let groups: BTreeSet<String> = s
+        .groups
         .iter()
         .map(|g| idp_group(&s.connector_id, g))
-        .collect()
+        .collect();
+    groups.into_iter().collect()
 }
 
 /// A local account's email, trimmed and lowercased, or why it isn't one.
@@ -448,6 +453,7 @@ impl Store {
         }
         if disabled {
             end_user_sessions(&mut tx, id, "disabled", now).await?;
+            setup_links::delete_unused_in(&mut tx, id).await?;
         }
         notify(&mut tx, ChangeKind::Users).await?;
         tx.commit().await?;
