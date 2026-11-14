@@ -212,7 +212,7 @@ async fn ensure_client_is_idempotent_and_replaces_a_wrong_secret() {
 }
 
 #[tokio::test]
-async fn an_unreachable_dex_is_unavailable() {
+async fn a_closed_port_is_unreachable() {
     // A port nothing listens on.
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -222,14 +222,14 @@ async fn an_unreachable_dex_is_unavailable() {
     let dex = DexClient::new(common::config_for(port, port, "s", REDIRECT_URI));
     let started = Instant::now();
     let r = dex.refresh("refresh-token").await;
-    assert!(matches!(r, Err(DexError::Unavailable(_))), "{r:?}");
+    assert!(matches!(r, Err(DexError::Unreachable(_))), "{r:?}");
     let r = dex.put_password(&pw("ada@example.com", "u-ada")).await;
-    assert!(matches!(r, Err(DexError::Unavailable(_))), "{r:?}");
+    assert!(matches!(r, Err(DexError::Unreachable(_))), "{r:?}");
     assert!(started.elapsed() < Duration::from_secs(11));
 }
 
 #[tokio::test]
-async fn a_silent_dex_times_out_as_unavailable() {
+async fn a_silent_dex_times_out_as_unreachable() {
     // Accepts connections and never answers.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -238,11 +238,11 @@ async fn a_silent_dex_times_out_as_unavailable() {
     let started = Instant::now();
     let (refresh, password) = tokio::join!(dex.refresh("refresh-token"), dex.put_password(&ada));
     assert!(
-        matches!(refresh, Err(DexError::Unavailable(_))),
+        matches!(refresh, Err(DexError::Unreachable(_))),
         "{refresh:?}"
     );
     assert!(
-        matches!(password, Err(DexError::Unavailable(_))),
+        matches!(password, Err(DexError::Unreachable(_))),
         "{password:?}"
     );
     let took = started.elapsed();

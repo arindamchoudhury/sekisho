@@ -3,9 +3,9 @@
 //! registration over Dex's gRPC API.
 //!
 //! Every call has a [`DEX_TIMEOUT`]. [`DexError::Refused`] means Dex refused
-//! the person (its token endpoint answered 400); anything that is Dex's or
-//! Sekisho's own problem is [`DexError::Unavailable`], so it never ends a
-//! session.
+//! the person (its token endpoint answered 400). Dex not answering is
+//! [`DexError::Unreachable`]; an answer that is Dex's or Sekisho's own problem
+//! is [`DexError::Unavailable`]. Neither ever ends a session.
 
 use std::fmt;
 use std::future::Future;
@@ -129,10 +129,14 @@ pub enum DexError {
     /// (`invalid_grant`, `invalid_request`).
     #[error("Dex refused: {0}")]
     Refused(String),
-    /// Dex couldn't be reached, timed out, or failed on its side (5xx, or a
-    /// 4xx that is about Sekisho's client rather than the person).
+    /// Dex answered, but failed on its side (5xx, which in v2.46.1 includes
+    /// a connector's refusal, or a 4xx that is about Sekisho's client rather
+    /// than the person).
     #[error("Dex is unavailable: {0}")]
     Unavailable(String),
+    /// Dex couldn't be reached or didn't answer within [`DEX_TIMEOUT`].
+    #[error("Dex is unreachable: {0}")]
+    Unreachable(String),
     /// Dex's answer failed Sekisho's checks, or Dex refused a management call.
     #[error("Dex's answer is invalid: {0}")]
     Invalid(String),
@@ -293,17 +297,14 @@ fn token_error(status: u16, body: &[u8]) -> DexError {
 }
 
 /// What a failed gRPC call means. Dex answers its own refusals (a missing
-/// field, a feature flag that is off) as `Unknown`.
+/// field, a feature flag that is off) as `Unknown`; tonic reports a
+/// connection that fails as `Unavailable`.
 fn grpc_error(status: &tonic::Status) -> DexError {
     use tonic::Code;
     let said = format!("gRPC {:?}: {}", status.code(), status.message());
     match status.code() {
-        Code::Unavailable
-        | Code::DeadlineExceeded
-        | Code::Cancelled
-        | Code::ResourceExhausted
-        | Code::Aborted
-        | Code::Internal => DexError::Unavailable(said),
+        Code::Unavailable | Code::DeadlineExceeded | Code::Cancelled => DexError::Unreachable(said),
+        Code::ResourceExhausted | Code::Aborted | Code::Internal => DexError::Unavailable(said),
         _ => DexError::Invalid(said),
     }
 }
@@ -376,7 +377,7 @@ impl DexClient {
     {
         let client = self.grpc.clone().map_err(DexError::Invalid)?;
         match tokio::time::timeout(DEX_TIMEOUT, f(client)).await {
-            Err(_) => Err(DexError::Unavailable("gRPC call timed out".to_owned())),
+            Err(_) => Err(DexError::Unreachable("gRPC call timed out".to_owned())),
             Ok(Err(status)) => Err(grpc_error(&status)),
             Ok(Ok(response)) => Ok(response.into_inner()),
         }
@@ -398,12 +399,12 @@ impl DexClient {
             .form(form)
             .send()
             .await
-            .map_err(|e| DexError::Unavailable(format!("token endpoint: {}", chain(&e))))?;
+            .map_err(|e| DexError::Unreachable(format!("token endpoint: {}", chain(&e))))?;
         let status = response.status();
         let body = response
             .bytes()
             .await
-            .map_err(|e| DexError::Unavailable(format!("token endpoint: {e}")))?;
+            .map_err(|e| DexError::Unreachable(format!("token endpoint: {e}")))?;
         if !status.is_success() {
             return Err(token_error(status.as_u16(), &body));
         }
@@ -446,20 +447,20 @@ impl DexClient {
     }
 
     async fn fetch_keys(&self) -> Result<Arc<JwkSet>, DexError> {
-        let unavailable = |e: reqwest::Error| DexError::Unavailable(format!("keys endpoint: {e}"));
+        let unreachable = |e: reqwest::Error| DexError::Unreachable(format!("keys endpoint: {e}"));
         let response = self
             .http
             .get(endpoint(&self.config, "keys"))
             .send()
             .await
-            .map_err(unavailable)?;
+            .map_err(unreachable)?;
         let status = response.status();
         if !status.is_success() {
             return Err(DexError::Unavailable(format!(
                 "HTTP {status} from the keys endpoint"
             )));
         }
-        let body = response.bytes().await.map_err(unavailable)?;
+        let body = response.bytes().await.map_err(unreachable)?;
         let keys: JwkSet = serde_json::from_slice(&body).map_err(|_| {
             DexError::Invalid("the keys endpoint answered without a JWK set".to_owned())
         })?;

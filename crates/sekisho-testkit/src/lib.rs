@@ -1,10 +1,14 @@
 //! Test support for Sekisho's crates.
 //!
 //! [`store`] gives a migrated `Store` on a throwaway PostgreSQL 18 container.
-//! It needs Docker. [`people`] signs people in to it.
+//! It needs Docker. [`people`] signs people in to it, and [`FakeDex`] stands
+//! in for Dex.
 
 pub mod eventstream;
+pub mod fake_dex;
 pub mod people;
+
+pub use fake_dex::FakeDex;
 
 use std::ops::Deref;
 use std::time::Duration;

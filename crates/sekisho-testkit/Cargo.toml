@@ -1,6 +1,6 @@
 [package]
 name = "sekisho-testkit"
-description = "Test support for Sekisho: throwaway PostgreSQL stores and a mock model server"
+description = "Test support for Sekisho: throwaway PostgreSQL stores, a Dex in memory and a mock model server"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,13 +13,18 @@ name = "sekisho-mock-model"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 crc = { workspace = true }
+sekisho-auth = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-store = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 testcontainers = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { workspace = true }
+url = { workspace = true }
 uuid = { workspace = true }

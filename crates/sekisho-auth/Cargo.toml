@@ -9,22 +9,30 @@ repository.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["form", "json"] }
 sekisho-core = { workspace = true }
+sekisho-hooks = { workspace = true }
 sekisho-proto = { workspace = true }
+sekisho-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tonic = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-base64 = { workspace = true }
 bcrypt = { workspace = true }
-sha2 = { workspace = true }
+# Its FakeDex implements this crate's `Dex`, as tokio-test does for tokio.
+sekisho-testkit = { workspace = true }
 testcontainers = { workspace = true }
 time = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
