@@ -326,7 +326,7 @@ async fn a_device_code_issues_tokens_once() {
 }
 
 #[tokio::test]
-async fn a_dex_error_denies_the_device() {
+async fn dex_s_access_denied_denies_the_device() {
     let t = setup().await;
     let s = start(&t).await;
     let page = confirmation(&t, &s.user_code).await;
@@ -346,6 +346,55 @@ async fn a_dex_error_denies_the_device() {
         error(&poll(&t, &s.device_code).await),
         oauth(400, "access_denied")
     );
+}
+
+#[tokio::test]
+async fn other_dex_errors_keep_the_device_pending() {
+    let t = setup().await;
+    let s = start(&t).await;
+    // Dex failing is no refusal: the code can be entered again.
+    for (dex_says, status) in [
+        (Some("server_error"), StatusCode::BAD_GATEWAY),
+        (
+            Some("temporarily_unavailable"),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (Some("invalid_scope"), StatusCode::BAD_GATEWAY),
+        (None, StatusCode::BAD_GATEWAY),
+    ] {
+        let page = confirmation(&t, &s.user_code).await;
+        assert_eq!(
+            page.status,
+            StatusCode::OK,
+            "{dex_says:?}: the code still works"
+        );
+        let to_dex = decide(&t, &page, &s.user_code, "continue").await;
+        let state = query(&to_dex.location())["state"].clone();
+        let mut back = url::Url::parse("http://in-process/oauth/callback").unwrap();
+        back.query_pairs_mut().append_pair("state", &state);
+        if let Some(error) = dex_says {
+            back.query_pairs_mut().append_pair("error", error);
+        }
+        let reply = t
+            .get_with(
+                &format!("/oauth/callback?{}", back.query().unwrap()),
+                &to_dex.cookies(),
+            )
+            .await;
+        assert_eq!(reply.status, status, "{dex_says:?}: {}", reply.text());
+        assert_page(&reply, "Dex failed");
+        assert!(reply.text().contains("again"), "{}", reply.text());
+        t.advance(Duration::seconds(5));
+        assert_eq!(
+            error(&poll(&t, &s.device_code).await),
+            oauth(400, "authorization_pending"),
+            "{dex_says:?}"
+        );
+    }
+    // Then the person signs in.
+    approve(&t, &s.user_code, ada()).await;
+    t.advance(Duration::seconds(5));
+    assert_eq!(poll(&t, &s.device_code).await.status, StatusCode::OK);
 }
 
 #[tokio::test]

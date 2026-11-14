@@ -19,7 +19,7 @@ use tracing::{error, info};
 
 use crate::AuthState;
 use crate::clients::{self, Client, DEVICE_CODE};
-use crate::oauth::{Params, finish_sign_in, to_dex};
+use crate::oauth::{DexAnswer, Params, finish_sign_in, to_dex};
 use crate::pages::{self, escape};
 use crate::tokens::{
     form as form_params, invalid_grant, invalid_request, no_store, oauth_error, server_error,
@@ -251,12 +251,13 @@ fn cancelled() -> Response {
     )
 }
 
-/// The callback for a device: Dex's code (`None` when Dex answered with an
-/// error) exchanged, and the device approved, on a task the browser can't
-/// cancel.
+/// The callback for a device: Dex's code exchanged and the device approved,
+/// on a task the browser can't cancel. Only Dex's refusal denies the
+/// device (RFC 8628's `access_denied`); when Dex fails, the code stays
+/// usable and the person can enter it again.
 pub(crate) async fn finish(
     state: &AuthState,
-    dex_code: Option<&str>,
+    answer: DexAnswer<'_>,
     dex_verifier: String,
     nonce: String,
     device: Device,
@@ -264,11 +265,28 @@ pub(crate) async fn finish(
     if device.expires_at <= state.now() {
         return unknown_code(state);
     }
-    let Some(dex_code) = dex_code else {
-        return match state.store.deny_device(&device).await {
-            Ok(_) => cancelled(),
-            Err(e) => database_failed(&e),
-        };
+    let dex_code = match answer {
+        DexAnswer::Code(code) => code,
+        DexAnswer::Refused => {
+            return match state.store.deny_device(&device).await {
+                Ok(_) => cancelled(),
+                Err(e) => database_failed(&e),
+            };
+        }
+        DexAnswer::Unavailable => {
+            return pages::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Try again",
+                "The sign-in service is busy right now. Enter the code again in a minute.",
+            );
+        }
+        DexAnswer::Failed => {
+            return pages::error(
+                StatusCode::BAD_GATEWAY,
+                "Try again",
+                "The sign-in service couldn't finish the sign-in. Enter the code again.",
+            );
+        }
     };
     let outcome = {
         let state = state.clone();

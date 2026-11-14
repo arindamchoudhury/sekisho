@@ -292,6 +292,52 @@ pub(crate) async fn to_dex(
     Ok(response)
 }
 
+/// What Dex sent back to the callback (RFC 6749 section 4.1.2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DexAnswer<'a> {
+    /// A code to exchange.
+    Code(&'a str),
+    /// `access_denied`: the person, or their identity provider, said no.
+    Refused,
+    /// `temporarily_unavailable`: Dex can't finish now.
+    Unavailable,
+    /// Any other error, or neither a code nor an error: Dex failed, or
+    /// Sekisho's request to it did. Never the client's fault.
+    Failed,
+}
+
+impl<'a> DexAnswer<'a> {
+    fn of(params: &'a Params) -> Self {
+        match params.get("error") {
+            Some("access_denied") => Self::Refused,
+            Some("temporarily_unavailable") => Self::Unavailable,
+            Some(error) => {
+                // Dex's own codes only: the value comes through the browser.
+                const CODES: [&str; 5] = [
+                    "invalid_request",
+                    "unauthorized_client",
+                    "unsupported_response_type",
+                    "invalid_scope",
+                    "server_error",
+                ];
+                let error = CODES
+                    .into_iter()
+                    .find(|c| *c == error)
+                    .unwrap_or("another error");
+                warn!(%error, "Dex answered a sign-in with an error");
+                Self::Failed
+            }
+            None => params.get("code").map_or_else(
+                || {
+                    warn!("Dex answered a sign-in with neither a code nor an error");
+                    Self::Failed
+                },
+                Self::Code,
+            ),
+        }
+    }
+}
+
 /// Whether this browser holds the cookie the sign-in with this `nonce` set.
 fn bound(headers: &HeaderMap, cookie: &str, nonce: &str) -> bool {
     let Some(binding) = pages::cookie(headers, cookie) else {
@@ -364,12 +410,7 @@ async fn finish(
              again from your application or terminal, in this browser.",
         );
     }
-    let dex_code = if params.get("error").is_some() {
-        info!("Dex answered a sign-in with an error");
-        None
-    } else {
-        params.get("code")
-    };
+    let answer = DexAnswer::of(params);
     let (redirect_uri, client_state, code_challenge) = match request.flow {
         AuthFlow::Code {
             redirect_uri,
@@ -377,14 +418,16 @@ async fn finish(
             code_challenge,
         } => (redirect_uri, client_state, code_challenge),
         AuthFlow::Device(found) => {
-            return device::finish(state, dex_code, request.dex_verifier, request.nonce, found)
-                .await;
+            return device::finish(state, answer, request.dex_verifier, request.nonce, found).await;
         }
     };
     let back =
         |params: &[(&str, &str)]| to_client(state, &redirect_uri, params, client_state.as_deref());
-    let Some(dex_code) = dex_code else {
-        return back(&[("error", "access_denied")]);
+    let dex_code = match answer {
+        DexAnswer::Code(code) => code,
+        DexAnswer::Refused => return back(&[("error", "access_denied")]),
+        DexAnswer::Unavailable => return back(&[("error", "temporarily_unavailable")]),
+        DexAnswer::Failed => return back(&[("error", "server_error")]),
     };
     // Dex keeps one refresh token per person, and this exchange replaces it:
     // finish on a task the browser can't cancel, so the new token is kept.

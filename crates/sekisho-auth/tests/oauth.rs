@@ -647,3 +647,42 @@ async fn a_forwarded_dex_link_signs_nobody_in() {
     assert_eq!(reply.status, StatusCode::FOUND);
     assert!(query(&reply.location()).contains_key("code"));
 }
+
+#[tokio::test]
+async fn dex_errors_reach_the_client_for_what_they_are() {
+    let t = setup().await;
+    let (_, challenge) = pkce();
+    // RFC 6749 section 4.1.2.1: a refusal is access_denied; Dex failing is
+    // server_error or temporarily_unavailable, which a client may retry.
+    for (dex_says, client_gets) in [
+        (Some("access_denied"), "access_denied"),
+        (Some("temporarily_unavailable"), "temporarily_unavailable"),
+        (Some("server_error"), "server_error"),
+        (Some("invalid_scope"), "server_error"),
+        (Some("<script>"), "server_error"),
+        // Neither a code nor an error.
+        (None, "server_error"),
+    ] {
+        let to_dex = t.authorize_ok(&challenge).await;
+        let state = query(&to_dex.location())["state"].clone();
+        let mut back = url::Url::parse("http://in-process/oauth/callback").unwrap();
+        back.query_pairs_mut().append_pair("state", &state);
+        if let Some(error) = dex_says {
+            back.query_pairs_mut().append_pair("error", error);
+        }
+        let reply = t
+            .get_with(
+                &format!("/oauth/callback?{}", back.query().unwrap()),
+                &to_dex.cookies(),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::FOUND, "{dex_says:?}");
+        let to = reply.location();
+        assert!(to.as_str().starts_with(&format!("{REDIRECT}?")), "{to}");
+        let q = query(&to);
+        assert_eq!(q["error"], client_gets, "{dex_says:?}");
+        assert_eq!(q["state"], "client-state");
+        assert_eq!(q["iss"], ISSUER);
+        assert!(!q.contains_key("code"));
+    }
+}
