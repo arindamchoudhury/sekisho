@@ -86,8 +86,9 @@ name_type!(
     ModelName, "model", is_model_name, MODEL_RULE
 );
 name_type!(
-    /// A Sekisho group's name. Identity providers' groups are plain strings;
-    /// only groups made in Sekisho follow this rule.
+    /// A Sekisho group's name. Identity providers' groups don't follow this
+    /// rule: Sekisho names them `<connector>/<group>`
+    /// ([`crate::access::idp_group`]).
     GroupName, "group", is_slug, SLUG_RULE
 );
 name_type!(

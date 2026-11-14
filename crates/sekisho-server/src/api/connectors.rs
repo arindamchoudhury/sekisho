@@ -116,8 +116,9 @@ pub async fn put(
     Ok(Json(connector.into()))
 }
 
-/// Deletes the connector, and ends the sessions of the people whose latest
-/// sign-in came through it.
+/// Deletes the connector. The people whose latest sign-in came through it
+/// are treated as refused at their identity provider: their sessions end and
+/// their keys are invalid until they sign in another way.
 pub async fn delete(
     State(state): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -137,7 +138,7 @@ pub async fn delete(
     }
     let ended = state
         .store()
-        .end_connector_sessions(id.as_str(), "connector_deleted", OffsetDateTime::now_utc())
+        .connector_deleted(id.as_str(), OffsetDateTime::now_utc())
         .await?;
     tracing::info!(connector = %id, by = %caller.user.id, ended, "deleted a connector");
     Ok(StatusCode::NO_CONTENT)

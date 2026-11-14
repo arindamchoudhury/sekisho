@@ -9,11 +9,11 @@ use std::time::{Duration as StdDuration, Instant};
 
 use axum::http::{StatusCode, header};
 use common::app::*;
-use sekisho_auth::dex::DexError;
+use sekisho_auth::dex::{DexError, DexIdentity};
 use sekisho_auth::local::{
     self, PasswordError, SetupLink, check_password, context_words, hash_password,
 };
-use sekisho_store::{RefreshCheck, Store};
+use sekisho_store::{LOCAL_CONNECTOR, RefreshCheck, Store};
 use time::Duration;
 use url::Url;
 use uuid::Uuid;
@@ -532,6 +532,29 @@ async fn deleting_a_local_account_removes_its_password_and_disables_it() {
         t.store.begin_refresh(&refresh, CLI, t.now()).await.unwrap(),
         RefreshCheck::Ended
     ));
+}
+
+#[tokio::test]
+async fn deleting_a_local_account_mid_refresh_ends_the_refresh() {
+    let t = setup().await;
+    let (ada, link) = invited(&t, "ada@example.com").await;
+    assert_eq!(
+        set_password(&t, &link, PASSWORD, PASSWORD).await.status,
+        StatusCode::OK
+    );
+    let signed_in = DexIdentity {
+        connector_id: LOCAL_CONNECTOR.to_owned(),
+        connector_user_id: ada.local_dex_user_id.clone().unwrap(),
+        ..person("local-ada", "ada@example.com", &[])
+    };
+    let s = t.session(signed_in).await;
+    let reply = t
+        .refresh_racing(&s.refresh, async {
+            local::delete(&t.state, &ada.id).await.unwrap();
+        })
+        .await;
+    assert_eq!(reply.oauth_error(), (400, "invalid_grant".to_owned()));
+    assert_eq!(t.end_reason(&s.access).await.as_deref(), Some("disabled"));
 }
 
 #[tokio::test]

@@ -32,16 +32,15 @@ fn group(name: &str) -> Result<GroupName, ApiError> {
 /// Whether leaving `group` would end the caller's admin: they're in it as a
 /// Sekisho member, it is one of `SEKISHO_ADMIN_GROUPS`, and nothing else
 /// (their mark, another admin group, their identity provider's groups) makes
-/// them an admin.
+/// them an admin. An identity provider's group is named by its connector, so
+/// it is never the Sekisho group itself.
 fn ends_own_admin(caller: &Caller, group: &GroupName, admin_groups: &[String]) -> bool {
     let user = &caller.user;
     if !caller.admin || !user.groups.contains(group) {
         return false;
     }
     let mut access = user.access();
-    if !user.idp_groups.iter().any(|g| g == group.as_str()) {
-        access.groups.remove(group.as_str());
-    }
+    access.groups.remove(group.as_str());
     !is_admin(user.admin, &access, admin_groups)
 }
 

@@ -24,7 +24,7 @@ fn spec(name: &str, models: &[&str]) -> EnvironmentSpec {
         name: env_name(name),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: models
             .iter()
             .map(|m| ModelName::parse(m).unwrap())
@@ -183,7 +183,14 @@ async fn environment_input_is_validated() {
         .unwrap_err();
     assert_eq!(fields(err), ["models[1]", "models[2]"]); // unknown, then listed twice
     let mut groups = spec("data-team", &[]);
-    groups.access_groups = vec!["".into(), "data".into(), "data".into()];
+    groups.access_groups = vec![
+        "".into(),
+        "data".into(),
+        "data".into(),
+        // An identity provider's group needs its connector (D124).
+        "acme:eng".into(),
+        "github/acme:eng".into(),
+    ];
     assert_eq!(
         fields(
             store
@@ -191,7 +198,7 @@ async fn environment_input_is_validated() {
                 .await
                 .unwrap_err()
         ),
-        ["access_groups[0]", "access_groups[2]"]
+        ["access_groups[0]", "access_groups[2]", "access_groups[3]"]
     );
     assert!(matches!(
         store.get_environment(&env_name("data-team")).await,

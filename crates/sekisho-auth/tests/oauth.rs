@@ -211,7 +211,7 @@ async fn the_code_flow_issues_a_session() {
     let user: Uuid = claims.sub.parse().unwrap();
     let stored = t.store.user(&user).await.unwrap();
     assert_eq!(stored.dex_subject.as_deref(), Some("github-ada"));
-    assert_eq!(stored.idp_groups, vec!["eng".to_owned()]);
+    assert_eq!(stored.idp_groups, vec!["github/eng".to_owned()]);
     assert_eq!(claims.exp - claims.iat, 3600);
     // Dex's refresh token is kept, for later refreshes.
     assert_eq!(
@@ -333,7 +333,7 @@ async fn refresh_rechecks_dex_and_rotates() {
     assert_eq!(Some(after), t.dex.live_token("github-ada"));
     assert_eq!(
         t.store.user(&user).await.unwrap().idp_groups,
-        vec!["eng".to_owned(), "ops".to_owned()]
+        vec!["github/eng".to_owned(), "github/ops".to_owned()]
     );
     let claims = t.claims(&next.access).await;
     assert_eq!(claims.sid, t.claims(&s.access).await.sid);
@@ -400,6 +400,33 @@ async fn an_unreachable_dex_keeps_the_session() {
     // The same refresh token works once Dex is back.
     t.dex.fail_refresh("github-ada", None);
     t.refreshed(&s.refresh).await;
+}
+
+/// Dex rotated the token but its answer never arrived (the connection
+/// dropped, or Sekisho stopped waiting). Asked again at once, within Dex's
+/// reuse interval, Dex hands back the token it rotated to, so Sekisho keeps
+/// it rather than meet Dex's refusal of the old one later.
+#[tokio::test]
+async fn a_lost_dex_answer_is_asked_again() {
+    let t = setup().await;
+    let s = t.session(ada()).await;
+    let user = t.user_of(&s.access).await;
+    t.dex.reuse_interval(StdDuration::from_secs(30));
+    t.dex.lose_refresh_answers(1);
+    let next = t.refreshed(&s.refresh).await;
+    let shown = t.dex.refreshes_shown();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[0], shown[1]);
+    assert_eq!(
+        t.stored_dex_token(user).await,
+        t.dex.live_token("github-ada")
+    );
+
+    // The token kept is Dex's live one, not one only the reuse interval
+    // still takes.
+    t.dex.reuse_interval(StdDuration::ZERO);
+    t.refreshed(&next.refresh).await;
+    assert!(t.store.user(&user).await.unwrap().idp_refused_at.is_none());
 }
 
 #[tokio::test]
@@ -488,6 +515,58 @@ async fn a_sign_in_during_a_refresh_ends_no_session() {
     t.dex.delay_refresh(StdDuration::ZERO);
     assert!(t.store.user(&user).await.unwrap().idp_refused_at.is_none());
     t.refreshed(&other.refresh).await;
+}
+
+#[tokio::test]
+async fn disabling_a_person_mid_refresh_ends_the_refresh() {
+    let t = setup().await;
+    let s = t.session(ada()).await;
+    let user = t.user_of(&s.access).await;
+    let reply = t
+        .refresh_racing(&s.refresh, async {
+            t.store.set_disabled(&user, true, t.now()).await.unwrap();
+        })
+        .await;
+    assert_eq!(reply.oauth_error(), (400, "invalid_grant".to_owned()));
+    assert_eq!(t.end_reason(&s.access).await.as_deref(), Some("disabled"));
+}
+
+#[tokio::test]
+async fn offboarding_a_person_mid_refresh_ends_the_refresh() {
+    let t = setup().await;
+    let s = t.session(ada()).await;
+    let user = t.user_of(&s.access).await;
+    let reply = t
+        .refresh_racing(&s.refresh, async {
+            t.store.offboard(&user, None, t.now()).await.unwrap();
+        })
+        .await;
+    assert_eq!(reply.oauth_error(), (400, "invalid_grant".to_owned()));
+    assert_eq!(t.end_reason(&s.access).await.as_deref(), Some("offboarded"));
+    assert_eq!(t.stored_dex_token(user).await, None);
+}
+
+/// A refusal recorded while a refresh waits on Dex came from a later check
+/// at Dex than the refresh's own: it stands.
+#[tokio::test]
+async fn a_refusal_recorded_mid_refresh_stands() {
+    let t = setup().await;
+    let s = t.session(ada()).await;
+    let user = t.user_of(&s.access).await;
+    let key = t.key_for(user, "team").await;
+    let reply = t
+        .refresh_racing(&s.refresh, async {
+            t.store.mark_idp_refused(user, t.now()).await.unwrap();
+        })
+        .await;
+    assert_eq!(reply.oauth_error(), (400, "invalid_grant".to_owned()));
+    assert_eq!(
+        t.end_reason(&s.access).await.as_deref(),
+        Some("idp_refused")
+    );
+    assert!(t.store.user(&user).await.unwrap().idp_refused_at.is_some());
+    assert_eq!(t.key_state(&key).await, KeyState::Invalid);
+    assert_eq!(t.stored_dex_token(user).await, None);
 }
 
 #[tokio::test]
@@ -605,7 +684,8 @@ async fn the_sweep_makes_a_dropped_owners_keys_invalid() {
             released: 2
         }
     );
-    assert_eq!(t.dex.refreshes_shown().len(), asked + 1);
+    // One person, asked twice: once more in case Dex's answer was lost.
+    assert_eq!(t.dex.refreshes_shown().len(), asked + 2);
 
     // The next sweep tries them again, and Dex is back.
     t.dex.fail_refresh("github-bob", None);

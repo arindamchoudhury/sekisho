@@ -9,8 +9,8 @@ use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, GroupName};
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_store::{
-    BudgetScope, ChangeKind, EnvAccess, EnvironmentSpec, FieldError, NewBudget, SignIn,
-    SignInOutcome, Store, StoreError, User,
+    BudgetScope, ChangeKind, Confirmation, EnvAccess, EnvironmentSpec, FieldError, NewBudget,
+    SignIn, SignInOutcome, Store, StoreError, User,
 };
 use time::OffsetDateTime;
 use tokio_stream::StreamExt;
@@ -120,7 +120,7 @@ async fn sign_in_creates_then_finds_by_subject() {
     );
     assert_eq!(first.dex_subject.as_deref(), Some("gh|1"));
     assert_eq!(first.dex_connector.as_deref(), Some("github"));
-    assert_eq!(first.idp_groups, ["eng"]);
+    assert_eq!(first.idp_groups, ["github/eng"]);
     assert_eq!(first.local_dex_user_id, None);
     assert!(first.last_sign_in_at.is_some() && first.disabled_at.is_none());
 
@@ -255,9 +255,9 @@ async fn sign_in_replaces_idp_groups_and_keeps_sekisho_groups() {
     store.add_member(&group("data-team"), &u.id).await.unwrap();
 
     let again = signed_in(&store, &github("gh|1", "ada@example.com", &["eng"])).await;
-    assert_eq!(again.idp_groups, ["eng"]);
+    assert_eq!(again.idp_groups, ["github/eng"]);
     assert_eq!(again.groups, [group("data-team")]);
-    let expected: BTreeSet<String> = ["data-team", "eng"].map(String::from).into();
+    let expected: BTreeSet<String> = ["data-team", "github/eng"].map(String::from).into();
     assert_eq!(again.access().groups, expected);
 
     let mut rx = store.listen().await.unwrap();
@@ -370,7 +370,7 @@ async fn keys_need_an_owner_who_can_use_the_environment() {
     let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &["eng"])).await;
     let bob = signed_in(&store, &github("gh|bob", "bob@example.com", &["ops"])).await;
     store
-        .upsert_environment(spec("data-team", &["eng"]), ada.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), ada.id)
         .await
         .unwrap();
     let data = env("data-team");
@@ -448,20 +448,20 @@ async fn environment_owner_defaults_to_the_creator() {
     let carol = signed_in(&store, &github("gh|carol", "carol@example.com", &[])).await;
 
     let e = store
-        .upsert_environment(spec("data-team", &["eng"]), ada.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), ada.id)
         .await
         .unwrap();
     assert_eq!((e.owner, e.spec.owner), (Some(ada.id), Some(ada.id)));
     // An update without an owner keeps the stored one, whoever saves it.
     let e = store
-        .upsert_environment(spec("data-team", &["eng"]), bob.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), bob.id)
         .await
         .unwrap();
     assert_eq!(e.owner, Some(ada.id));
     // An owner named in the spec wins.
     let named = EnvironmentSpec {
         owner: Some(bob.id),
-        ..spec("data-team", &["eng"])
+        ..spec("data-team", &["github/eng"])
     };
     let e = store.upsert_environment(named, ada.id).await.unwrap();
     assert_eq!(e.owner, Some(bob.id));
@@ -482,7 +482,7 @@ async fn environment_owner_defaults_to_the_creator() {
         None
     );
     let e = store
-        .upsert_environment(spec("data-team", &["eng"]), carol.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), carol.id)
         .await
         .unwrap();
     assert_eq!(e.owner, Some(carol.id));
@@ -492,7 +492,7 @@ async fn environment_owner_defaults_to_the_creator() {
     for owner in [ada.id, Uuid::nil()] {
         let named = EnvironmentSpec {
             owner: Some(owner),
-            ..spec("data-team", &["eng"])
+            ..spec("data-team", &["github/eng"])
         };
         let err = store.upsert_environment(named, bob.id).await.unwrap_err();
         assert_eq!(fields(err), ["owner"]);
@@ -517,7 +517,7 @@ async fn person_budgets_name_a_user() {
     let (store, _) = common::store().await;
     let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &["eng"])).await;
     store
-        .upsert_environment(spec("data-team", &["eng"]), ada.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), ada.id)
         .await
         .unwrap();
     let (key, _) = store
@@ -581,12 +581,12 @@ async fn offboarding_hands_over_revokes_and_ends() {
     let bob = signed_in(&store, &github("gh|bob", "bob@example.com", &["eng"])).await;
     for name in ["data-team", "ml"] {
         store
-            .upsert_environment(spec(name, &["eng"]), ada.id)
+            .upsert_environment(spec(name, &["github/eng"]), ada.id)
             .await
             .unwrap();
     }
     store
-        .upsert_environment(spec("ops", &["eng"]), bob.id)
+        .upsert_environment(spec("ops", &["github/eng"]), bob.id)
         .await
         .unwrap();
     let data = env("data-team");
@@ -666,7 +666,7 @@ async fn offboarding_refuses_a_bad_new_owner() {
     let carol = signed_in(&store, &github("gh|carol", "carol@example.com", &[])).await;
     store.set_disabled(&carol.id, true, now()).await.unwrap();
     store
-        .upsert_environment(spec("data-team", &["eng"]), ada.id)
+        .upsert_environment(spec("data-team", &["github/eng"]), ada.id)
         .await
         .unwrap();
     let (key, _) = store
@@ -706,7 +706,7 @@ async fn offboarding_refuses_a_bad_new_owner() {
 
 #[tokio::test]
 async fn disabling_ends_sessions() {
-    let (store, _) = common::store().await;
+    let (store, sb) = common::store().await;
     let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &[])).await;
     let bob = signed_in(&store, &github("gh|bob", "bob@example.com", &[])).await;
     let local = store
@@ -739,18 +739,70 @@ async fn disabling_ends_sessions() {
     assert!(!store.end_session(&b1, "logout", now()).await.unwrap());
     assert_eq!(ended(&store, b1).await.as_deref(), Some("logout"));
 
-    // Every session of the users whose latest sign-in came through `github`.
+    // The people whose latest sign-in came through `github` can't be checked
+    // there again: like a refusal, their sessions end, their Dex tokens go
+    // and their keys are invalid until they sign in another way.
     let b2 = session(&store, bob.id).await;
-    let n = store
-        .end_connector_sessions("github", "connector_deleted", now())
+    store.save_dex_token(&sb, bob.id, "bob-dex").await.unwrap();
+    store
+        .save_dex_token(&sb, local.id, "carol-dex")
         .await
         .unwrap();
+    let n = store.connector_deleted("github", now()).await.unwrap();
     assert_eq!(n, 1);
     assert_eq!(
         ended(&store, b2).await.as_deref(),
         Some("connector_deleted")
     );
     assert_eq!(ended(&store, c1).await, None);
+    assert!(store.user(&bob.id).await.unwrap().idp_refused_at.is_some());
+    assert_eq!(
+        store.lock_dex_token(&sb, bob.id).await.unwrap().token(),
+        None
+    );
+    assert!(
+        store
+            .user(&local.id)
+            .await
+            .unwrap()
+            .idp_refused_at
+            .is_none()
+    );
+    assert_eq!(
+        store.lock_dex_token(&sb, local.id).await.unwrap().token(),
+        Some("carol-dex")
+    );
+}
+
+/// An identity provider's groups are named `<connector>/<group>`, so they
+/// can't stand in for a Sekisho group, or another connector's group, of the
+/// same name (D124).
+#[tokio::test]
+async fn identity_provider_groups_carry_their_connector() {
+    let (store, _) = common::store().await;
+    let ada = signed_in(
+        &store,
+        &github("gh|ada", "ada@example.com", &["eng", "acme:ops"]),
+    )
+    .await;
+    assert_eq!(ada.idp_groups, ["github/eng", "github/acme:ops"]);
+    let access = ada.access();
+    assert!(access.groups.contains("github/eng"));
+    assert!(!access.groups.contains("eng"));
+
+    // A re-check at Dex names them the same way.
+    let again = github("gh|ada", "ada@example.com", &["data"]);
+    assert_eq!(
+        store
+            .confirm_identity(&ada.id, &again, now())
+            .await
+            .unwrap(),
+        Confirmation::Confirmed
+    );
+    assert_eq!(
+        store.user(&ada.id).await.unwrap().idp_groups,
+        ["github/data"]
+    );
 }
 
 #[tokio::test]
@@ -838,7 +890,7 @@ async fn auth_snapshot_lists_people() {
 
     let snap = store.auth_snapshot(now()).await.unwrap();
     let user = |id: Uuid| snap.users.iter().find(|u| u.id == id).unwrap();
-    let ada_groups: BTreeSet<String> = ["data", "eng"].map(String::from).into();
+    let ada_groups: BTreeSet<String> = ["data", "github/eng"].map(String::from).into();
     assert_eq!(user(ada.id).access.groups, ada_groups);
     assert!(!user(ada.id).admin_mark && !user(ada.id).access.disabled);
     assert!(user(bob.id).access.disabled);

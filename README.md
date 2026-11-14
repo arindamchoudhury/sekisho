@@ -109,8 +109,12 @@ and what they carried.
 - **Sign-in** with local accounts, GitHub, GitLab, Google, Microsoft Entra,
   LDAP and Active Directory, or any OIDC provider. Several can be on at once.
   There is no SAML: Dex can't refresh a SAML sign-in, so identity providers
-  connect through OIDC, which they all offer. Offboarding a person ends their sessions, revokes their keys and hands
-  what they own to a new owner, in one step.
+  connect through OIDC, which they all offer. An identity provider's groups
+  are named after its connector, such as `github/acme:platform`, so they
+  never mix with Sekisho's own groups or another provider's; environments'
+  access groups and `SEKISHO_ADMIN_GROUPS` name them that way. Offboarding a
+  person ends their sessions, revokes their keys and hands what they own to a
+  new owner, in one step.
 - **Audit** of model calls, MCP tool calls, access decisions and admin changes,
   with filters and CSV or JSON export. Prompts and responses are not recorded.
 - **No licence keys, user caps or phone-home.** Kubernetes is optional.

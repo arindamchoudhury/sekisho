@@ -333,6 +333,36 @@ impl T {
         tokens(&reply)
     }
 
+    /// Runs `action` 150 ms into a refresh that waits 500 ms on Dex, and
+    /// returns the refresh's answer once both have finished. The refresh
+    /// holds its session's row while Dex answers; disabling, offboarding and
+    /// a refusal lock the person's row, then their sessions.
+    pub async fn refresh_racing(&self, refresh: &str, action: impl Future<Output = ()>) -> Reply {
+        self.dex
+            .delay_refresh(std::time::Duration::from_millis(500));
+        let raced = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(self.refresh(refresh), async {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                action.await;
+            })
+        })
+        .await;
+        self.dex.delay_refresh(std::time::Duration::ZERO);
+        raced
+            .expect("the refresh and the action still wait on each other after 15 s")
+            .0
+    }
+
+    /// Why the access token's session ended, if it has.
+    pub async fn end_reason(&self, access: &str) -> Option<String> {
+        let sid: Uuid = self.claims(access).await.sid.parse().unwrap();
+        sqlx::query_scalar("select end_reason from sessions where id = $1")
+            .bind(sid)
+            .fetch_one(self.store.pool())
+            .await
+            .unwrap()
+    }
+
     /// The access token's claims, checked with the published keys.
     pub async fn claims(&self, access: &str) -> SessionClaims {
         let keys = self.get("/oauth/jwks").await.json();
@@ -373,7 +403,7 @@ impl T {
             name: EnvName::parse(env).unwrap(),
             description: String::new(),
             notice: String::new(),
-            access_groups: vec!["eng".into()],
+            access_groups: vec!["github/eng".into()],
             models: Vec::new(),
             owner: None,
         };

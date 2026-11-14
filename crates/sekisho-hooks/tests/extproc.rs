@@ -54,7 +54,7 @@ async fn rig() -> Rig {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
     };

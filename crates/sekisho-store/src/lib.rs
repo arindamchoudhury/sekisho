@@ -46,7 +46,7 @@ pub use sessions::{
 };
 pub use setup_links::SETUP_LINK_LIFETIME;
 pub use signing_keys::{KEY_LEAD, KEY_ROTATION, KEY_TAIL};
-pub use users::{LOCAL_CONNECTOR, SignIn, SignInOutcome, User, UserAccess};
+pub use users::{Confirmation, LOCAL_CONNECTOR, SignIn, SignInOutcome, User, UserAccess};
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 

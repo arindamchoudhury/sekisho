@@ -303,21 +303,36 @@ impl Store {
         Ok(ended)
     }
 
-    /// Ends every open session of the users whose latest sign-in came
-    /// through this connector.
-    pub async fn end_connector_sessions(
-        &self,
-        connector_id: &str,
-        reason: &str,
-        now: OffsetDateTime,
-    ) -> Result<u64> {
+    /// The connector is gone, so the people whose latest sign-in came
+    /// through it can't be checked at their identity provider again. As for
+    /// a refusal there, their sessions end (`connector_deleted`), their Dex
+    /// tokens go and their keys are invalid until they sign in another way.
+    /// Returns how many sessions ended.
+    pub async fn connector_deleted(&self, connector_id: &str, now: OffsetDateTime) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
-        let ended = sqlx::query(
-            "update sessions s set ended_at = $3, end_reason = $2 from users u \
-             where u.id = s.user_id and u.dex_connector = $1 and s.ended_at is null",
+        // The people first, in ID order, then their sessions and Dex tokens,
+        // as everywhere.
+        let people: Vec<Uuid> = sqlx::query_scalar(
+            "select id from users where dex_connector = $1 order by id for update",
         )
         .bind(connector_id)
-        .bind(reason)
+        .fetch_all(&mut *tx)
+        .await?;
+        if people.is_empty() {
+            return Ok(0);
+        }
+        sqlx::query(
+            "update users set idp_refused_at = coalesce(idp_refused_at, $2) where id = any($1)",
+        )
+        .bind(&people)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        let ended = sqlx::query(
+            "update sessions set ended_at = $2, end_reason = 'connector_deleted' \
+             where user_id = any($1) and ended_at is null",
+        )
+        .bind(&people)
         .bind(now)
         .execute(&mut *tx)
         .await?
@@ -325,6 +340,11 @@ impl Store {
         if ended > 0 {
             notify(&mut tx, ChangeKind::Sessions).await?;
         }
+        sqlx::query("delete from dex_tokens where user_id = any($1)")
+            .bind(&people)
+            .execute(&mut *tx)
+            .await?;
+        notify(&mut tx, ChangeKind::Users).await?;
         tx.commit().await?;
         Ok(ended)
     }

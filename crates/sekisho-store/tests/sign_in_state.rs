@@ -709,7 +709,7 @@ async fn idp_checks_are_claimed_once_a_day() {
         name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: Vec::<ModelName>::new(),
         owner: None,
     };

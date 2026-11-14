@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use sekisho_core::access::Access;
+use sekisho_core::access::{Access, idp_group};
 use sekisho_core::names::GroupName;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
@@ -34,7 +34,8 @@ pub struct User {
     pub local_dex_user_id: Option<String>,
     /// Marked as an admin. Admin groups are applied by the server.
     pub admin: bool,
-    /// The identity provider's groups at the latest sign-in.
+    /// The identity provider's groups at the latest sign-in, each named
+    /// `<connector>/<group>` ([`idp_group`]).
     pub idp_groups: Vec<String>,
     /// The Sekisho groups the user is in, sorted.
     pub groups: Vec<GroupName>,
@@ -81,7 +82,7 @@ pub struct SignIn {
     pub subject: String,
     pub email: String,
     pub name: String,
-    /// The identity provider's groups.
+    /// The identity provider's groups, as it names them.
     pub groups: Vec<String>,
     pub connector_id: String,
     /// The user's ID at the connector; for `local`, the Dex user ID Sekisho
@@ -97,6 +98,19 @@ pub enum SignInOutcome {
     Disabled,
     /// Dex signed in a local account Sekisho doesn't know.
     UnknownLocalAccount,
+}
+
+/// What [`Store::confirm_identity`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirmation {
+    /// The identity is stored.
+    Confirmed,
+    /// The user is disabled, or gone.
+    Disabled,
+    /// A refusal at the identity provider was recorded meanwhile: it stands.
+    Refused,
+    /// Dex answered for another subject; nothing was stored.
+    OtherSubject,
 }
 
 /// One user's access and admin mark, for the auth cache.
@@ -203,6 +217,14 @@ pub(crate) async fn accesses(
         .collect())
 }
 
+/// The sign-in's groups, each named `<connector>/<group>`.
+fn connector_groups(s: &SignIn) -> Vec<String> {
+    s.groups
+        .iter()
+        .map(|g| idp_group(&s.connector_id, g))
+        .collect()
+}
+
 /// A local account's email, trimmed and lowercased, or why it isn't one.
 fn local_email(email: &str) -> std::result::Result<String, FieldError> {
     let email = email.trim().to_lowercase();
@@ -242,10 +264,12 @@ impl Store {
     ///
     /// A local account is found by its Dex user ID; anyone else by Dex's
     /// subject, or created. Never by email. The identity provider's email (not
-    /// a local account's), name and groups replace the stored ones, and an
-    /// earlier refusal at the identity provider is cleared.
+    /// a local account's), name and groups (named by the connector) replace
+    /// the stored ones, and an earlier refusal at the identity provider is
+    /// cleared.
     pub async fn sign_in(&self, s: &SignIn, now: OffsetDateTime) -> Result<SignInOutcome> {
         let local = s.connector_id == LOCAL_CONNECTOR;
+        let groups = connector_groups(s);
         let mut tx = self.pool.begin().await?;
         let mut attempts = 0;
         let (id, changed) = loop {
@@ -275,13 +299,13 @@ impl Store {
                     .bind(id)
                     .bind(&s.email)
                     .bind(&s.name)
-                    .bind(&s.groups)
+                    .bind(&groups)
                     .bind(&s.subject)
                     .bind(&s.connector_id)
                     .bind(now)
                     .execute(&mut *tx)
                     .await?;
-                    break (id, idp_groups != s.groups || refused);
+                    break (id, idp_groups != groups || refused);
                 }
                 None if local => return Ok(SignInOutcome::UnknownLocalAccount),
                 None => {
@@ -292,7 +316,7 @@ impl Store {
                     )
                     .bind(&s.email)
                     .bind(&s.name)
-                    .bind(&s.groups)
+                    .bind(&groups)
                     .bind(&s.subject)
                     .bind(&s.connector_id)
                     .bind(now)
@@ -317,6 +341,57 @@ impl Store {
         let user = read_user(&mut tx, &id).await?;
         tx.commit().await?;
         Ok(SignInOutcome::User(Box::new(user)))
+    }
+
+    /// Records what a re-check at Dex answered for `user`: the identity
+    /// provider's email (not a local account's), name and groups.
+    ///
+    /// Unlike [`Store::sign_in`] it never clears a refusal at the identity
+    /// provider: one recorded meanwhile came from a later check at Dex than
+    /// this answer. It locks the user's row, so a caller must not hold one of
+    /// their sessions' rows: disabling, offboarding and refusals lock the
+    /// user's row before their sessions.
+    pub async fn confirm_identity(
+        &self,
+        user: &Uuid,
+        s: &SignIn,
+        now: OffsetDateTime,
+    ) -> Result<Confirmation> {
+        let mut tx = self.pool.begin().await?;
+        let found: Option<(Option<String>, bool, bool, Vec<String>)> = sqlx::query_as(
+            "select dex_subject, disabled_at is not null, idp_refused_at is not null, idp_groups \
+             from users where id = $1 for update",
+        )
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let stored = match found {
+            None | Some((_, true, _, _)) => return Ok(Confirmation::Disabled),
+            Some((_, false, true, _)) => return Ok(Confirmation::Refused),
+            Some((subject, false, false, groups)) => {
+                if subject.as_deref() != Some(s.subject.as_str()) {
+                    return Ok(Confirmation::OtherSubject);
+                }
+                groups
+            }
+        };
+        let groups = connector_groups(s);
+        sqlx::query(
+            "update users set email = case when local then email else $2 end, \
+             name = $3, idp_groups = $4, last_sign_in_at = $5 where id = $1",
+        )
+        .bind(user)
+        .bind(&s.email)
+        .bind(&s.name)
+        .bind(&groups)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if stored != groups {
+            notify(&mut tx, ChangeKind::Users).await?;
+        }
+        tx.commit().await?;
+        Ok(Confirmation::Confirmed)
     }
 
     pub async fn user(&self, id: &Uuid) -> Result<User> {

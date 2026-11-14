@@ -25,4 +25,6 @@ oauth2:
   skipApprovalScreen: true
 expiry:
   refreshTokens:
-    reuseInterval: 3s
+    # Longer than Sekisho's 10 s wait for Dex, so a refresh whose answer was
+    # lost can be asked for again and get the rotated token back.
+    reuseInterval: 30s

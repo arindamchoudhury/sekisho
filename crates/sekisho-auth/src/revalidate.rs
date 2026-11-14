@@ -8,8 +8,13 @@
 //!
 //! Only Dex's refusal ends sessions. Dex not answering, or failing on its
 //! side, changes nothing.
+//!
+//! Locks are taken in one order, as everywhere: the person's row, then their
+//! sessions, then their Dex token. A refresh holds its session's row while
+//! Dex answers, so it stores what Dex said about the person only after
+//! letting the session go.
 
-use sekisho_store::{RefreshLock, SignIn, SignInOutcome, StoreError};
+use sekisho_store::{Confirmation, RefreshLock, SignIn, StoreError};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -63,37 +68,57 @@ fn internal(e: StoreError) -> Revalidation {
 /// rotated to and the identity it answered with. A refusal ends every
 /// session of the user and marks them refused at the identity provider.
 pub async fn revalidate(state: &AuthState, user: Uuid) -> Result<(), Revalidation> {
-    on_task(state, user, None).await.map(drop)
+    let state = state.clone();
+    on_task(user, async move {
+        let (_, identity) = conclude(&state, user, None).await?;
+        confirm(&state, user, &identity).await
+    })
+    .await
 }
 
-/// [`revalidate`] for a refresh holding its session's row: the lock comes
-/// back if the person is confirmed. If not, a refusal or a disabled user has
-/// ended the session through the lock; otherwise the lock is dropped and
-/// nothing changed.
+/// [`revalidate`] for a refresh holding its session's row. Dex's answer
+/// comes back with the lock, to be stored with [`record`] once the lock is
+/// committed: storing it locks the person's row, which disabling,
+/// offboarding and refusals lock before their sessions. If the person isn't
+/// confirmed, a refusal or a disabled user has ended the session through the
+/// lock; otherwise the lock is dropped and nothing changed.
 pub(crate) async fn revalidate_session(
     state: &AuthState,
     lock: RefreshLock,
-) -> Result<RefreshLock, Revalidation> {
+) -> Result<(RefreshLock, DexIdentity), Revalidation> {
     let user = lock.session().user_id;
-    let back = on_task(state, user, Some(lock)).await?;
-    back.ok_or(Revalidation::Internal)
+    let state = state.clone();
+    let (held, identity) = on_task(
+        user,
+        async move { conclude(&state, user, Some(lock)).await },
+    )
+    .await?;
+    Ok((held.ok_or(Revalidation::Internal)?, identity))
 }
 
-/// Runs the check on a task of its own, which finishes even if the caller's
-/// future is dropped. A session lock it hands back then is dropped with the
-/// task's output, which rolls it back.
-async fn on_task(
+/// Stores the identity Dex confirmed for a refresh, on a task of its own so
+/// that a client hanging up can't undo it. Call it only once the refresh's
+/// session lock is committed.
+pub(crate) async fn record(
     state: &AuthState,
     user: Uuid,
-    held: Option<RefreshLock>,
-) -> Result<Option<RefreshLock>, Revalidation> {
+    identity: DexIdentity,
+) -> Result<(), Revalidation> {
     let state = state.clone();
-    tokio::spawn(async move { conclude(&state, user, held).await })
-        .await
-        .unwrap_or_else(|e| {
-            error!(%user, error = %e, "the re-check at Dex failed");
-            Err(Revalidation::Internal)
-        })
+    on_task(user, async move { confirm(&state, user, &identity).await }).await
+}
+
+/// Runs `check` on a task of its own, which finishes even if the caller's
+/// future is dropped. A session lock it hands back then is dropped with the
+/// task's output, which rolls it back.
+async fn on_task<T: Send + 'static>(
+    user: Uuid,
+    check: impl Future<Output = Result<T, Revalidation>> + Send + 'static,
+) -> Result<T, Revalidation> {
+    tokio::spawn(check).await.unwrap_or_else(|e| {
+        error!(%user, error = %e, "the re-check at Dex failed");
+        Err(Revalidation::Internal)
+    })
 }
 
 /// Asks Dex, then records what a refusal or a disabled user means.
@@ -101,13 +126,16 @@ async fn conclude(
     state: &AuthState,
     user: Uuid,
     mut held: Option<RefreshLock>,
-) -> Result<Option<RefreshLock>, Revalidation> {
-    let outcome = ask_dex(state, user).await;
-    let reason = match outcome {
-        Ok(()) => return Ok(held),
-        Err(Revalidation::Refused) => "idp_refused",
-        Err(Revalidation::Disabled) => "disabled",
+) -> Result<(Option<RefreshLock>, DexIdentity), Revalidation> {
+    let refusal = match ask_dex(state, user).await {
+        Ok(identity) => return Ok((held, identity)),
+        Err(e @ (Revalidation::Refused | Revalidation::Disabled)) => e,
         Err(e) => return Err(e),
+    };
+    let reason = if refusal == Revalidation::Refused {
+        "idp_refused"
+    } else {
+        "disabled"
     };
     let now = state.now();
     // The held session's row is ours: end it through the lock and let it go
@@ -116,7 +144,7 @@ async fn conclude(
         lock.end(reason, now).await.map_err(internal)?;
         lock.commit().await.map_err(internal)?;
     }
-    if outcome == Err(Revalidation::Refused) {
+    if refusal == Revalidation::Refused {
         state
             .store
             .mark_idp_refused(user, now)
@@ -124,12 +152,38 @@ async fn conclude(
             .map_err(internal)?;
         warn!(%user, "Dex refused the person: their sessions have ended and their keys are invalid");
     }
-    outcome.map(|()| None)
+    Err(refusal)
 }
 
-/// Replays the user's Dex token under its lock. Stores the rotated token
-/// (committed before anything else can fail) and the refreshed identity.
-async fn ask_dex(state: &AuthState, user: Uuid) -> Result<(), Revalidation> {
+/// Stores the identity Dex answered with, unless the person was disabled or
+/// refused meanwhile. Never while one of their sessions' rows is held.
+async fn confirm(
+    state: &AuthState,
+    user: Uuid,
+    identity: &DexIdentity,
+) -> Result<(), Revalidation> {
+    match state
+        .store
+        .confirm_identity(&user, &sign_in_of(identity), state.now())
+        .await
+    {
+        Ok(Confirmation::Confirmed) => Ok(()),
+        Ok(Confirmation::Disabled) => Err(Revalidation::Disabled),
+        Ok(Confirmation::Refused) => {
+            info!(%user, "the person was refused at the identity provider meanwhile");
+            Err(Revalidation::Refused)
+        }
+        Ok(Confirmation::OtherSubject) => {
+            error!(%user, "Dex answered a refresh with another subject");
+            Err(Revalidation::Internal)
+        }
+        Err(e) => Err(internal(e)),
+    }
+}
+
+/// Replays the user's Dex token under its lock, and stores the rotated
+/// token (committed before anything else can fail).
+async fn ask_dex(state: &AuthState, user: Uuid) -> Result<DexIdentity, Revalidation> {
     let account = match state.store.user(&user).await {
         Ok(account) => account,
         Err(StoreError::NotFound) => return Err(Revalidation::Disabled),
@@ -153,9 +207,17 @@ async fn ask_dex(state: &AuthState, user: Uuid) -> Result<(), Revalidation> {
         if refused.as_deref() == Some(token.as_str()) {
             return Err(Revalidation::Refused);
         }
-        let identity = match timeout(DEX_TIMEOUT, state.dex.refresh(&token)).await {
-            Ok(Ok(identity)) => identity,
-            Ok(Err(DexError::Refused(why))) if refused.is_none() => {
+        let mut answer = replay(state, &token).await;
+        if let Err(e @ DexError::Unreachable(_)) = &answer {
+            // Dex may have rotated the token before its answer was lost. Asked
+            // again within its reuse interval, Dex hands back the token it
+            // rotated to; later, it would refuse this one.
+            warn!(%user, error = %e, "Dex's answer about the person didn't arrive; asking again");
+            answer = replay(state, &token).await;
+        }
+        let identity = match answer {
+            Ok(identity) => identity,
+            Err(DexError::Refused(why)) if refused.is_none() => {
                 // A sign-in elsewhere may have just replaced the token at Dex,
                 // and be waiting on this lock to store the new one: look again
                 // before concluding.
@@ -164,21 +226,17 @@ async fn ask_dex(state: &AuthState, user: Uuid) -> Result<(), Revalidation> {
                 drop(lock);
                 continue;
             }
-            Ok(Err(DexError::Refused(why))) => {
+            Err(DexError::Refused(why)) => {
                 info!(%user, %why, "Dex refused the person's new refresh token too");
                 return Err(Revalidation::Refused);
             }
-            Ok(Err(e @ DexError::Unreachable(_))) => {
+            Err(e @ DexError::Unreachable(_)) => {
                 warn!(%user, error = %e, "Dex couldn't be asked about the person");
                 return Err(Revalidation::Unreachable);
             }
-            Ok(Err(e @ (DexError::Unavailable(_) | DexError::Invalid(_)))) => {
+            Err(e @ (DexError::Unavailable(_) | DexError::Invalid(_))) => {
                 warn!(%user, error = %e, "Dex failed while asked about the person");
                 return Err(Revalidation::Unavailable);
-            }
-            Err(_) => {
-                warn!(%user, "Dex didn't answer about the person within {DEX_TIMEOUT:?}");
-                return Err(Revalidation::Unreachable);
             }
         };
         // Dex has rotated its token: keep the new one before anything else.
@@ -188,25 +246,17 @@ async fn ask_dex(state: &AuthState, user: Uuid) -> Result<(), Revalidation> {
         lock.commit().await.map_err(internal)?;
         break identity;
     };
-    if account.dex_subject.as_deref() != Some(identity.subject.as_str()) {
-        error!(%user, "Dex answered a refresh with another subject");
-        return Err(Revalidation::Internal);
-    }
-    match state
-        .store
-        .sign_in(&sign_in_of(&identity), state.now())
+    Ok(identity)
+}
+
+/// One refresh at Dex, within [`DEX_TIMEOUT`]: no answer by then is
+/// [`DexError::Unreachable`].
+async fn replay(state: &AuthState, token: &str) -> Result<DexIdentity, DexError> {
+    timeout(DEX_TIMEOUT, state.dex.refresh(token))
         .await
-    {
-        Ok(SignInOutcome::User(signed_in)) if signed_in.id == user => Ok(()),
-        Ok(SignInOutcome::Disabled) => Err(Revalidation::Disabled),
-        Ok(SignInOutcome::User(other)) => {
-            error!(%user, other = %other.id, "a refreshed identity matched another user");
-            Err(Revalidation::Internal)
-        }
-        Ok(SignInOutcome::UnknownLocalAccount) => {
-            error!(%user, "a refreshed identity is a local account Sekisho doesn't know");
-            Err(Revalidation::Internal)
-        }
-        Err(e) => Err(internal(e)),
-    }
+        .unwrap_or_else(|_| {
+            Err(DexError::Unreachable(format!(
+                "no answer within {DEX_TIMEOUT:?}"
+            )))
+        })
 }

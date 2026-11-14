@@ -2,6 +2,35 @@
 
 use std::collections::BTreeSet;
 
+use crate::names::{ConnectorId, GroupName};
+
+/// What may name a group in an environment's access groups or in
+/// `SEKISHO_ADMIN_GROUPS`.
+pub const GROUP_RULE: &str = "name a Sekisho group (1-63 lowercase letters, digits or hyphens) \
+     or an identity provider's group as <connector>/<group>, such as github/acme:platform";
+
+/// An identity provider's group as Sekisho names it: `<connector>/<group>`,
+/// such as `github/acme:platform`. Neither a connector's ID nor a Sekisho
+/// group's name holds a `/`, so an identity provider's group can never stand
+/// in for a Sekisho group, or for another connector's group of the same name.
+pub fn idp_group(connector: &str, group: &str) -> String {
+    format!("{connector}/{group}")
+}
+
+/// Whether `name` names a Sekisho group, or an identity provider's group as
+/// [`idp_group`] names it.
+pub fn is_group_reference(name: &str) -> bool {
+    match name.split_once('/') {
+        None => GroupName::parse(name).is_ok(),
+        Some((connector, group)) => {
+            ConnectorId::parse(connector).is_ok()
+                && !group.is_empty()
+                && group.trim() == group
+                && !group.chars().any(char::is_control)
+        }
+    }
+}
+
 /// What decides a person's access.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Access {
@@ -31,6 +60,33 @@ pub fn is_admin(marked: bool, access: &Access, admin_groups: &[String]) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_are_sekisho_s_or_named_by_connector() {
+        assert_eq!(idp_group("github", "acme:eng"), "github/acme:eng");
+        for good in [
+            "eng",
+            "data-team",
+            "github/acme:eng",
+            "gitlab/acme/ops",
+            "okta/Eng Team",
+        ] {
+            assert!(is_group_reference(good), "{good:?}");
+        }
+        for bad in [
+            "",
+            "acme:eng",
+            "Eng",
+            "/eng",
+            "github/",
+            "github/ eng",
+            "GitHub/eng",
+            "local/eng",
+            "github/a\nb",
+        ] {
+            assert!(!is_group_reference(bad), "{bad:?}");
+        }
+    }
 
     fn access(groups: &[&str]) -> Access {
         Access {

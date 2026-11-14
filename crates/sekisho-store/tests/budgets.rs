@@ -23,7 +23,7 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
     };

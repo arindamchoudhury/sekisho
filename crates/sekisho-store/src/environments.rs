@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use sekisho_core::access::{GROUP_RULE, is_group_reference};
 use sekisho_core::formats::ApiFormat;
 use sekisho_core::names::{EnvName, ModelName};
 use sqlx::Row;
@@ -100,6 +101,8 @@ fn validate(spec: &EnvironmentSpec, known: &HashMap<String, KnownModel>) -> Vec<
         let field = format!("access_groups[{i}]");
         if group.trim().is_empty() {
             errors.push(FieldError::new(field, "must not be empty"));
+        } else if !is_group_reference(group) {
+            errors.push(FieldError::new(field, GROUP_RULE));
         } else if !groups.insert(group.as_str()) {
             errors.push(FieldError::new(field, format!("{group} is listed twice")));
         }

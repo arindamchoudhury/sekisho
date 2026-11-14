@@ -4,6 +4,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use sekisho_core::access::{GROUP_RULE, is_group_reference};
 use sekisho_core::keys::hash_secret;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_gateway::{HookTargets, RenderOptions};
@@ -156,15 +157,21 @@ impl ServerConfig {
             grpc: host_port(&required("SEKISHO_DEX_GRPC")?)
                 .map_err(|r| invalid("SEKISHO_DEX_GRPC", r))?,
         };
-        // Identity providers' group names, such as GitHub's org:team, as well
-        // as Sekisho's own.
-        let admin_groups = var("SEKISHO_ADMIN_GROUPS")
+        // Sekisho's groups, and identity providers' groups named
+        // <connector>/<group>, such as github/acme:admins.
+        let admin_groups: Vec<String> = var("SEKISHO_ADMIN_GROUPS")
             .unwrap_or_default()
             .split(',')
             .map(str::trim)
             .filter(|g| !g.is_empty())
             .map(str::to_owned)
             .collect();
+        if let Some(bad) = admin_groups.iter().find(|g| !is_group_reference(g)) {
+            return Err(invalid(
+                "SEKISHO_ADMIN_GROUPS",
+                format!("{bad}: {GROUP_RULE}"),
+            ));
+        }
         let hooks = HookTargets {
             authz_http: required("SEKISHO_HOOKS_HTTP_TARGET")?,
             grpc: required("SEKISHO_HOOKS_GRPC_TARGET")?,
@@ -375,14 +382,17 @@ mod tests {
         let mut vars = required();
         vars.insert("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/sekisho/");
         vars.insert("SEKISHO_DEX_URL", "http://dex:5556");
-        vars.insert("SEKISHO_ADMIN_GROUPS", " platform , acme:admins ,");
+        vars.insert("SEKISHO_ADMIN_GROUPS", " platform , github/acme:admins ,");
         let c = load(&vars).unwrap();
         assert_eq!(
             c.settings.public_url.as_str(),
             "https://sekisho.example.com/sekisho"
         );
         assert_eq!(c.dex.http_url.as_str(), "http://dex:5556/");
-        assert_eq!(c.settings.admin_groups, vec!["platform", "acme:admins"]);
+        assert_eq!(
+            c.settings.admin_groups,
+            vec!["platform", "github/acme:admins"]
+        );
 
         for (name, value) in [
             ("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/?x=1"),
@@ -396,6 +406,10 @@ mod tests {
             ("SEKISHO_DEX_GRPC", "dex"),
             ("SEKISHO_DEX_GRPC", "http://dex:5557"),
             ("SEKISHO_DEX_GRPC", "dex:port"),
+            // An identity provider's group needs its connector (D124).
+            ("SEKISHO_ADMIN_GROUPS", "platform,acme:admins"),
+            ("SEKISHO_ADMIN_GROUPS", "Platform"),
+            ("SEKISHO_ADMIN_GROUPS", "github/"),
         ] {
             let mut vars = required();
             vars.insert(name, value);

@@ -20,7 +20,9 @@ use uuid::Uuid;
 pub const BOOTSTRAP: &str = "bootstrap-token-0123456789";
 pub const GATEWAY: &str = "gateway-token-0123456789";
 pub const ISSUER: &str = "https://sekisho.test";
-/// The group `SEKISHO_ADMIN_GROUPS` names in these tests.
+/// The Sekisho group `SEKISHO_ADMIN_GROUPS` names in these tests. It also
+/// names GitHub's group of that name, `github/sekisho-admins` (people sign in
+/// through GitHub here).
 pub const ADMIN_GROUP: &str = "sekisho-admins";
 
 pub struct TestApp {
@@ -57,7 +59,7 @@ pub fn settings() -> Settings {
         long_poll: Duration::from_secs(1),
         republish: Duration::from_millis(300),
         public_url: Url::parse(ISSUER).unwrap(),
-        admin_groups: vec![ADMIN_GROUP.to_owned()],
+        admin_groups: vec![ADMIN_GROUP.to_owned(), format!("github/{ADMIN_GROUP}")],
     }
 }
 
@@ -232,7 +234,7 @@ impl TestApp {
         self.admin(
             "PUT",
             &format!("/api/v1/environments/{name}"),
-            Some(json!({ "models": models, "access_groups": ["eng"], "owner": self.owner })),
+            Some(json!({ "models": models, "access_groups": ["github/eng"], "owner": self.owner })),
         )
         .await
     }

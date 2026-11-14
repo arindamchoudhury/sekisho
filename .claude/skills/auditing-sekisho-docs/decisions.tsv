@@ -122,3 +122,7 @@ D120	From plan 1d the model routes are one llm block: environment from the path,
 D121	Local account passwords: at least 15 characters and at most 72 bytes, refused when easy to guess, no composition rules (decided 2026-11-14, NIST SP 800-63B-4)	at least 15 characters|15 characters to 72 bytes	design plan2
 D122	zxcvbn judges local account passwords: its top score (more than 10^10 guesses), with the account's email and name and Sekisho's name as context (our call)	zxcvbn	design plan2
 D123	No SAML in release 1: Dex v2.46.1 gives a SAML sign-in no refresh token, so identity providers connect through OIDC (decided 2026-11-14)	no .?SAML	design plan2 README comparison
+D124	Identity providers' groups are named <connector>/<group>, such as github/acme:platform; access groups and SEKISHO_ADMIN_GROUPS name a Sekisho group or one of those (decided 2026-11-14)	<connector>/<group>|connector.{0,30}github/acme	design plan2 README comparison
+D125	A Dex answer lost after the rotation is asked for again at once, and Sekisho's Dex runs with reuseInterval: 30s (our call)	reuseInterval: 30 ?s	design plan2
+D126	Deleting a connector treats the people who signed in through it as refused there: sessions end, keys invalid until they sign in another way (our call)	deleting a connector	design plan2
+D127	A refresh stores what Dex said about the person only after letting its session go; a refusal recorded meanwhile stands (our call)	refusal recorded meanwhile	design plan2

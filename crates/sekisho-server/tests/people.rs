@@ -68,6 +68,28 @@ async fn admin_routes_need_an_admin_session() {
     assert_eq!(app.admin("GET", path, None).await.status, 200);
     let (_, ops) = app.sign_in("ops@example.com", &[ADMIN_GROUP]).await;
     assert_eq!(app.by(&ops, "GET", path, None).await.status, 200);
+    // Only through the connector the admin group names: the same group name
+    // from another identity provider makes no one an admin (D124).
+    let gitlab = sekisho_store::SignIn {
+        subject: "gitlab|eve".into(),
+        email: "eve@example.com".into(),
+        name: "Eve".into(),
+        groups: vec![ADMIN_GROUP.into()],
+        connector_id: "gitlab".into(),
+        connector_user_id: "eve".into(),
+    };
+    let eve = match app
+        .store
+        .sign_in(&gitlab, time::OffsetDateTime::now_utc())
+        .await
+        .unwrap()
+    {
+        sekisho_store::SignInOutcome::User(user) => user.id,
+        other => panic!("{other:?}"),
+    };
+    let (eve_token, _) =
+        sekisho_testkit::people::session_token(&app.store, &app.sb, ISSUER, eve).await;
+    assert_eq!(app.by(&eve_token, "GET", path, None).await.status, 403);
     let (lee, lee_token) = app.sign_in("lee@example.com", &[]).await;
     assert_eq!(
         app.admin(
@@ -113,7 +135,7 @@ async fn me_lists_only_usable_environments() {
     let app = app().await;
     app.provider_and_model().await;
     for (name, groups) in [
-        ("team-a", json!(["eng"])),
+        ("team-a", json!(["github/eng"])),
         ("team-b", json!(["ops"])),
         ("nobody", json!([])),
     ] {
@@ -132,7 +154,7 @@ async fn me_lists_only_usable_environments() {
     assert_eq!(me.body["email"], "ada@example.com");
     assert_eq!(me.body["local"], false);
     assert_eq!(me.body["admin"], false);
-    assert_eq!(me.body["groups"], json!(["eng"]));
+    assert_eq!(me.body["groups"], json!(["github/eng"]));
 
     let envs = app.by(&token, "GET", "/api/v1/me/environments", None).await;
     assert_eq!(
@@ -288,7 +310,7 @@ async fn environment_owner_defaults_to_the_creator() {
         .admin(
             "PUT",
             "/api/v1/environments/team-a",
-            Some(json!({ "access_groups": ["eng"] })),
+            Some(json!({ "access_groups": ["github/eng"] })),
         )
         .await;
     assert_eq!(r.status, 200, "{}", r.text);
@@ -302,7 +324,7 @@ async fn environment_owner_defaults_to_the_creator() {
         .admin(
             "PUT",
             "/api/v1/environments/team-a",
-            Some(json!({ "access_groups": ["eng"], "owner": ada })),
+            Some(json!({ "access_groups": ["github/eng"], "owner": ada })),
         )
         .await;
     assert_eq!(r.body["owner"], json!(ada));
@@ -311,7 +333,7 @@ async fn environment_owner_defaults_to_the_creator() {
         .admin(
             "PUT",
             "/api/v1/environments/team-a",
-            Some(json!({ "access_groups": ["eng"], "owner_email": "someone@else.com" })),
+            Some(json!({ "access_groups": ["github/eng"], "owner_email": "someone@else.com" })),
         )
         .await;
     assert_eq!(
@@ -378,7 +400,7 @@ async fn offboarding_needs_a_new_owner_when_the_person_owns_environments() {
             .admin(
                 "PUT",
                 &format!("/api/v1/environments/{name}"),
-                Some(json!({ "access_groups": ["eng"], "owner": ada })),
+                Some(json!({ "access_groups": ["github/eng"], "owner": ada })),
             )
             .await;
         assert_eq!(r.status, 200, "{}", r.text);
@@ -670,7 +692,7 @@ async fn groups_api() {
         json!([{ "name": "data-team", "members": [ada] }])
     );
     let me = app.by(&ada_token, "GET", "/api/v1/me", None).await;
-    assert_eq!(me.body["groups"], json!(["data-team", "eng"]));
+    assert_eq!(me.body["groups"], json!(["data-team", "github/eng"]));
 
     let unknown = app
         .admin(
@@ -783,6 +805,8 @@ async fn connectors_api_never_returns_config() {
         sekisho_store::SignInOutcome::User(user) => user.id,
         other => panic!("{other:?}"),
     };
+    // Through GitLab, her group isn't one SEKISHO_ADMIN_GROUPS names (D124).
+    app.store.set_admin(&kim, true).await.unwrap();
     let (kim_token, _) =
         sekisho_testkit::people::session_token(&app.store, &app.sb, ISSUER, kim).await;
 

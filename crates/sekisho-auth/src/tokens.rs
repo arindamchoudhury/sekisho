@@ -23,7 +23,7 @@ use crate::AuthState;
 use crate::clients::{self, AUTHORIZATION_CODE, Client, DEVICE_CODE, REFRESH_TOKEN};
 use crate::device;
 use crate::oauth::{Params, s256};
-use crate::revalidate::{Revalidation, revalidate_session};
+use crate::revalidate::{Revalidation, record, revalidate_session};
 
 /// An RFC 6749 error answer.
 pub(crate) fn oauth_error(status: StatusCode, error: &str, description: Option<&str>) -> Response {
@@ -278,8 +278,8 @@ async fn refresh(state: &AuthState, client: &Client, params: &Params) -> Respons
     if let Err(no_key) = signing_key(state, state.now()).await {
         return no_key.answer();
     }
-    let mut lock = match revalidate_session(state, lock).await {
-        Ok(lock) => lock,
+    let (mut lock, identity) = match revalidate_session(state, lock).await {
+        Ok(confirmed) => confirmed,
         Err(Revalidation::Refused | Revalidation::Disabled) => return invalid_grant(),
         Err(Revalidation::Unreachable | Revalidation::Unavailable) => {
             return unavailable("the identity provider can't be asked right now; try again");
@@ -301,6 +301,14 @@ async fn refresh(state: &AuthState, client: &Client, params: &Params) -> Respons
     };
     if let Err(e) = lock.commit().await {
         return server_error(&e);
+    }
+    // Only now, with the session's row let go: storing who Dex confirmed
+    // locks the person's row. A person disabled or refused meanwhile has had
+    // this session ended.
+    match record(state, session.user_id, identity).await {
+        Ok(()) => {}
+        Err(Revalidation::Refused | Revalidation::Disabled) => return invalid_grant(),
+        Err(_) => return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", None),
     }
     tokens(
         state,

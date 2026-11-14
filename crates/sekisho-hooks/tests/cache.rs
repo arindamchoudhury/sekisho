@@ -15,7 +15,7 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
     };
@@ -256,10 +256,10 @@ async fn the_cache_holds_people_environments_and_published_keys() {
     let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
     assert_eq!(cache.issuer(), ISSUER);
     let user = cache.user(&alice).expect("alice");
-    assert!(user.access.groups.contains("eng") && !user.admin_mark);
+    assert!(user.access.groups.contains("github/eng") && !user.admin_mark);
     assert!(cache.user(&boss).unwrap().admin_mark);
     let environment = cache.environment(&data).expect("data-team");
-    assert_eq!(environment.access_groups, ["eng"]);
+    assert_eq!(environment.access_groups, ["github/eng"]);
     assert!(environment.owner.is_some());
     let published = store
         .published_keys(OffsetDateTime::now_utc())

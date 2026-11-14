@@ -58,7 +58,7 @@ async fn env(store: &Store, name: &str) -> EnvName {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
-        access_groups: vec!["eng".into()],
+        access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
     };
@@ -689,7 +689,7 @@ async fn a_new_users_first_request_is_found() {
     // they signed in on another replica a moment ago.
     let dave: Uuid = sqlx::query_scalar(
         "insert into users (email, dex_subject, idp_groups) \
-         values ('dave@example.com', 'test|dave', '{eng}') returning id",
+         values ('dave@example.com', 'test|dave', '{github/eng}') returning id",
     )
     .fetch_one(app.store.pool())
     .await

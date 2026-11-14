@@ -4,12 +4,13 @@
 //!
 //! Like Dex v2.46.1 it keeps one refresh token per person (a second sign-in
 //! replaces the first) and rotates it on every refresh, so a token shown
-//! twice is refused the second time. Like a server, it finishes a refresh it
-//! was shown even when the caller stops waiting for the answer.
+//! twice is refused the second time, unless within the reuse interval (off
+//! by default). Like a server, it finishes a refresh it was shown even when
+//! the caller stops waiting for the answer.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -35,6 +36,12 @@ struct Inner {
     /// Refreshes of these subjects fail this way.
     refresh_failures: HashMap<String, DexError>,
     refresh_delay: Duration,
+    /// Dex's `reuseInterval`.
+    reuse_interval: Duration,
+    /// Each rotated-away token, the token it was rotated to, and when.
+    obsolete: HashMap<String, (String, Instant)>,
+    /// How many more refreshes lose their answer.
+    lost_answers: u32,
     sign_in_delay: Duration,
     sign_in_failure: Option<DexError>,
     grpc_failure: Option<DexError>,
@@ -57,16 +64,31 @@ impl Inner {
     }
 }
 
-/// Replays `refresh_token`: refused unless it is its subject's live token;
-/// otherwise rotated, unless a failure is set for the subject.
+/// Replays `refresh_token`: refused unless it is its subject's live token,
+/// or was rotated away within the reuse interval (which gives back the live
+/// token, unrotated, as Dex does without asking the connector); otherwise
+/// rotated, unless a failure is set for the subject.
 fn refresh_now(inner: &mut Inner, refresh_token: &str) -> Result<DexIdentity, DexError> {
-    let subject = inner.tokens.get(refresh_token).cloned().ok_or_else(|| {
-        DexError::Refused(
-            "invalid_grant: Refresh token is invalid or has already been claimed by \
+    let reused = inner
+        .obsolete
+        .get(refresh_token)
+        .filter(|(live, at)| {
+            !inner.reuse_interval.is_zero()
+                && at.elapsed() <= inner.reuse_interval
+                && inner.tokens.contains_key(live)
+        })
+        .map(|(live, _)| live.clone());
+    let subject = inner
+        .tokens
+        .get(reused.as_deref().unwrap_or(refresh_token))
+        .cloned()
+        .ok_or_else(|| {
+            DexError::Refused(
+                "invalid_grant: Refresh token is invalid or has already been claimed by \
                  another client."
-                .to_owned(),
-        )
-    })?;
+                    .to_owned(),
+            )
+        })?;
     if let Some(e) = inner.refresh_failures.get(&subject) {
         return Err(e.clone());
     }
@@ -75,8 +97,23 @@ fn refresh_now(inner: &mut Inner, refresh_token: &str) -> Result<DexIdentity, De
         .get(&subject)
         .cloned()
         .expect("a live token's subject has signed in");
-    inner.tokens.remove(refresh_token);
-    let token = inner.mint(&subject);
+    let token = match reused {
+        Some(live) => live,
+        None => {
+            inner.tokens.remove(refresh_token);
+            let token = inner.mint(&subject);
+            inner
+                .obsolete
+                .insert(refresh_token.to_owned(), (token.clone(), Instant::now()));
+            token
+        }
+    };
+    if inner.lost_answers > 0 {
+        inner.lost_answers -= 1;
+        return Err(DexError::Unreachable(
+            "token endpoint: the connection closed before the answer".to_owned(),
+        ));
+    }
     Ok(DexIdentity {
         refresh_token: Some(token),
         ..who
@@ -122,6 +159,19 @@ impl FakeDex {
     /// Every refresh waits this long before it answers.
     pub fn delay_refresh(&self, delay: Duration) {
         self.inner().refresh_delay = delay;
+    }
+
+    /// Like Dex's `reuseInterval`: for this long after a rotation, the old
+    /// token gives back the new one. Zero, the default, turns it off.
+    pub fn reuse_interval(&self, interval: Duration) {
+        self.inner().reuse_interval = interval;
+    }
+
+    /// The next `n` refreshes do their work but lose their answer, as when
+    /// the connection drops after Dex has rotated the token: the caller gets
+    /// [`DexError::Unreachable`].
+    pub fn lose_refresh_answers(&self, n: u32) {
+        self.inner().lost_answers = n;
     }
 
     /// Every code exchange takes this long to answer, after Dex has made the
