@@ -35,6 +35,11 @@ Global Constraints, Review Focus, test-first tasks and self-review.
      runs `pin-versions.sh --lock --since HEAD` before its commit and applies
      the `cargo update --precise` pins it prints. Say so in Global
      Constraints.
+   - **ACH and Obot:** for each feature the plan builds, check how both
+     [ACH](https://github.com/ackstorm/ach) and
+     [Obot](https://github.com/obot-platform/obot) do it, as `.claude/CLAUDE.md`
+     rule 7 says: fetch first, then read both. Say in the plan what each does
+     and where Sekisho differs, and why.
 3. Reuse plan 1's names rather than inventing parallel ones:
    - crates `sekisho-*`, binary `sekisho`, `SEKISHO_*` variables, `sek_`
      tokens;
@@ -64,6 +69,8 @@ Global Constraints, Review Focus, test-first tasks and self-review.
 ## Common mistakes
 
 - Writing agentgateway config from memory instead of validating it.
+- Checking only one of ACH and Obot, or a checkout that wasn't fetched
+  first.
 - Picking a crate version less than 14 days old.
 - Checking only direct dependencies: plan 1's first lockfile took `syn` and
   `itoa` versions published that day.
