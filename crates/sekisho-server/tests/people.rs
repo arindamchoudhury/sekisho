@@ -738,6 +738,8 @@ async fn connectors_api_never_returns_config() {
         ("local", "github", json!({}), "id"),
         ("Git-Hub", "github", json!({}), "id"),
         ("keystone", "keystone", json!({}), "type"),
+        // Release 1 has no SAML (D123): Dex v2.46.1 can't refresh a SAML sign-in.
+        ("corp-saml", "saml", json!({}), "type"),
         ("github", "github", json!("not an object"), "config"),
     ] {
         let r = app

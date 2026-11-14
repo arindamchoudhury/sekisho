@@ -15,16 +15,10 @@ use super::{ApiError, ApiJson, Fields};
 use crate::app::AppState;
 use crate::auth::Caller;
 
-/// The connector types Sekisho supports (design 9.1).
-pub const TYPES: [&str; 7] = [
-    "github",
-    "gitlab",
-    "google",
-    "microsoft",
-    "ldap",
-    "saml",
-    "oidc",
-];
+/// The connector types Sekisho supports (design 9.1). No SAML in release 1
+/// (D123): Dex v2.46.1 gives a SAML sign-in no refresh token, so it couldn't
+/// be checked again; identity providers connect through OIDC instead.
+pub const TYPES: [&str; 6] = ["github", "gitlab", "google", "microsoft", "ldap", "oidc"];
 const NAME_MAX_CHARS: usize = 100;
 
 #[derive(Serialize)]

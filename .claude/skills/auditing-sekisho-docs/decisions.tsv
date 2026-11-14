@@ -121,3 +121,4 @@ D119	Models agentgateway's catalog marks deprecated are shown and warned about i
 D120	From plan 1d the model routes are one llm block: environment from the path, an authorization rule admits only POST to model endpoints, charges read the environment from request metadata, environment names lowercase letters, digits and hyphens (our call)	request metadata	design plans
 D121	Local account passwords: at least 15 characters and at most 72 bytes, refused when easy to guess, no composition rules (decided 2026-11-14, NIST SP 800-63B-4)	at least 15 characters|15 characters to 72 bytes	design plan2
 D122	zxcvbn judges local account passwords: its top score (more than 10^10 guesses), with the account's email and name and Sekisho's name as context (our call)	zxcvbn	design plan2
+D123	No SAML in release 1: Dex v2.46.1 gives a SAML sign-in no refresh token, so identity providers connect through OIDC (decided 2026-11-14)	no .?SAML	design plan2 README comparison
