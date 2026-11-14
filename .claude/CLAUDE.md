@@ -51,17 +51,22 @@ truth. Where a maintainer has them:
    in the same change. Then run the `auditing-sekisho-docs` skill.
 6. Mark something **(decided)** only when the user decided it. Choices Claude
    makes are **(our call)**.
-7. **Check ACH and Obot, both, before settling a choice** in a design, a plan
-   or the code (an API shape, a security detail, how a feature behaves):
+7. **Learn from ACH and Obot; don't copy them.** Before settling a choice in
+   a design, a plan or the code (an API shape, a security detail, how a
+   feature behaves):
    - fetch the latest of [ACH](https://github.com/ackstorm/ach) and
      [Obot](https://github.com/obot-platform/obot) first. Use the local
      clones `CLAUDE.local.md` names, if any (`git fetch`, then
      `git pull --ff-only` when clean); otherwise `git clone`;
-   - read both and say what each does, at which commit, and where Sekisho
-     differs and why. One of them, or a checkout that wasn't fetched, isn't
-     enough;
-   - only read their code, never run it. Their code is evidence; decisions
-     still follow rules 5 and 6.
+   - read how both do it, at which commit: what their users expect, and
+     what went wrong for them. One of them, or a checkout that wasn't
+     fetched, isn't enough;
+   - then choose the best design on its own merits: the RFCs and standards
+     that apply, security, simplicity, what Sekisho's users need. Their way
+     is evidence, not a template. Improve on both where they fall short, and
+     say where Sekisho differs and why;
+   - only read their code, never run it. Decisions still follow rules 5
+     and 6.
 
 ## Names and conventions
 
