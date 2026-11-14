@@ -10,8 +10,14 @@ highways, where guards checked each traveller's papers and decided who passed
 and what they carried.
 
 > **Status:** release 1 is being built, and isn't ready to use yet. Its first
-> part, the model gateway, works and is tested end to end against agentgateway
-> v1.7.0: an admin API for providers, models, environments, environment keys
+> two parts work and are tested end to end against agentgateway v1.7.0 and
+> Dex v2.46.1. **Sign-in:** people sign in through Dex, with local accounts
+> (the first admin is made on `/setup`) or an identity provider's connector,
+> and get one-hour session tokens that work on the gateway like environment
+> keys; admins manage people, groups, local accounts and connectors through
+> the API; offboarding ends a person's sessions and running streams, revokes
+> their keys and hands what they own to a new owner, in one step. **The model
+> gateway:** an admin API for providers, models, environments, environment keys
 > and dollar budgets; gateway configuration live in under a second; key and
 > budget checks on every request, with spend recorded at the admin's prices
 > (or else the gateway's catalog price) and an estimate charged for streams
@@ -19,8 +25,8 @@ and what they carried.
 > revoked. Providers can be Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure
 > (Azure OpenAI, or Claude on Foundry) or any OpenAI-compatible endpoint,
 > with an API key, AWS access keys, an Entra service principal or the
-> gateway's own cloud identity. Sign-in, the web UI, the CLI, MCP servers and
-> catalogs come next. Everything below describes what release 1 will do.
+> gateway's own cloud identity. The web UI, the CLI, MCP servers and catalogs
+> come next. Everything below describes what release 1 will do.
 
 ## What release 1 will do
 
@@ -101,8 +107,9 @@ and what they carried.
   `sekisho status` also lists MCP servers and plugin marketplaces that Sekisho
   didn't install. That report stays on the developer's machine.
 - **Sign-in** with local accounts, GitHub, GitLab, Google, Microsoft Entra,
-  LDAP and Active Directory, SAML or any OIDC provider. Several can be on at
-  once. Offboarding a person ends their sessions, revokes their keys and hands
+  LDAP and Active Directory, or any OIDC provider. Several can be on at once.
+  There is no SAML: Dex can't refresh a SAML sign-in, so identity providers
+  connect through OIDC, which they all offer. Offboarding a person ends their sessions, revokes their keys and hands
   what they own to a new owner, in one step.
 - **Audit** of model calls, MCP tool calls, access decisions and admin changes,
   with filters and CSV or JSON export. Prompts and responses are not recorded.
@@ -132,6 +139,37 @@ claude
 
 CI and containers set `SEKISHO_URL` and `SEKISHO_KEY` (an environment key)
 instead of signing in. The CLI runs on macOS, Linux and Windows.
+
+### Signing in before the CLI exists
+
+Until the CLI arrives, a token comes from the device flow (RFC 8628), which
+needs only `curl` and a browser. First ask for a code:
+
+```bash
+curl -s -d client_id=sekisho-cli https://sekisho.example.com/oauth/device_authorization
+```
+
+Open `verification_uri_complete` from the answer, check that the code
+matches, press *Continue* and sign in. Then fetch the tokens with the
+answer's `device_code`:
+
+```bash
+curl -s -d client_id=sekisho-cli -d grant_type=urn:ietf:params:oauth:grant-type:device_code -d device_code=DEVICE_CODE https://sekisho.example.com/oauth/token
+```
+
+The access token works for an hour as a bearer token, on the gateway's
+environment routes (`/env/<environment>/...`) and on Sekisho's API. The
+refresh token gets a new one:
+
+```bash
+curl -s -d client_id=sekisho-cli -d grant_type=refresh_token -d refresh_token=REFRESH_TOKEN https://sekisho.example.com/oauth/token
+```
+
+Each refresh asks the identity provider again, through Dex, for local
+accounts and for GitHub, GitLab, Google, Microsoft, LDAP and OIDC sign-ins.
+Dex v2.46.1 reports a provider's refusal as a failure of its own, which
+Sekisho treats as Dex being unavailable rather than ending sessions, so
+remove someone who leaves by offboarding them in Sekisho.
 
 ## How it works
 

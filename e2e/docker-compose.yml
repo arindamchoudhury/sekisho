@@ -27,6 +27,40 @@ services:
       interval: 1s
       retries: 30
 
+  # Dex keeps its data in a database of its own on the same server.
+  dex-db:
+    image: postgres:18
+    environment:
+      PGPASSWORD: sekisho
+    command:
+      - sh
+      - -c
+      - >-
+        psql -h postgres -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'dex'" | grep -q 1
+        || psql -h postgres -U postgres -c 'CREATE DATABASE dex'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.46.1
+    command: ["dex", "serve", "/etc/dex/sekisho.yaml"]
+    environment:
+      # Sekisho manages connectors through the API; sessions stay off.
+      DEX_API_CONNECTORS_CRUD: "true"
+    volumes:
+      - ./dex.yaml:/etc/dex/sekisho.yaml:ro
+    # Browsers reach the issuer here; the gRPC API (5557) stays private.
+    ports:
+      - "127.0.0.1:5556:5556"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5556/dex/.well-known/openid-configuration"]
+      interval: 1s
+      retries: 60
+    depends_on:
+      dex-db:
+        condition: service_completed_successfully
+
   migrate:
     <<: *sekisho
     command: ["migrate"]
@@ -48,11 +82,19 @@ services:
       SEKISHO_HOOKS_GRPC_TARGET: sekisho:9081
       # Adds the hook-free /bare/openai route for the latency test.
       SEKISHO_E2E_BARE_ROUTE: "1"
+      # Browsers (the tests) reach Sekisho and Dex on the published ports;
+      # Sekisho reaches Dex on the private network.
+      SEKISHO_PUBLIC_URL: http://127.0.0.1:18080
+      SEKISHO_DEX_ISSUER: http://127.0.0.1:5556/dex
+      SEKISHO_DEX_URL: http://dex:5556
+      SEKISHO_DEX_GRPC: dex:5557
     ports:
       - "127.0.0.1:18080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      dex:
+        condition: service_healthy
 
   gateway-agent:
     <<: *sekisho

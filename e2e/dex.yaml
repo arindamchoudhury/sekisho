@@ -1,0 +1,28 @@
+# Dex for the end-to-end stack: local passwords, and the management API on
+# 5557 (not published). Sekisho registers its own client through gRPC, so
+# this file holds no Sekisho secret.
+#
+# Storage is PostgreSQL, in its own database on the stack's server: Dex
+# v2.46.1's memory storage deadlocks when a local account's refresh token
+# is rotated.
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: dex
+    user: postgres
+    password: sekisho
+    ssl:
+      mode: disable
+web:
+  http: 0.0.0.0:5556
+grpc:
+  addr: 0.0.0.0:5557
+enablePasswordDB: true
+oauth2:
+  skipApprovalScreen: true
+expiry:
+  refreshTokens:
+    reuseInterval: 3s

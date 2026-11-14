@@ -58,6 +58,7 @@ field on purpose to prove the check bites.
 | `SESSION_KEY` | Must be set, or agentgateway tries to write a generated key into its config file |
 | Docker DNS | Keeps a restarted upstream's old IP (503) until agentgateway restarts (#2810) |
 | `backendAuth.jwtSign` | Fixed claims only. Per-user tokens need token exchange to Sekisho |
+| Session tokens and `jwtAuth` | Sekisho's session tokens (EdDSA JWTs) are checked by its `extAuthz` hook, against the keys it publishes, with the session and the person read live; `jwtAuth` stays off on model routes. In v1.7.0 `jwtAuth`'s `optional` mode refuses a `sek_` key sent in the same header, `permissive` adds no check, and by default it removes the token from the request, so the stream hook couldn't read it. Measured end to end in one run: hooks with a session token add about what they add with a key (medians 8.2 ms without hooks and 11.1 ms with a session token; 8.0 ms and 10.6 ms with a key) |
 | Overhead | Hooks add about 1.3 ms per request; with `ai.tokenize` on, hooks and prompt counting together add about 2.5–3 ms (medians 8.7–12.0 ms without, 11.4–15.0 ms with, over four runs in Docker Desktop) |
 
 ## Where to look upstream (at the pinned tag)
