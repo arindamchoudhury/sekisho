@@ -70,9 +70,67 @@ pub fn error(status: StatusCode, title: &str, message: &str) -> Response {
     page(status, title, &format!("<p>{}</p>", escape(message)))
 }
 
+/// A cookie's name: over HTTPS with the `__Host-` prefix, so only Sekisho's
+/// own host can set it (never a sibling subdomain).
+pub fn cookie_name(base: &str, https: bool) -> String {
+    if https {
+        format!("__Host-{base}")
+    } else {
+        base.to_owned()
+    }
+}
+
+/// A `Set-Cookie` value: `HttpOnly`, `Path=/`, this `SameSite`, and `Secure`
+/// over HTTPS. A `max_age` of 0 deletes the cookie.
+pub fn set_cookie(
+    name: &str,
+    value: &str,
+    same_site: &str,
+    max_age: i64,
+    https: bool,
+) -> HeaderValue {
+    let secure = if https { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite={same_site}{secure}"
+    ))
+    .expect("cookie names and values Sekisho makes are header-safe")
+}
+
+/// The value of the request's cookie `name`, if it sent one.
+pub fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(n, _)| *n == name)
+        .map(|(_, value)| value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cookies_are_read_and_written() {
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, HeaderValue::from_static("a=1; b=two"));
+        headers.append(header::COOKIE, HeaderValue::from_static("c=3"));
+        assert_eq!(cookie(&headers, "b"), Some("two"));
+        assert_eq!(cookie(&headers, "c"), Some("3"));
+        assert_eq!(cookie(&headers, "d"), None);
+        assert_eq!(cookie_name("x", true), "__Host-x");
+        assert_eq!(cookie_name("x", false), "x");
+        assert_eq!(
+            set_cookie("__Host-x", "v", "Lax", 600, true),
+            "__Host-x=v; Path=/; Max-Age=600; HttpOnly; SameSite=Lax; Secure"
+        );
+        assert_eq!(
+            set_cookie("x", "", "Strict", 0, false),
+            "x=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"
+        );
+    }
 
     #[test]
     fn values_are_escaped() {

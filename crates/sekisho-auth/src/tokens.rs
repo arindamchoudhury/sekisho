@@ -1,5 +1,5 @@
-//! The token endpoint (authorisation codes and refresh tokens) and RFC 7009
-//! revocation.
+//! The token endpoint (authorisation codes, device codes and refresh tokens)
+//! and RFC 7009 revocation.
 //!
 //! Every refresh re-checks the person at Dex while the session's row is
 //! locked, then rotates the refresh token. Errors are RFC 6749 JSON, never
@@ -20,7 +20,8 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::AuthState;
-use crate::clients::{self, AUTHORIZATION_CODE, Client, REFRESH_TOKEN};
+use crate::clients::{self, AUTHORIZATION_CODE, Client, DEVICE_CODE, REFRESH_TOKEN};
+use crate::device;
 use crate::oauth::{Params, s256};
 use crate::revalidate::{Revalidation, revalidate_session};
 
@@ -33,7 +34,7 @@ pub(crate) fn oauth_error(status: StatusCode, error: &str, description: Option<&
     no_store(status, body)
 }
 
-fn no_store(status: StatusCode, body: Value) -> Response {
+pub(crate) fn no_store(status: StatusCode, body: Value) -> Response {
     (
         status,
         [
@@ -45,7 +46,7 @@ fn no_store(status: StatusCode, body: Value) -> Response {
         .into_response()
 }
 
-fn invalid_request(description: &str) -> Response {
+pub(crate) fn invalid_request(description: &str) -> Response {
     oauth_error(
         StatusCode::BAD_REQUEST,
         "invalid_request",
@@ -53,11 +54,11 @@ fn invalid_request(description: &str) -> Response {
     )
 }
 
-fn invalid_grant() -> Response {
+pub(crate) fn invalid_grant() -> Response {
     oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", None)
 }
 
-fn server_error(e: &StoreError) -> Response {
+pub(crate) fn server_error(e: &StoreError) -> Response {
     error!(error = %e, "the store failed at the token endpoint");
     oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", None)
 }
@@ -71,7 +72,7 @@ fn unavailable(description: &str) -> Response {
 }
 
 /// The request's form parameters, or the `invalid_request` description.
-fn form(headers: &HeaderMap, body: &[u8]) -> Result<Params, String> {
+pub(crate) fn form(headers: &HeaderMap, body: &[u8]) -> Result<Params, String> {
     let is_form = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -104,14 +105,14 @@ fn grant_holds(grant: &CodeGrant, client_id: &str, redirect_uri: &str, verifier:
 }
 
 /// Why no key can sign a token now.
-enum NoKey {
+pub(crate) enum NoKey {
     /// None has been made yet: the server makes one before it listens.
     NotYet,
     Failed(StoreError),
 }
 
 impl NoKey {
-    fn answer(&self) -> Response {
+    pub(crate) fn answer(&self) -> Response {
         match self {
             Self::NotYet => {
                 error!("no signing key signs yet");
@@ -123,7 +124,10 @@ impl NoKey {
 }
 
 /// The key that signs at `now`.
-async fn signing_key(state: &AuthState, now: OffsetDateTime) -> Result<SigningKey, NoKey> {
+pub(crate) async fn signing_key(
+    state: &AuthState,
+    now: OffsetDateTime,
+) -> Result<SigningKey, NoKey> {
     match state.store.active_signing_key(&state.secret_box, now).await {
         Ok(Some(key)) => Ok(key),
         Ok(None) => Err(NoKey::NotYet),
@@ -133,7 +137,7 @@ async fn signing_key(state: &AuthState, now: OffsetDateTime) -> Result<SigningKe
 
 /// The token answer: a new access token for the session, and its refresh
 /// token.
-fn tokens(
+pub(crate) fn tokens(
     state: &AuthState,
     key: &SigningKey,
     user: Uuid,
@@ -182,16 +186,16 @@ pub(crate) async fn token(
     let Some(grant_type) = params.get("grant_type") else {
         return invalid_request("grant_type is missing");
     };
-    if !matches!(grant_type, AUTHORIZATION_CODE | REFRESH_TOKEN) {
+    if !matches!(grant_type, AUTHORIZATION_CODE | REFRESH_TOKEN | DEVICE_CODE) {
         return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type", None);
     }
     if !client.allows(grant_type) {
         return oauth_error(StatusCode::BAD_REQUEST, "unauthorized_client", None);
     }
-    if grant_type == AUTHORIZATION_CODE {
-        redeem_code(&state, client, &params).await
-    } else {
-        refresh(&state, client, &params).await
+    match grant_type {
+        AUTHORIZATION_CODE => redeem_code(&state, client, &params).await,
+        DEVICE_CODE => device::redeem(&state, client, &params).await,
+        _ => refresh(&state, client, &params).await,
     }
 }
 

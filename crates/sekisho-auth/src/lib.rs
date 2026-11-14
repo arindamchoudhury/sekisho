@@ -2,12 +2,13 @@
 //! Dex, reached through [`dex`], is its only upstream identity provider.
 //!
 //! [`router`] serves RFC 8414 metadata, the signing keys, the authorisation
-//! code flow with PKCE (every sign-in goes through Dex), the token endpoint
-//! (codes and refresh tokens, each refresh re-checked at Dex) and RFC 7009
-//! revocation. [`sweep`] re-checks the owners of environment keys at Dex
-//! once a day.
+//! code flow with PKCE and the RFC 8628 device flow (every sign-in goes
+//! through Dex), the token endpoint (codes, device codes and refresh tokens,
+//! each refresh re-checked at Dex) and RFC 7009 revocation. [`sweep`]
+//! re-checks the owners of environment keys at Dex once a day.
 
 pub mod clients;
+mod device;
 pub mod dex;
 mod oauth;
 pub mod pages;
@@ -57,6 +58,12 @@ impl AuthState {
     pub(crate) fn now(&self) -> OffsetDateTime {
         (self.clock)()
     }
+
+    /// Whether browsers reach Sekisho over HTTPS, so its cookies are
+    /// `Secure` and `__Host-` prefixed.
+    pub(crate) fn https(&self) -> bool {
+        self.public_url.scheme() == "https"
+    }
 }
 
 /// The sign-in routes.
@@ -69,6 +76,15 @@ pub fn router(state: AuthState) -> Router {
         .route("/oauth/jwks", get(oauth::jwks))
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/callback", get(oauth::callback))
+        .route(
+            "/oauth/device_authorization",
+            post(device::device_authorization),
+        )
+        .route(
+            "/oauth/device",
+            get(device::form).post(device::confirmation),
+        )
+        .route("/oauth/device/confirm", post(device::decide))
         .route("/oauth/token", post(tokens::token))
         .route("/oauth/revoke", post(tokens::revoke))
         .with_state(state)

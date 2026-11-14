@@ -4,17 +4,25 @@
 //! `/oauth/authorize` checks the client and its redirect URI before anything
 //! else: until both check out, errors are pages, never redirects. Every
 //! redirect back to a client carries `iss` (RFC 9207).
+//!
+//! Every sign-in at Dex (this flow's, and the device flow's) is bound to the
+//! browser that started it: a cookie whose SHA-256 is the Dex `nonce`
+//! (OpenID Connect Core section 15.5.2). Someone who forwards Dex's link
+//! can't have another person's sign-in finish as their own.
 
 use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{RawQuery, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use sekisho_core::keys::random_secret;
-use sekisho_store::{AuthFlow, CodeGrant, NewAuthRequest, SignInOutcome};
+use sekisho_core::keys::{hash_secret, random_secret, verify_secret};
+use sekisho_store::{
+    AUTH_REQUEST_LIFETIME, AuthFlow, AuthRequest, CodeGrant, NewAuthRequest, SignInOutcome,
+    StoreError,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::time::timeout;
@@ -25,8 +33,8 @@ use uuid::Uuid;
 use crate::AuthState;
 use crate::clients::{self, AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use crate::dex::{DEX_TIMEOUT, DexError};
-use crate::pages;
 use crate::revalidate::sign_in_of;
+use crate::{device, pages};
 
 /// The longest client `state` Sekisho keeps for a sign-in.
 const MAX_CLIENT_STATE: usize = 1024;
@@ -72,7 +80,7 @@ fn is_challenge(s: &str) -> bool {
 }
 
 /// A `302` to `location`, never cached, sending no referrer on.
-fn redirect(location: &str) -> Response {
+pub(crate) fn redirect(location: &str) -> Response {
     let mut response = StatusCode::FOUND.into_response();
     let headers = response.headers_mut();
     match HeaderValue::from_str(location) {
@@ -220,30 +228,13 @@ pub(crate) async fn authorize(
         return deny("invalid_request", "state is too long");
     }
 
-    // Sekisho's own PKCE and nonce towards Dex.
-    let dex_verifier = random_secret();
-    let nonce = random_secret();
-    let request = NewAuthRequest {
-        client_id: client.id.to_owned(),
-        flow: AuthFlow::Code {
-            redirect_uri: redirect_uri.to_owned(),
-            client_state: client_state.map(str::to_owned),
-            code_challenge: code_challenge.to_owned(),
-        },
-        dex_verifier: dex_verifier.clone(),
-        nonce: nonce.clone(),
+    let flow = AuthFlow::Code {
+        redirect_uri: redirect_uri.to_owned(),
+        client_state: client_state.map(str::to_owned),
+        code_challenge: code_challenge.to_owned(),
     };
-    match state
-        .store
-        .save_auth_request(&state.secret_box, request, state.now())
-        .await
-    {
-        Ok(dex_state) => redirect(
-            state
-                .dex
-                .authorize_url(&dex_state, &nonce, &s256(&dex_verifier))
-                .as_str(),
-        ),
+    match to_dex(&state, client.id, flow).await {
+        Ok(response) => response,
         Err(e) => {
             error!(error = %e, "couldn't keep a sign-in request");
             deny("server_error", "Sekisho couldn't start the sign-in")
@@ -251,9 +242,75 @@ pub(crate) async fn authorize(
     }
 }
 
+/// The cookie that binds a sign-in to its browser, named after its Dex
+/// `state` so sign-ins in several tabs don't clash.
+fn binding_cookie(state: &AuthState, dex_state: &str) -> String {
+    let id: String = hash_secret(dex_state)[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    pages::cookie_name(&format!("sekisho_signin_{id}"), state.https())
+}
+
+/// Starts the sign-in at Dex for `flow`: keeps the request, binds it to this
+/// browser, and sends the browser to Dex with Sekisho's own PKCE and nonce.
+pub(crate) async fn to_dex(
+    state: &AuthState,
+    client_id: &str,
+    flow: AuthFlow,
+) -> Result<Response, StoreError> {
+    let binding = random_secret();
+    let nonce = s256(&binding);
+    let dex_verifier = random_secret();
+    let request = NewAuthRequest {
+        client_id: client_id.to_owned(),
+        flow,
+        dex_verifier: dex_verifier.clone(),
+        nonce: nonce.clone(),
+    };
+    let dex_state = state
+        .store
+        .save_auth_request(&state.secret_box, request, state.now())
+        .await?;
+    let mut response = redirect(
+        state
+            .dex
+            .authorize_url(&dex_state, &nonce, &s256(&dex_verifier))
+            .as_str(),
+    );
+    // Lax: Dex sends the browser back with a top-level GET from its own site.
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        pages::set_cookie(
+            &binding_cookie(state, &dex_state),
+            &binding,
+            "Lax",
+            AUTH_REQUEST_LIFETIME.whole_seconds(),
+            state.https(),
+        ),
+    );
+    Ok(response)
+}
+
+/// Whether this browser holds the cookie the sign-in with this `nonce` set.
+fn bound(headers: &HeaderMap, cookie: &str, nonce: &str) -> bool {
+    let Some(binding) = pages::cookie(headers, cookie) else {
+        return false;
+    };
+    let Some(expected) = URL_SAFE_NO_PAD
+        .decode(nonce)
+        .ok()
+        .and_then(|n| <[u8; 32]>::try_from(n).ok())
+    else {
+        return false;
+    };
+    verify_secret(binding, &expected)
+}
+
 /// Dex's answer to a sign-in.
 pub(crate) async fn callback(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
     let Ok(params) = Params::parse(query.unwrap_or_default().as_bytes()) else {
@@ -262,6 +319,7 @@ pub(crate) async fn callback(
     let Some(dex_state) = params.get("state") else {
         return bad_request("The answer from the sign-in page was incomplete. Start again.");
     };
+    // Taken first: a forwarded link is used up whoever follows it.
     let request = match state
         .store
         .take_auth_request(&state.secret_box, dex_state, state.now())
@@ -282,21 +340,50 @@ pub(crate) async fn callback(
             );
         }
     };
-    let AuthFlow::Code {
-        redirect_uri,
-        client_state,
-        code_challenge,
-    } = request.flow
-    else {
-        return bad_request("Device sign-in isn't available yet.");
+    let cookie = binding_cookie(&state, dex_state);
+    let mut response = finish(&state, &headers, &cookie, &params, request).await;
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        pages::set_cookie(&cookie, "", "Lax", 0, state.https()),
+    );
+    response
+}
+
+/// The rest of the callback, once the sign-in request is taken.
+async fn finish(
+    state: &AuthState,
+    headers: &HeaderMap,
+    cookie: &str,
+    params: &Params,
+    request: AuthRequest,
+) -> Response {
+    if !bound(headers, cookie, &request.nonce) {
+        warn!(client = %request.client_id, "a sign-in came back to a browser that didn't start it");
+        return bad_request(
+            "This sign-in was started in another browser, or its link was forwarded. Start \
+             again from your application or terminal, in this browser.",
+        );
+    }
+    let dex_code = if params.get("error").is_some() {
+        info!("Dex answered a sign-in with an error");
+        None
+    } else {
+        params.get("code")
+    };
+    let (redirect_uri, client_state, code_challenge) = match request.flow {
+        AuthFlow::Code {
+            redirect_uri,
+            client_state,
+            code_challenge,
+        } => (redirect_uri, client_state, code_challenge),
+        AuthFlow::Device(found) => {
+            return device::finish(state, dex_code, request.dex_verifier, request.nonce, found)
+                .await;
+        }
     };
     let back =
-        |params: &[(&str, &str)]| to_client(&state, &redirect_uri, params, client_state.as_deref());
-    if params.get("error").is_some() {
-        info!("Dex answered a sign-in with an error");
-        return back(&[("error", "access_denied")]);
-    }
-    let Some(dex_code) = params.get("code") else {
+        |params: &[(&str, &str)]| to_client(state, &redirect_uri, params, client_state.as_deref());
+    let Some(dex_code) = dex_code else {
         return back(&[("error", "access_denied")]);
     };
     // Dex keeps one refresh token per person, and this exchange replaces it:
@@ -335,8 +422,10 @@ pub(crate) async fn callback(
 }
 
 /// Exchanges Dex's code, and records the person and their Dex token. `Err`
-/// is the OAuth error for the client.
-async fn finish_sign_in(
+/// is the OAuth error for the client. Run it on a task the browser can't
+/// cancel: Dex has replaced the person's refresh token by the time it
+/// answers.
+pub(crate) async fn finish_sign_in(
     state: &AuthState,
     dex_code: &str,
     dex_verifier: &str,

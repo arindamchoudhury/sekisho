@@ -1,6 +1,9 @@
-//! A real Dex v2.46.1 in Docker, and a browser that signs in to it.
+//! A real Dex v2.46.1 in Docker, and a browser that signs in to it; and, in
+//! [`app`], Sekisho's sign-in routes in process with a Dex in memory.
 
 #![allow(dead_code)]
+
+pub mod app;
 
 use std::ops::Deref;
 use std::time::Duration;
