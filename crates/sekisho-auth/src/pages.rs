@@ -70,6 +70,24 @@ pub fn error(status: StatusCode, title: &str, message: &str) -> Response {
     page(status, title, &format!("<p>{}</p>", escape(message)))
 }
 
+/// A labelled form field. `value` is escaped here; give secrets none.
+pub fn field(label: &str, name: &str, kind: &str, value: &str, autocomplete: &str) -> String {
+    format!(
+        "<p><label for=\"{name}\">{label}</label><br><input id=\"{name}\" name=\"{name}\" \
+         type=\"{kind}\" value=\"{value}\" autocomplete=\"{autocomplete}\" required></p>\n",
+        label = escape(label),
+        value = escape(value),
+    )
+}
+
+/// What went wrong with a form, above it; `message` is escaped here.
+pub fn alert(message: &str) -> String {
+    format!(
+        "<p role=\"alert\"><strong>{}</strong></p>\n",
+        escape(message)
+    )
+}
+
 /// A cookie's name: over HTTPS with the `__Host-` prefix, so only Sekisho's
 /// own host can set it (never a sibling subdomain).
 pub fn cookie_name(base: &str, https: bool) -> String {

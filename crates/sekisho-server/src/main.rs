@@ -39,6 +39,14 @@ enum Command {
     Serve,
     /// Apply database migrations (needs SEKISHO_DATABASE_URL).
     Migrate,
+    /// Print a one-time setup link that makes a local admin, for an operator
+    /// who has lost every admin (needs SEKISHO_DATABASE_URL and
+    /// SEKISHO_PUBLIC_URL; asks nothing of Dex).
+    AdminLink {
+        /// The local account's email; the account is made if there is none.
+        #[arg(long)]
+        email: String,
+    },
     /// Run next to agentgateway and keep its config file current (needs
     /// SEKISHO_GATEWAY_TOKEN).
     GatewayAgent {
@@ -59,6 +67,7 @@ async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve => serve().await,
         Command::Migrate => migrate().await,
+        Command::AdminLink { email } => admin_link(&email).await,
         Command::GatewayAgent {
             server,
             config_path,
@@ -207,11 +216,45 @@ async fn gateway_agent(server_url: Url, config_path: PathBuf) -> anyhow::Result<
     Ok(())
 }
 
-async fn migrate() -> anyhow::Result<()> {
-    let url = std::env::var("SEKISHO_DATABASE_URL")
+/// A variable that must be set.
+fn required_env(name: &str) -> anyhow::Result<String> {
+    std::env::var(name)
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .context("SEKISHO_DATABASE_URL is not set")?;
+        .with_context(|| format!("{name} is not set"))
+}
+
+async fn admin_link(email: &str) -> anyhow::Result<()> {
+    let public_url = required_env("SEKISHO_PUBLIC_URL")?;
+    let public_url = Url::parse(&public_url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .context("SEKISHO_PUBLIC_URL is not an http or https URL")?;
+    let store = Store::connect(&required_env("SEKISHO_DATABASE_URL")?)
+        .await
+        .context("connecting to SEKISHO_DATABASE_URL")?;
+    let link =
+        sekisho_auth::local::admin_link(&store, &public_url, email, OffsetDateTime::now_utc())
+            .await
+            .context("making the setup link")?;
+    let expires = link
+        .expires_at
+        .replace_nanosecond(0)
+        .unwrap_or(link.expires_at)
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("formatting the link's expiry")?;
+    // For the operator's eyes only: printed, never logged.
+    println!(
+        "A one-time setup link for {}, which also makes it an admin. It works once, until \
+         {expires}:\n{}",
+        email.trim().to_lowercase(),
+        link.url
+    );
+    Ok(())
+}
+
+async fn migrate() -> anyhow::Result<()> {
+    let url = required_env("SEKISHO_DATABASE_URL")?;
     let store = Store::connect(&url)
         .await
         .context("connecting to SEKISHO_DATABASE_URL")?;

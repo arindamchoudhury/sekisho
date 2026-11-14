@@ -22,6 +22,7 @@ e2e = ["sekisho-store/e2e"]
 anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
+sekisho-auth = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-gateway = { workspace = true }
 sekisho-hooks = { workspace = true }

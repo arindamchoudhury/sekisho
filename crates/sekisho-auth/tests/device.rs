@@ -96,32 +96,6 @@ async fn approve(t: &T, user_code: &str, who: DexIdentity) -> Reply {
         .await
 }
 
-fn assert_page(reply: &Reply, what: &str) {
-    assert!(
-        reply
-            .header(header::CONTENT_TYPE)
-            .is_some_and(|c| c.starts_with("text/html")),
-        "{what}: {:?}",
-        reply.headers
-    );
-    assert_eq!(
-        reply.header(header::CONTENT_SECURITY_POLICY),
-        Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"),
-        "{what}"
-    );
-    assert_eq!(
-        reply.header(header::REFERRER_POLICY),
-        Some("no-referrer"),
-        "{what}"
-    );
-    assert_eq!(
-        reply.header(header::CACHE_CONTROL),
-        Some("no-store"),
-        "{what}"
-    );
-    assert!(!reply.text().contains("<script"), "{what}");
-}
-
 #[tokio::test]
 async fn the_device_flow_issues_a_session() {
     let t = setup().await;

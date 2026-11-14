@@ -5,11 +5,14 @@
 //! code flow with PKCE and the RFC 8628 device flow (every sign-in goes
 //! through Dex), the token endpoint (codes, device codes and refresh tokens,
 //! each refresh re-checked at Dex) and RFC 7009 revocation. [`sweep`]
-//! re-checks the owners of environment keys at Dex once a day.
+//! re-checks the owners of environment keys at Dex once a day. [`local`]
+//! runs local accounts: the first admin on `/setup`, setup links, resets
+//! and `sekisho admin-link`.
 
 pub mod clients;
 mod device;
 pub mod dex;
+pub mod local;
 mod oauth;
 pub mod pages;
 pub mod revalidate;
@@ -85,6 +88,11 @@ pub fn router(state: AuthState) -> Router {
             get(device::form).post(device::confirmation),
         )
         .route("/oauth/device/confirm", post(device::decide))
+        .route("/setup", get(local::setup_page).post(local::first_admin))
+        .route(
+            "/setup/{token}",
+            get(local::link_page).post(local::set_link_password),
+        )
         .route("/oauth/token", post(tokens::token))
         .route("/oauth/revoke", post(tokens::revoke))
         .with_state(state)

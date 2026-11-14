@@ -28,6 +28,8 @@ use uuid::Uuid;
 pub const ISSUER: &str = "https://sekisho.test";
 pub const CLI: &str = "sekisho-cli";
 pub const REDIRECT: &str = "http://127.0.0.1:43123/callback";
+/// What `setup` hashes as `SEKISHO_BOOTSTRAP_TOKEN`.
+pub const BOOTSTRAP: &str = "bootstrap-token";
 
 pub struct T {
     pub app: Router,
@@ -142,7 +144,7 @@ pub async fn setup() -> T {
         dex: dex.clone(),
         cache,
         public_url: Url::parse(ISSUER).unwrap(),
-        bootstrap_sha256: hash_secret("bootstrap-token"),
+        bootstrap_sha256: hash_secret(BOOTSTRAP),
         clock,
     };
     T {
@@ -401,4 +403,32 @@ pub fn tokens(reply: &Reply) -> Tokens {
         access: body["access_token"].as_str().unwrap().to_owned(),
         refresh: body["refresh_token"].as_str().unwrap().to_owned(),
     }
+}
+
+/// An HTML page with the security headers every page carries, and no
+/// script.
+pub fn assert_page(reply: &Reply, what: &str) {
+    assert!(
+        reply
+            .header(header::CONTENT_TYPE)
+            .is_some_and(|c| c.starts_with("text/html")),
+        "{what}: {:?}",
+        reply.headers
+    );
+    assert_eq!(
+        reply.header(header::CONTENT_SECURITY_POLICY),
+        Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"),
+        "{what}"
+    );
+    assert_eq!(
+        reply.header(header::REFERRER_POLICY),
+        Some("no-referrer"),
+        "{what}"
+    );
+    assert_eq!(
+        reply.header(header::CACHE_CONTROL),
+        Some("no-store"),
+        "{what}"
+    );
+    assert!(!reply.text().contains("<script"), "{what}");
 }
