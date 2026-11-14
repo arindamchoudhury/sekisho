@@ -1,30 +1,44 @@
-//! The admin API (`/api/v1`) and the gateway agents' endpoint (`/internal`).
+//! The API (`/api/v1`) and the gateway agents' endpoint (`/internal`).
 //!
-//! JSON fields are snake_case and named like the store's validation fields.
-//! Money is an exact USD decimal string; times are RFC 3339.
+//! `/api/v1/me` routes are for any signed-in person; every other `/api/v1`
+//! route is for admins. JSON fields are snake_case and named like the
+//! store's validation fields. Money is an exact USD decimal string; times
+//! are RFC 3339.
 
 mod budgets;
+mod connectors;
 mod environments;
 mod gateway;
+mod groups;
 mod keys;
+mod local_accounts;
+mod me;
 mod models;
 mod providers;
+mod signing_keys;
+mod users;
 
 use std::fmt::Display;
 
 use axum::extract::{FromRequest, Request};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use sekisho_store::{FieldError, StoreError};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::admin_auth::{require_bootstrap, require_gateway};
 use crate::app::AppState;
+use crate::auth::{require_admin, require_gateway, require_user};
 
 pub(crate) fn router(state: AppState) -> Router {
+    let me = Router::new()
+        .route("/api/v1/me", get(me::me))
+        .route("/api/v1/me/environments", get(me::environments))
+        .route("/api/v1/me/keys", get(me::keys).post(me::create_key))
+        .route("/api/v1/me/keys/{id}/{action}", post(me::act))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_user));
     let admin = Router::new()
         .route(
             "/api/v1/providers",
@@ -43,36 +57,60 @@ pub(crate) fn router(state: AppState) -> Router {
                 .put(environments::put)
                 .delete(environments::delete),
         )
-        .route(
-            "/api/v1/environments/{name}/keys",
-            get(keys::list).post(keys::create),
-        )
+        // Keys are made by their owners, on /api/v1/me/keys.
+        .route("/api/v1/environments/{name}/keys", get(keys::list))
         .route("/api/v1/keys/{id}/{action}", post(keys::act))
         .route("/api/v1/budgets", get(budgets::list).post(budgets::create))
         .route("/api/v1/budgets/{id}", delete(budgets::delete))
         .route("/api/v1/budgets/{id}/status", get(budgets::status))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_bootstrap,
-        ));
+        .route("/api/v1/users", get(users::list))
+        .route("/api/v1/users/{id}", get(users::get).patch(users::patch))
+        .route("/api/v1/users/{id}/offboard", post(users::offboard))
+        .route("/api/v1/groups", get(groups::list).post(groups::create))
+        .route("/api/v1/groups/{name}", delete(groups::delete))
+        .route(
+            "/api/v1/groups/{name}/members/{user}",
+            put(groups::add_member).delete(groups::remove_member),
+        )
+        .route("/api/v1/local-accounts", post(local_accounts::create))
+        .route(
+            "/api/v1/local-accounts/{id}",
+            delete(local_accounts::delete),
+        )
+        .route(
+            "/api/v1/local-accounts/{id}/reset",
+            post(local_accounts::reset),
+        )
+        .route("/api/v1/connectors", get(connectors::list))
+        .route(
+            "/api/v1/connectors/{id}",
+            put(connectors::put).delete(connectors::delete),
+        )
+        .route("/api/v1/signing-keys/rotate", post(signing_keys::rotate))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     let internal = Router::new()
         .route("/internal/gateway/config", get(gateway::config))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_gateway,
         ));
-    admin.merge(internal).with_state(state)
+    me.merge(admin).merge(internal).with_state(state)
 }
 
 /// Every error answer: `{"error": <code>, "message": ..., "fields"?: [...]}`.
 #[derive(Debug)]
 pub enum ApiError {
-    Unauthorized,
+    /// No usable credential; the message says what to send.
+    Unauthorized(String),
+    /// Signed in, but not an admin.
+    Forbidden,
     NotFound,
     BadRequest(String),
     Validation(Vec<FieldError>),
     Conflict(String),
     InUse(String),
+    /// Something Sekisho depends on, such as Dex, can't be reached.
+    Unavailable(String),
     Internal,
 }
 
@@ -95,10 +133,11 @@ impl From<StoreError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            ApiError::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "missing or wrong bearer token".to_owned(),
+            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, "unauthorized", m.clone()),
+            ApiError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "only admins may do this".to_owned(),
             ),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found".to_owned()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
@@ -113,6 +152,7 @@ impl IntoResponse for ApiError {
                 "in_use",
                 format!("still in use by {m}"),
             ),
+            ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", m.clone()),
             ApiError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
@@ -126,7 +166,15 @@ impl IntoResponse for ApiError {
                 .map(|f| json!({ "field": f.field, "message": f.message }))
                 .collect();
         }
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if status == StatusCode::UNAUTHORIZED {
+            // RFC 6750 section 3.
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer realm=\"sekisho\""),
+            );
+        }
+        response
     }
 }
 

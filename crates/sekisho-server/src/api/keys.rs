@@ -1,31 +1,29 @@
+//! Environment keys, for admins: listing each environment's, and
+//! suspending, resuming or revoking anyone's. Keys are created by their
+//! owners (`/api/v1/me/keys`).
+
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use sekisho_core::keys::{EnvKeyId, KeyState};
 use sekisho_core::names::EnvName;
 use sekisho_store::EnvKey;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson};
+use super::ApiError;
 use crate::app::AppState;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NewKeyBody {
-    /// The owner's user ID; they must be able to use the environment.
-    owner: Uuid,
-    name: String,
-    #[serde(default, with = "time::serde::rfc3339::option")]
-    expires_at: Option<OffsetDateTime>,
-}
 
 #[derive(Serialize)]
 pub struct KeyBody {
     id: String,
     environment: String,
+    /// The owner's user ID.
     owner: Uuid,
+    owner_email: Option<String>,
     name: String,
     /// active, invalid, suspended, expired or revoked, now.
     state: &'static str,
@@ -46,6 +44,12 @@ pub struct CreatedKeyBody {
     token: String,
 }
 
+impl CreatedKeyBody {
+    pub fn new(key: KeyBody, token: String) -> Self {
+        Self { key, token }
+    }
+}
+
 fn state_name(state: KeyState) -> &'static str {
     match state {
         KeyState::Active => "active",
@@ -56,13 +60,14 @@ fn state_name(state: KeyState) -> &'static str {
     }
 }
 
-impl From<EnvKey> for KeyBody {
-    fn from(k: EnvKey) -> Self {
+impl KeyBody {
+    pub fn new(k: EnvKey, owner_email: Option<String>) -> Self {
         Self {
             state: state_name(k.state(OffsetDateTime::now_utc())),
             id: k.id.to_string(),
             environment: k.environment.to_string(),
             owner: k.owner,
+            owner_email,
             name: k.name,
             suspended: k.suspended,
             expires_at: k.expires_at,
@@ -72,32 +77,32 @@ impl From<EnvKey> for KeyBody {
     }
 }
 
-pub async fn create(
-    State(state): State<AppState>,
-    Path(environment): Path<String>,
-    ApiJson(body): ApiJson<NewKeyBody>,
-) -> Result<(StatusCode, Json<CreatedKeyBody>), ApiError> {
-    let environment = EnvName::parse(&environment).map_err(|_| ApiError::NotFound)?;
-    let (key, token) = state
-        .store()
-        .create_key(&environment, body.owner, &body.name, body.expires_at)
-        .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(CreatedKeyBody {
-            key: key.into(),
-            token,
-        }),
-    ))
-}
-
 pub async fn list(
     State(state): State<AppState>,
     Path(environment): Path<String>,
 ) -> Result<Json<Vec<KeyBody>>, ApiError> {
     let environment = EnvName::parse(&environment).map_err(|_| ApiError::NotFound)?;
     let keys = state.store().list_keys(&environment).await?;
-    Ok(Json(keys.into_iter().map(Into::into).collect()))
+    let emails = emails(&state).await?;
+    Ok(Json(
+        keys.into_iter()
+            .map(|k| {
+                let email = emails.get(&k.owner).cloned();
+                KeyBody::new(k, email)
+            })
+            .collect(),
+    ))
+}
+
+/// Every user's email, by ID.
+pub(crate) async fn emails(state: &AppState) -> Result<HashMap<Uuid, String>, ApiError> {
+    Ok(state
+        .store()
+        .list_users()
+        .await?
+        .into_iter()
+        .map(|u| (u.id, u.email))
+        .collect())
 }
 
 /// `suspend`, `resume` or `revoke`.

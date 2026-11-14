@@ -7,6 +7,7 @@ use std::time::Duration;
 use sekisho_core::keys::hash_secret;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_gateway::{HookTargets, RenderOptions};
+use url::Url;
 
 use crate::app::Settings;
 
@@ -25,6 +26,18 @@ pub enum ConfigError {
     Invalid { name: &'static str, reason: String },
 }
 
+/// Where Sekisho reaches Dex.
+#[derive(Clone, Debug)]
+pub struct DexSettings {
+    /// `SEKISHO_DEX_ISSUER`: Dex's issuer, as browsers reach it.
+    pub issuer: Url,
+    /// `SEKISHO_DEX_URL`: where Sekisho reaches Dex's HTTP; by default the
+    /// issuer's origin.
+    pub http_url: Url,
+    /// `SEKISHO_DEX_GRPC`: Dex's gRPC API, `host:port`.
+    pub grpc: String,
+}
+
 pub struct ServerConfig {
     /// May contain a password, so `Debug` leaves it out.
     pub database_url: String,
@@ -32,6 +45,7 @@ pub struct ServerConfig {
     pub listen: SocketAddr,
     pub hooks_http_listen: SocketAddr,
     pub hooks_grpc_listen: SocketAddr,
+    pub dex: DexSettings,
     pub settings: Settings,
 }
 
@@ -41,9 +55,36 @@ impl fmt::Debug for ServerConfig {
             .field("listen", &self.listen)
             .field("hooks_http_listen", &self.hooks_http_listen)
             .field("hooks_grpc_listen", &self.hooks_grpc_listen)
+            .field("dex", &self.dex)
             .field("settings", &self.settings)
             .finish_non_exhaustive()
     }
+}
+
+/// An absolute `http` or `https` URL with a host and no user information,
+/// query or fragment.
+fn web_url(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value).map_err(|e| format!("not a URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err("use an http or https URL".to_owned());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("must not carry a user name or password".to_owned());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("must not have a query or fragment".to_owned());
+    }
+    Ok(url)
+}
+
+/// `host:port`, as tonic dials it over plain HTTP/2.
+fn host_port(value: &str) -> Result<String, String> {
+    let shape = "use host:port, such as dex:5557";
+    let (host, port) = value.rsplit_once(':').ok_or(shape)?;
+    if host.is_empty() || host.contains('/') || host.contains('@') || port.parse::<u16>().is_err() {
+        return Err(shape.to_owned());
+    }
+    Ok(value.to_owned())
 }
 
 /// The secret agentgateway's rate-limit calls carry (see `HookTargets`),
@@ -98,6 +139,32 @@ impl ServerConfig {
                 "must differ from SEKISHO_BOOTSTRAP_TOKEN".into(),
             ));
         }
+        let mut public_url = web_url(&required("SEKISHO_PUBLIC_URL")?)
+            .map_err(|r| invalid("SEKISHO_PUBLIC_URL", r))?;
+        let path = public_url.path().trim_end_matches('/').to_owned();
+        public_url.set_path(&path);
+        let issuer = web_url(&required("SEKISHO_DEX_ISSUER")?)
+            .map_err(|r| invalid("SEKISHO_DEX_ISSUER", r))?;
+        let http_url = match var("SEKISHO_DEX_URL") {
+            Some(v) => web_url(&v).map_err(|r| invalid("SEKISHO_DEX_URL", r))?,
+            None => Url::parse(&issuer.origin().ascii_serialization())
+                .map_err(|e| invalid("SEKISHO_DEX_ISSUER", e.to_string()))?,
+        };
+        let dex = DexSettings {
+            issuer,
+            http_url,
+            grpc: host_port(&required("SEKISHO_DEX_GRPC")?)
+                .map_err(|r| invalid("SEKISHO_DEX_GRPC", r))?,
+        };
+        // Identity providers' group names, such as GitHub's org:team, as well
+        // as Sekisho's own.
+        let admin_groups = var("SEKISHO_ADMIN_GROUPS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(str::to_owned)
+            .collect();
         let hooks = HookTargets {
             authz_http: required("SEKISHO_HOOKS_HTTP_TARGET")?,
             grpc: required("SEKISHO_HOOKS_GRPC_TARGET")?,
@@ -149,6 +216,7 @@ impl ServerConfig {
             listen: addr("SEKISHO_LISTEN", "0.0.0.0:8080")?,
             hooks_http_listen: addr("SEKISHO_HOOKS_HTTP_LISTEN", "0.0.0.0:9080")?,
             hooks_grpc_listen: addr("SEKISHO_HOOKS_GRPC_LISTEN", "0.0.0.0:9081")?,
+            dex,
             settings: Settings {
                 bootstrap_token,
                 gateway_token,
@@ -156,6 +224,8 @@ impl ServerConfig {
                 render,
                 long_poll: LONG_POLL,
                 republish: REPUBLISH,
+                public_url,
+                admin_groups,
             },
         })
     }
@@ -177,6 +247,9 @@ mod tests {
             ("SEKISHO_GATEWAY_TOKEN", "gateway-token-0123456789"),
             ("SEKISHO_HOOKS_HTTP_TARGET", "sekisho:9080"),
             ("SEKISHO_HOOKS_GRPC_TARGET", "sekisho:9081"),
+            ("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/"),
+            ("SEKISHO_DEX_ISSUER", "https://sekisho.example.com/dex"),
+            ("SEKISHO_DEX_GRPC", "dex:5557"),
         ])
     }
 
@@ -283,6 +356,52 @@ mod tests {
         let mut vars = required();
         vars.insert("SEKISHO_GATEWAY_TOKEN", "bootstrap-token-0123456789");
         assert!(error(&vars).contains("SEKISHO_GATEWAY_TOKEN")); // must differ from the bootstrap token
+    }
+
+    #[test]
+    fn new_settings_are_required_and_checked() {
+        let c = load(&required()).unwrap();
+        // The trailing slash goes; Dex is reached at the issuer's origin by
+        // default; no admin groups.
+        assert_eq!(
+            c.settings.public_url.as_str(),
+            "https://sekisho.example.com/"
+        );
+        assert_eq!(c.dex.issuer.as_str(), "https://sekisho.example.com/dex");
+        assert_eq!(c.dex.http_url.as_str(), "https://sekisho.example.com/");
+        assert_eq!(c.dex.grpc, "dex:5557");
+        assert!(c.settings.admin_groups.is_empty());
+
+        let mut vars = required();
+        vars.insert("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/sekisho/");
+        vars.insert("SEKISHO_DEX_URL", "http://dex:5556");
+        vars.insert("SEKISHO_ADMIN_GROUPS", " platform , acme:admins ,");
+        let c = load(&vars).unwrap();
+        assert_eq!(
+            c.settings.public_url.as_str(),
+            "https://sekisho.example.com/sekisho"
+        );
+        assert_eq!(c.dex.http_url.as_str(), "http://dex:5556/");
+        assert_eq!(c.settings.admin_groups, vec!["platform", "acme:admins"]);
+
+        for (name, value) in [
+            ("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/?x=1"),
+            ("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/#top"),
+            ("SEKISHO_PUBLIC_URL", "ftp://sekisho.example.com/"),
+            ("SEKISHO_PUBLIC_URL", "sekisho.example.com"),
+            ("SEKISHO_PUBLIC_URL", "https://user:pw@sekisho.example.com/"),
+            ("SEKISHO_DEX_ISSUER", "dex"),
+            ("SEKISHO_DEX_ISSUER", "https://dex.example.com/?x=1"),
+            ("SEKISHO_DEX_URL", "file:///dex"),
+            ("SEKISHO_DEX_GRPC", "dex"),
+            ("SEKISHO_DEX_GRPC", "http://dex:5557"),
+            ("SEKISHO_DEX_GRPC", "dex:port"),
+        ] {
+            let mut vars = required();
+            vars.insert(name, value);
+            let message = error(&vars);
+            assert!(message.contains(name), "{name}={value}: {message}");
+        }
     }
 
     #[test]

@@ -1,167 +1,14 @@
+//! The admin API and the gateway agents' endpoint, called by an admin's
+//! session.
+
+mod common;
+
 use std::time::{Duration, Instant};
 
+use common::*;
 use sekisho_core::money::MicroUsd;
-use sekisho_gateway::{HookTargets, RenderOptions};
-use sekisho_server::app::{AppState, Settings, router, start_publisher};
-use sekisho_testkit::TestStore;
 use serde_json::{Value, json};
 use uuid::Uuid;
-
-const BOOTSTRAP: &str = "bootstrap-token-0123456789";
-const GATEWAY: &str = "gateway-token-0123456789";
-
-struct TestApp {
-    base: String,
-    http: reqwest::Client,
-    store: TestStore,
-    /// A person in the group `eng`, which `put_env` gives environments: the
-    /// owner of the tests' environments and keys.
-    owner: Uuid,
-}
-
-struct Reply {
-    status: u16,
-    body: Value,
-    text: String,
-}
-
-async fn app() -> TestApp {
-    let (store, secret_box) = sekisho_testkit::store().await;
-    let settings = Settings {
-        bootstrap_token: BOOTSTRAP.into(),
-        gateway_token: GATEWAY.into(),
-        hooks: HookTargets {
-            authz_http: "sekisho:9080".into(),
-            grpc: "sekisho:9081".into(),
-            charge_secret: "test-charge-secret".into(),
-        },
-        render: RenderOptions::default(),
-        long_poll: Duration::from_secs(1),
-        republish: Duration::from_millis(300),
-    };
-    let state = AppState::new(store.clone(), secret_box, settings);
-    start_publisher(&state).await.unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
-    let owner = sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await;
-    TestApp {
-        base: format!("http://{addr}"),
-        http: reqwest::Client::new(),
-        store,
-        owner,
-    }
-}
-
-impl TestApp {
-    async fn call(
-        &self,
-        method: &str,
-        path: &str,
-        token: Option<&str>,
-        body: Option<Value>,
-    ) -> Reply {
-        let mut req = self
-            .http
-            .request(method.parse().unwrap(), format!("{}{path}", self.base));
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-        if let Some(body) = body {
-            req = req.json(&body);
-        }
-        let resp = req.send().await.unwrap();
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap();
-        let body = if text.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&text).unwrap_or(Value::Null)
-        };
-        Reply { status, body, text }
-    }
-
-    async fn admin(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
-        self.call(method, path, Some(BOOTSTRAP), body).await
-    }
-
-    /// The newest published version, or 0. With `after`, long-polls past it.
-    async fn version_after(&self, after: i64) -> Option<i64> {
-        let r = self
-            .call(
-                "GET",
-                &format!("/internal/gateway/config?after={after}"),
-                Some(GATEWAY),
-                None,
-            )
-            .await;
-        match r.status {
-            200 => Some(r.body["version"].as_i64().unwrap()),
-            204 => None,
-            other => panic!("unexpected {other}: {}", r.text),
-        }
-    }
-
-    async fn latest_version(&self) -> i64 {
-        self.version_after(0).await.unwrap_or(0)
-    }
-
-    /// The latest version once publishing has settled: earlier writes render
-    /// in the background, so wait until a poll past the latest times out.
-    async fn settled_version(&self) -> i64 {
-        let mut latest = self.latest_version().await;
-        while let Some(newer) = self.version_after(latest).await {
-            latest = newer;
-        }
-        latest
-    }
-
-    async fn provider_and_model(&self) {
-        let p = self
-            .admin("POST", "/api/v1/providers", Some(json!({
-                "name": "mock", "kind": "openai_compatible", "base_url": "http://mock:8000/v1", "api_key": "mock-secret-key",
-                // `mock` doesn't resolve.
-                "allow_private_network": true
-            })))
-            .await;
-        assert_eq!(p.status, 201, "{}", p.text);
-        let m = self
-            .admin("POST", "/api/v1/models", Some(json!({
-                "name": "mock-model", "provider": "mock", "input_price": "3", "output_price": "15"
-            })))
-            .await;
-        assert_eq!(m.status, 201, "{}", m.text);
-    }
-
-    async fn put_env(&self, name: &str, models: &[&str]) -> Reply {
-        self.admin(
-            "PUT",
-            &format!("/api/v1/environments/{name}"),
-            Some(json!({ "models": models, "access_groups": ["eng"], "owner": self.owner })),
-        )
-        .await
-    }
-}
-
-#[tokio::test]
-async fn admin_routes_need_bootstrap_token() {
-    let app = app().await;
-    for token in [None, Some("wrong-token-0123456789"), Some(GATEWAY)] {
-        let r = app.call("GET", "/api/v1/environments", token, None).await;
-        assert_eq!(r.status, 401, "{token:?}");
-        assert_eq!(r.body["error"], "unauthorized");
-    }
-    let raw = app
-        .http
-        .get(format!("{}/api/v1/environments", app.base))
-        .header("authorization", BOOTSTRAP)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(raw.status().as_u16(), 401); // not Bearer
-    let ok = app.admin("GET", "/api/v1/environments", None).await;
-    assert_eq!((ok.status, ok.body.clone()), (200, json!([])));
-}
 
 #[tokio::test]
 async fn gateway_config_needs_gateway_token() {
@@ -356,7 +203,7 @@ async fn validation_errors_are_422_with_fields() {
     let malformed = app
         .http
         .post(format!("{}/api/v1/providers", app.base))
-        .bearer_auth(BOOTSTRAP)
+        .bearer_auth(&app.token)
         .header("content-type", "application/json")
         .body("{")
         .send()
@@ -475,124 +322,10 @@ async fn providers_models_and_environments_round_trip() {
 }
 
 #[tokio::test]
-async fn owners_and_persons_are_user_ids() {
-    let app = app().await;
-    // Until sign-in arrives, a new environment names its owner.
-    let r = app
-        .admin(
-            "PUT",
-            "/api/v1/environments/data-team",
-            Some(json!({ "access_groups": ["eng"] })),
-        )
-        .await;
-    assert_eq!(
-        (r.status, &r.body["fields"][0]["field"]),
-        (422, &json!("owner")),
-        "{}",
-        r.text
-    );
-    let unknown = Uuid::nil();
-    let r = app
-        .admin(
-            "PUT",
-            "/api/v1/environments/data-team",
-            Some(json!({ "owner": unknown })),
-        )
-        .await;
-    assert_eq!(
-        (r.status, &r.body["fields"][0]["field"]),
-        (422, &json!("owner")),
-        "{}",
-        r.text
-    );
-    let r = app.put_env("data-team", &[]).await;
-    assert_eq!(
-        (r.status, &r.body["owner"]),
-        (200, &json!(app.owner)),
-        "{}",
-        r.text
-    );
-    // Saved again without an owner, it keeps the stored one.
-    let r = app
-        .admin(
-            "PUT",
-            "/api/v1/environments/data-team",
-            Some(json!({ "access_groups": ["eng"] })),
-        )
-        .await;
-    assert_eq!(
-        (r.status, &r.body["owner"]),
-        (200, &json!(app.owner)),
-        "{}",
-        r.text
-    );
-
-    let keys = "/api/v1/environments/data-team/keys";
-    let outsider = sekisho_testkit::people::person(&app.store, "bob@example.com", &["ops"]).await;
-    for (owner, field) in [(json!(unknown), "owner"), (json!(outsider), "environment")] {
-        let r = app
-            .admin("POST", keys, Some(json!({ "owner": owner, "name": "ci" })))
-            .await;
-        assert_eq!(
-            (r.status, &r.body["fields"][0]["field"]),
-            (422, &json!(field)),
-            "{}",
-            r.text
-        );
-    }
-    let r = app
-        .admin(
-            "POST",
-            keys,
-            Some(json!({ "owner": app.owner, "name": "ci" })),
-        )
-        .await;
-    assert_eq!(
-        (r.status, &r.body["owner"]),
-        (201, &json!(app.owner)),
-        "{}",
-        r.text
-    );
-
-    let budget = |person: Value| {
-        json!({
-            "name": "p", "scope": "person", "person": person, "limit": "1", "window": "day"
-        })
-    };
-    for person in [json!("alice@example.com"), json!(unknown)] {
-        let r = app
-            .admin("POST", "/api/v1/budgets", Some(budget(person)))
-            .await;
-        assert_eq!(
-            (r.status, &r.body["fields"][0]["field"]),
-            (422, &json!("person")),
-            "{}",
-            r.text
-        );
-    }
-    let r = app
-        .admin("POST", "/api/v1/budgets", Some(budget(json!(app.owner))))
-        .await;
-    assert_eq!(
-        (r.status, &r.body["person"]),
-        (201, &json!(app.owner)),
-        "{}",
-        r.text
-    );
-}
-
-#[tokio::test]
 async fn key_token_shown_once() {
     let app = app().await;
     assert_eq!(app.put_env("data-team", &[]).await.status, 200);
-    let created = app
-        .admin(
-            "POST",
-            "/api/v1/environments/data-team/keys",
-            Some(json!({ "owner": app.owner, "name": "ci" })),
-        )
-        .await;
-    assert_eq!(created.status, 201, "{}", created.text);
+    let created = app.owners_key("data-team", "ci").await;
     let token = created.body["token"].as_str().unwrap().to_owned();
     let id = created.body["id"].as_str().unwrap().to_owned();
     assert!(token.starts_with(&format!("sek_{id}_")));
@@ -777,16 +510,7 @@ async fn config_version_bumps_on_env_change_only() {
             > v1
     );
     let v2 = app.settled_version().await;
-    assert_eq!(
-        app.admin(
-            "POST",
-            "/api/v1/environments/data-team/keys",
-            Some(json!({ "owner": app.owner, "name": "ci" }))
-        )
-        .await
-        .status,
-        201
-    );
+    app.owners_key("data-team", "ci").await;
     assert_eq!(app.version_after(v2).await, None); // a key is not config
     assert_eq!(app.latest_version().await, v2);
 }

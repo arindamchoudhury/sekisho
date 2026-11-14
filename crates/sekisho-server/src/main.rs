@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
+use sekisho_auth::dex::{DexClient, DexConfig};
 use sekisho_core::keys::hash_secret;
 use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
@@ -17,7 +18,10 @@ use sekisho_hooks::ratelimit::{Charger, TALLY_WAIT};
 use sekisho_hooks::tally::Tallies;
 use sekisho_proto::ext_proc::external_processor_server::ExternalProcessorServer;
 use sekisho_proto::ratelimit::rate_limit_service_server::RateLimitServiceServer;
-use sekisho_server::app::{AppState, router, start_publisher};
+use sekisho_server::app::{
+    AppState, IDP_SWEEP_EVERY, KEY_ROTATION_CHECK, register_with_dex, router, start_publisher,
+    start_sign_in_upkeep,
+};
 use sekisho_server::config::ServerConfig;
 use sekisho_store::Store;
 use time::OffsetDateTime;
@@ -88,10 +92,19 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .context("connecting to SEKISHO_DATABASE_URL")?;
 
-    // Session tokens name SEKISHO_PUBLIC_URL as their issuer once sign-in
-    // arrives (plan 2 Task 9). Until then no signing key exists, so every
-    // session token is refused as signed by an unknown key.
-    let cache = AuthCache::load(&store, String::new())
+    // A key signs from the start, before any replica answers a sign-in.
+    store
+        .rotate_signing_key(&config.secret_box, OffsetDateTime::now_utc(), false)
+        .await
+        .context("making the first signing key")?;
+    // Session tokens name SEKISHO_PUBLIC_URL, without a trailing slash.
+    let issuer = config
+        .settings
+        .public_url
+        .as_str()
+        .trim_end_matches('/')
+        .to_owned();
+    let cache = AuthCache::load(&store, issuer.clone())
         .await
         .context("loading keys for the hooks")?;
     cache.spawn_refresh(store.clone());
@@ -124,10 +137,33 @@ async fn serve() -> anyhow::Result<()> {
              budget checks; never use this outside the end-to-end tests"
         );
     }
-    let state = AppState::new(store, config.secret_box, config.settings);
+    // Sekisho's client at Dex: its secret is made once and kept sealed, so
+    // Dex's config file holds none.
+    let dex = DexClient::new(DexConfig {
+        issuer: config.dex.issuer.clone(),
+        http_url: config.dex.http_url.clone(),
+        grpc: config.dex.grpc.clone(),
+        client_id: "sekisho".to_owned(),
+        client_secret: store
+            .dex_client_secret(&config.secret_box)
+            .await
+            .context("reading Sekisho's client secret at Dex")?,
+        redirect_uri: Url::parse(&format!("{issuer}/oauth/callback"))
+            .context("SEKISHO_PUBLIC_URL with /oauth/callback is not a URL")?,
+    });
+    let state = AppState::new(
+        store,
+        config.secret_box,
+        config.settings,
+        Arc::clone(&guard.cache),
+        Arc::new(dex),
+    );
     start_publisher(&state)
         .await
         .context("starting the gateway config publisher")?;
+    // Sign-ins answer 503 until Sekisho is registered at Dex.
+    register_with_dex(&state, Duration::from_secs(5));
+    start_sign_in_upkeep(&state, KEY_ROTATION_CHECK, IDP_SWEEP_EVERY);
 
     let admin_listener = tokio::net::TcpListener::bind(config.listen)
         .await
