@@ -112,7 +112,7 @@ D110	Each environment chooses a provider by model: the one-provider-per-format l
 D111	From plan 1d one Bedrock or Azure provider serves every coding tool, replacing D65's route chosen per provider (decided 2026-11-13)	serves every (coding )?tool	design plans
 D112	Host presets: agentgateway's open-weight hosts plus Scaleway, fields editable, catalog prices where agentgateway knows the model (decided 2026-11-13)	host presets?	design plans
 D113	An OpenAI-compatible provider declares the APIs its host speaks (Chat Completions; Anthropic Messages and Responses where served); every tool reaches its models, passed through or translated (our call)	APIs its host speaks	design plans
-D114	Model names stay unique across Sekisho; each default model must be one its format can reach (our call)	unique across Sekisho	design
+D114	Model names stay unique across Sekisho and are the IDs providers know: one host per model ID until release 2's model aliases; each default model must be one its format can reach (our call; amended 2026-11-15)	unique across Sekisho	design plan1d
 D115	An OpenAI-compatible provider's cache prices default to its input price (our call)	cache prices default to its input price	design plans
 D116	Prices don't vary by time of day; agentgateway's DeepSeek price is the off-peak one, and the docs say so (our call)	off-peak	design plans
 D117	Budgets stay in USD in release 1; a self-hosted model gets a notional price; token and request budgets come with release 2's rate limits (our call)	notional price	design
@@ -133,3 +133,9 @@ D131	A reused authorisation code ends the session it issued, even one still bein
 D132	Authorisation-server metadata also at RFC 8414's path-inserted URL when SEKISHO_PUBLIC_URL has a path (our call)	path-inserted	design plan2
 D133	One bootstrap token is checked at a time per replica; a try meanwhile is answered 429 at once (our call)	answered 429	design plan2
 D134	Ended and idle sessions and used or expired setup links are purged after a week, hourly (our call)	purged after a week	design plan2
+D135	extAuthz refuses a model the environment doesn't list (404 model_not_found, the same answer whether or not Sekisho has the model) and a model the client's API can't reach (400 api_not_served); agentgateway's router 404 is only a backstop (our call)	model_not_found	design plans plan1d
+D136	An environment's OpenAI-format default model must be one both Chat Completions and the Responses API reach, since Codex sends Responses (our call)	both Chat Completions and (the )?Responses	design plans plan1d
+D137	Model routes take no query but beta=true and alt=sse, and remove every client credential header, Authorization included, before the provider; a Sekisho token in Gemini's ?key= never reaches Google (plan 1's M5, moved from plan 4) (our call)	alt=sse	design plans plan1d
+D138	Each provider's credential is written once, in the llm block's providers list, which model entries name (our call)	providers list|list of (reusable )?providers	design plan1d
+D139	Default cache ratios follow the model: Claude on Bedrock (anthropic.claude in the ID) and Azure (names starting with claude) takes Anthropic's, other Bedrock and Azure models OpenAI's (our call)	anthropic\.claude	design plan1d
+D140	A provider base URL with user info, a query or a fragment is refused, since agentgateway refuses such a baseUrl when it loads the config (our call)	(user name, password|user info), (a )?query (or|and) (a )?fragment	design plan1d

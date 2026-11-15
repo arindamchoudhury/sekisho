@@ -25,6 +25,7 @@ declare -A F=(
   [plan1b]=.private/superpowers/plans/2026-11-10-plan-1b-bedrock-and-azure.md
   [plan1c]=.private/superpowers/plans/2026-11-11-plan-1c-spend-accuracy.md
   [plan2]=.private/superpowers/plans/2026-11-12-plan-2-sign-in-and-people.md
+  [plan1d]=.private/superpowers/plans/2026-11-15-plan-1d-open-weight-hosts.md
   [plans]=.private/superpowers/plans/README.md
   [comparison]=.private/comparison.md
   [inventory]=.private/research/feature-inventory.md
