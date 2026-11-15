@@ -87,7 +87,9 @@ and what they carried.
     tools without an A2A client can use them too.
 - **Catalogs from Git.** MCP servers, A2A agents, skills, plugins and prompts,
   pinned to commits. The MCP and skill catalogs use Obot-compatible formats;
-  plugins use Claude Code's plugin and marketplace format.
+  plugins use Claude Code's plugin and marketplace format, which is also
+  what Microsoft APM's `apm pack` produces, so teams that write their agents
+  and skills with APM can publish them through Sekisho.
   - Every catalog entry has an owner.
   - Every local MCP server names an exact package version or image digest,
     so a new release can't reach developers until an admin applies it. An

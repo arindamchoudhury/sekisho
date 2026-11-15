@@ -144,3 +144,4 @@ D142	Release 1: installs work where developer machines reach only Sekisho and in
 D143	Release 2: local mode, ungoverned installs from Git or a folder with no server, as ACH's ach-cli local (decided 2026-11-15)	local mode	design
 D144	Release 3: SBOM export (CycloneDX, SPDX) as one format of the dated inventory export (decided 2026-11-15)	SBOM	design
 D145	Not planned: APM's tighten-only source policy, packages that depend on other packages, and Sekisho mirroring package registries itself (decided 2026-11-15)	tighten-only|source policy	design comparison
+D146	Plugins packed with Microsoft APM (apm pack's Claude Code plugin bundle) are read as ordinary plugins; their agents and instructions reach each tool; APM's own source layout is not read; plan 3 decides on checking the bundle's embedded hashes (decided 2026-11-15)	apm pack	design plans README
