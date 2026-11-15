@@ -139,3 +139,8 @@ D137	Model routes take no query but beta=true and alt=sse, and remove every clie
 D138	Each provider's credential is written once, in the llm block's providers list, which model entries name (our call)	providers list|list of (reusable )?providers	design plan1d
 D139	Default cache ratios follow the model: Claude on Bedrock (anthropic.claude in the ID) and Azure (names starting with claude) takes Anthropic's, other Bedrock and Azure models OpenAI's (our call)	anthropic\.claude	design plan1d
 D140	A provider base URL with user info, a query or a fragment is refused, since agentgateway refuses such a baseUrl when it loads the config (our call)	(user name, password|user info), (a )?query (or|and) (a )?fragment	design plan1d
+D141	Release 1: sekisho check runs a catalog sync's rules and Git-mode environment validation in CI, offline or with --server (decided 2026-11-15)	sekisho check	design plans README
+D142	Release 1: installs work where developer machines reach only Sekisho and internal mirrors; the CLI fetches skills, plugins and prompts from Sekisho; install-wide npm and Python registries for local MCP servers; docs for a restricted install (decided 2026-11-15)	internal mirrors	design plans README
+D143	Release 2: local mode, ungoverned installs from Git or a folder with no server, as ACH's ach-cli local (decided 2026-11-15)	local mode	design
+D144	Release 3: SBOM export (CycloneDX, SPDX) as one format of the dated inventory export (decided 2026-11-15)	SBOM	design
+D145	Not planned: APM's tighten-only source policy, packages that depend on other packages, and Sekisho mirroring package registries itself (decided 2026-11-15)	tighten-only|source policy	design comparison

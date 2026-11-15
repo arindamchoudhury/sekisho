@@ -95,6 +95,8 @@ and what they carried.
   - An admin can quarantine an entry. It leaves every environment at once and
     its owner is alerted. `sekisho status` warns developers who still have it
     installed, and their next `sekisho use` removes it.
+  - `sekisho check` runs the same checks on a catalog repository, or on
+    environments kept in Git, so a CI job refuses what Sekisho would.
 - **Delivery.** `sekisho use <environment>` installs an environment into Claude
   Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code or Kilo
   CLI, for one project or globally:
@@ -103,6 +105,9 @@ and what they carried.
   - a lock file, with checks for hidden Unicode characters and for paths that
     escape the target folder;
   - a diff of what changed.
+
+  The CLI fetches everything from Sekisho, so it works where developer
+  machines can reach only Sekisho and internal mirrors.
 
   `sekisho status` also lists MCP servers and plugin marketplaces that Sekisho
   didn't install. That report stays on the developer's machine.
@@ -139,6 +144,7 @@ claude
 | `sekisho uninstall <env>` | Remove an environment |
 | `sekisho token` | Print a fresh token; coding tools call it as a credential helper |
 | `sekisho keys …` | Manage environment keys |
+| `sekisho check [path]` | Check a catalog repository, or environments kept in Git, as Sekisho would (for CI) |
 | `sekisho logout` | Sign out |
 
 CI and containers set `SEKISHO_URL` and `SEKISHO_KEY` (an environment key)
