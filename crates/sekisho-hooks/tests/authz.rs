@@ -73,7 +73,15 @@ async fn env(store: &Store, name: &str) -> EnvName {
         .name
 }
 
+/// The hook, its cache reloaded on change notifications as in `serve`.
 async fn hook() -> Hook {
+    let app = hook_without_refresh().await;
+    app.cache.spawn_refresh(app.store.clone());
+    app
+}
+
+/// The hook with a cache that changes only when the test reloads it.
+async fn hook_without_refresh() -> Hook {
     let (store, secret_box) = sekisho_testkit::store().await;
     let data = env(&store, "data-team").await;
     let ml = env(&store, "ml-team").await;
@@ -106,7 +114,6 @@ async fn hook() -> Hook {
         .unwrap();
 
     let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
-    cache.spawn_refresh(store.clone());
     let state = HooksState {
         cache: Arc::clone(&cache),
         store: store.clone(),
@@ -682,8 +689,10 @@ async fn a_key_whose_owner_lost_access_is_403_invalid_until_access_returns() {
 
 #[tokio::test]
 async fn a_new_users_first_request_is_found() {
-    let app = hook().await;
-    // The signing key first, so making it announces nothing later.
+    // No refresh task: a reload after the insert below would load dave
+    // before his request does.
+    let app = hook_without_refresh().await;
+    // The signing key first, made and cached by `session`.
     session(&app, app.alice).await;
     // A user the cache hasn't loaded: written without a notification, as if
     // they signed in on another replica a moment ago.
@@ -698,13 +707,8 @@ async fn a_new_users_first_request_is_found() {
     assert!(app.cache.user(&dave).is_none());
     let r = call(&app, PATH, Some(&bearer(&token))).await;
     assert_eq!(r.status, 200, "{}", r.json);
-    assert!(
-        app.cache
-            .user_or_load(&app.store, &dave)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    // The hook keeps the user it read until the next reload.
+    assert!(app.cache.user(&dave).is_some());
 }
 
 #[tokio::test]
