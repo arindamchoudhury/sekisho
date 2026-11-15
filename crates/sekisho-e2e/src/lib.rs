@@ -280,9 +280,15 @@ pub async fn wait_route(env: &str, token: &str) {
     wait_route_at(env, token, "openai").await;
 }
 
-/// Waits until `env`'s route for `format` is live and its key is accepted.
-/// The probe asks for a model the route doesn't allow, so it never reaches
-/// the model and costs nothing.
+/// Waits until `env`'s models are live on its `format` route and its key is
+/// accepted.
+///
+/// One `llm:` block serves every environment, so agentgateway answers 404
+/// for any model of an environment it doesn't have yet, and a request for a
+/// model the environment lists reaches the provider and is charged. So the
+/// probe asks for a model nothing lists (refused before any provider,
+/// costing nothing) only to learn that Sekisho's hook takes the key, and the
+/// environment is looked up in the config the gateway agent wrote.
 pub async fn wait_route_at(env: &str, token: &str, format: &str) {
     let start = Instant::now();
     loop {
@@ -300,16 +306,53 @@ pub async fn wait_route_at(env: &str, token: &str, format: &str) {
         .unwrap();
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        // 404: no route yet. A JSON "reason": Sekisho's hook doesn't know the key yet.
-        if status != StatusCode::NOT_FOUND && !body.contains("\"reason\"") {
-            return;
+        // A JSON "reason": Sekisho's hook doesn't know the key yet.
+        if !body.contains("\"reason\"") {
+            break;
         }
         assert!(
             start.elapsed() < Duration::from_secs(10),
-            "{format} route for {env} not live: {status} {body}"
+            "{format} route for {env}: the key isn't taken: {status} {body}"
         );
         sleep(Duration::from_millis(100)).await;
     }
+    while !lists_env(&gateway_config(), env) {
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "{env} not in the gateway's config"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    // agentgateway reloads the file about 25 ms after a write.
+    sleep(Duration::from_millis(500)).await;
+}
+
+/// Whether `yaml` has a model entry (`id: <env>/<model>`) for `env`.
+fn lists_env(yaml: &str, env: &str) -> bool {
+    let prefix = format!("{env}/");
+    yaml.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("- id:")
+            .is_some_and(|id| id.trim().trim_matches(['\'', '"']).starts_with(&prefix))
+    })
+}
+
+/// The config file the gateway agent last wrote for agentgateway.
+pub fn gateway_config() -> String {
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/docker-compose.yml");
+    let out = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(&file)
+        .args(["exec", "-T", "gateway-agent", "cat", "/config/config.yaml"])
+        .output()
+        .expect("docker");
+    assert!(
+        out.status.success(),
+        "reading the gateway config: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("the config is UTF-8")
 }
 
 /// An environment of its own, live at the gateway, with a key.

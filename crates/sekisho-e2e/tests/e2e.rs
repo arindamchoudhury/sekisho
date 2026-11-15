@@ -327,7 +327,8 @@ async fn unlisted_model_never_reaches_the_provider() {
     .send()
     .await
     .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // agentgateway's model router: no entry for this environment and model.
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         mock_requests().await.len(),
         before,
@@ -567,7 +568,8 @@ async fn ensure_bedrock_keys() {
 /// A fresh environment for `models` with a $1 budget and a key, live on its
 /// `format` route: (env, key id, token, budget id). Names start with `via-`
 /// so they sort after `data-team`: the bare route of plan 1's latency test
-/// serves the first environment, by name, that has an OpenAI route.
+/// serves the provider of the first model entry of an OpenAI kind, by
+/// environment name.
 async fn cloud_env(
     prefix: &str,
     models: &[&str],

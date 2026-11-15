@@ -10,168 +10,207 @@ config:
                 output: '15'
                 cacheRead: '3'
                 cacheWrite: '3'
-binds:
-- port: 3000
-  listeners:
-  - name: sekisho
-    protocol: HTTP
-    routes:
-    - name: data-team-openai
-      matches:
-      - path:
-          pathPrefix: /env/data-team/openai
-        method: POST
-      policies:
-        requestHeaderModifier:
-          remove:
-          - x-api-key
-          - api-key
-          - x-goog-api-key
-        urlRewrite:
-          path:
-            prefix: /
-        extAuthz:
-          host: sekisho:9080
-          protocol:
-            http:
-              addRequestHeaders:
-                x-sekisho-env: '"data-team"'
-              metadata:
-                key: response.headers["x-sekisho-key"]
-                person: response.headers["x-sekisho-person"]
-          includeRequestHeaders:
-          - authorization
-          failureMode: deny
-        remoteRateLimit:
-          host: sekisho:9081
-          domain: sekisho
-          failureMode: failClosed
-          descriptors:
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"input"'
-            cost: llm.inputTokens
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"cache_read"'
-            cost: llm.cachedInputTokens
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"cache_write"'
-            cost: llm.cacheCreationInputTokens
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"output"'
-            cost: llm.outputTokens
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"catalog"'
-            cost: int(llm.cost.total * 1000000.0 + 0.5)
-          - type: tokens
-            entries:
-            - key: env
-              value: '"data-team"'
-            - key: key
-              value: extauthz.key
-            - key: person
-              value: extauthz.person
-            - key: secret
-              value: '"test-charge-secret"'
-            - key: model
-              value: llm.requestModel
-            - key: request
-              value: default(extproc.sekisho_request, "")
-            - key: measure
-              value: '"prompt"'
-        extProc:
-          host: sekisho:9081
-          failureMode: failClosed
-          processingOptions:
-            requestBodyMode: none
-            responseBodyMode: fullDuplexStreamed
-      backends:
-      - ai:
-          name: mock
-          provider:
-            custom:
-              providerOverride: mock
-              formats:
-              - type: completions
-          tokenize: true
-          hostOverride: mock:8000
-          pathPrefix: /v1
-        policies:
-          ai:
-            routes:
-              /v1/chat/completions: completions
-              /v1/responses: responses
-          backendAuth:
-            key: mock-key
-          authorization:
-            rules:
-            - require: llm.requestModel in ["mock-model"]
+gateways:
+  sekisho:
+    port: 3000
+llm:
+  gateways: sekisho
+  pathPrefix: /env
+  policies:
+    extAuthz:
+      host: sekisho:9080
+      protocol:
+        http:
+          addRequestHeaders:
+            x-sekisho-env: request.path.split("/")[2]
+            x-sekisho-model: llm.requestModel
+          metadata:
+            key: response.headers["x-sekisho-key"]
+            person: response.headers["x-sekisho-person"]
+      includeRequestHeaders:
+      - authorization
+      failureMode: deny
+    authorization:
+      rules:
+      - require: request.method == 'POST' && request.path.matches('^/env/[a-z0-9-]{1,63}/(anthropic/v1/messages(/count_tokens)?|openai/v1/(chat/completions|responses)|gemini/v1(alpha|beta)?/models/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens))$') && request.pathAndQuery.matches('^[^?]*([?]beta=true|[?]alt=sse)?$')
+    remoteRateLimit:
+      host: sekisho:9081
+      domain: sekisho
+      failureMode: failClosed
+      descriptors:
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"input"'
+        cost: llm.inputTokens
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"cache_read"'
+        cost: llm.cachedInputTokens
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"cache_write"'
+        cost: llm.cacheCreationInputTokens
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"output"'
+        cost: llm.outputTokens
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"catalog"'
+        cost: int(llm.cost.total * 1000000.0 + 0.5)
+      - type: tokens
+        entries:
+        - key: env
+          value: metadata.sekisho_env
+        - key: key
+          value: extauthz.key
+        - key: person
+          value: extauthz.person
+        - key: secret
+          value: '"test-charge-secret"'
+        - key: model
+          value: llm.requestModel
+        - key: request
+          value: default(extproc.sekisho_request, "")
+        - key: measure
+          value: '"prompt"'
+    extProc:
+      host: sekisho:9081
+      failureMode: failClosed
+      processingOptions:
+        requestBodyMode: none
+        responseBodyMode: fullDuplexStreamed
+    transformations:
+      request:
+        set:
+          x-sekisho-env: request.path.split("/")[2]
+          :path: request.pathAndQuery.regexReplace("^/env/[a-z0-9-]+/(anthropic|openai|gemini)/", "/env/")
+        remove:
+        - authorization
+        - x-api-key
+        - api-key
+        - x-goog-api-key
+        metadata:
+          sekisho_env: request.path.split("/")[2]
+  providers:
+  - name: anthropic
+    provider: anthropic
+    params:
+      tokenize: true
+    defaults:
+      auth:
+        key: anthropic-key
+  - name: mock
+    provider:
+      custom:
+        providerOverride: mock
+        formats:
+        - type: completions
+    params:
+      baseUrl: http://mock:8000/v1
+      tokenize: true
+    defaults:
+      auth:
+        key: mock-key
+  models:
+  - id: data-team/mock-model
+    name: mock-model
+    provider:
+      reference: mock
+    matches:
+    - headers:
+      - name: x-sekisho-env
+        value:
+          exact: data-team
+    requestHeaders:
+      remove:
+      - x-sekisho-env
+  - id: data-team/claude-sonnet-5-5
+    name: claude-sonnet-5-5
+    provider:
+      reference: anthropic
+    matches:
+    - headers:
+      - name: x-sekisho-env
+        value:
+          exact: data-team
+    requestHeaders:
+      remove:
+      - x-sekisho-env
+  - id: ml-team/mock-model
+    name: mock-model
+    provider:
+      reference: mock
+    matches:
+    - headers:
+      - name: x-sekisho-env
+        value:
+          exact: ml-team
+    requestHeaders:
+      remove:
+      - x-sekisho-env

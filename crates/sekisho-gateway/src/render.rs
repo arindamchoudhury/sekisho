@@ -1,15 +1,24 @@
 //! agentgateway v1.7.0's local config file, rendered from a snapshot.
+//!
+//! One `llm:` block mounted at `/env` serves every environment's model
+//! routes: each provider is written once with its credential, and each
+//! environment and model gets a model entry matched on `x-sekisho-env`.
+//! Its policies run in agentgateway's fixed order on the client's own path:
+//! `extAuthz`, the authorization rule, the rate limit, `ext_proc`, then the
+//! transformation that sets the environment header and rewrites the path
+//! for the model router.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
+use sekisho_core::formats::{AzureResourceType, HostApi, ProviderKind};
 use sekisho_core::money::MicroUsd;
+use sekisho_core::names::ModelName;
 use sekisho_core::pricing::Measure;
 use sekisho_store::{ProviderCredential, ProviderOptions};
 use serde_json::{Map, Value, json};
 
-use crate::snapshot::{EnvRoutes, GatewaySnapshot, ModelRoute, PricedModel};
+use crate::snapshot::{GatewaySnapshot, ModelEntry, PricedModel, ProviderEntry};
 
 /// Per-install choices that change the rendered config.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -20,54 +29,59 @@ pub struct RenderOptions {
     pub fail_open_ratelimit: bool,
     /// Let streams continue when the `ext_proc` service can't answer.
     pub fail_open_extproc: bool,
-    /// Adds a hook-free `/bare/openai` route to the first environment's
-    /// OpenAI-format backend. Only for the end-to-end latency test.
+    /// Adds a hook-free `/bare/openai` route to the provider of the first
+    /// model entry of an OpenAI kind. Only for the end-to-end latency test.
     pub bare_route: bool,
 }
 
+/// The only requests that reach a provider: POSTs to the model endpoints
+/// of the three client formats, with no query but Claude Code's
+/// `beta=true` and the Gemini SDKs' `alt=sse`. A Sekisho token in Gemini's
+/// `?key=`, plain or percent-encoded, is refused here. One CEL expression,
+/// evaluated on the client's own path before the rewrite.
+pub const MODEL_ROUTE_RULE: &str = concat!(
+    "request.method == 'POST'",
+    " && request.path.matches('^/env/[a-z0-9-]{1,63}/(anthropic/v1/messages(/count_tokens)?",
+    "|openai/v1/(chat/completions|responses)",
+    "|gemini/v1(alpha|beta)?/models/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens))$')",
+    " && request.pathAndQuery.matches('^[^?]*([?]beta=true|[?]alt=sse)?$')",
+);
+
 const PORT: u16 = 3000;
-const LISTENER: &str = "sekisho";
+/// The gateway (and listener) every route attaches to.
+const GATEWAY: &str = "sekisho";
+/// Where the model routes are mounted: `/env/<name>/anthropic|openai|gemini/…`.
+const PATH_PREFIX: &str = "/env";
 const RATE_LIMIT_DOMAIN: &str = "sekisho";
-/// Headers a client might carry its Sekisho token in. `Authorization` is
-/// replaced by the provider key (`backendAuth`), so it is not listed.
-const STRIPPED_HEADERS: [&str; 3] = ["x-api-key", "api-key", "x-goog-api-key"];
+/// The header the model entries match on. Set from the path, overwriting
+/// any client copy, and removed before the provider.
+const ENV_HEADER: &str = "x-sekisho-env";
+/// The model the request names, told to the `extAuthz` hook.
+const MODEL_HEADER: &str = "x-sekisho-model";
+/// The environment as request metadata, which the charges read: the model
+/// entry removes the header before the rate-limit descriptors are built.
+const ENV_METADATA: &str = "sekisho_env";
+/// The environment: the path's second segment (`/env/<name>/…`), which the
+/// authorization rule limits to `[a-z0-9-]`.
+const ENV_FROM_PATH: &str = "request.path.split(\"/\")[2]";
+/// `/env/<name>/<format>/v1/…` to `/env/v1/…`, the standard endpoint under
+/// the block's prefix, which the model router strips. Keeps the query.
+const PATH_REWRITE: &str =
+    "request.pathAndQuery.regexReplace(\"^/env/[a-z0-9-]+/(anthropic|openai|gemini)/\", \"/env/\")";
+/// Headers a client might carry its Sekisho token in. The provider's
+/// credential is added after the transformation removes them.
+const CLIENT_CREDENTIAL_HEADERS: [&str; 4] =
+    ["authorization", "x-api-key", "api-key", "x-goog-api-key"];
 
-/// The YAML agentgateway reads. Deterministic: environments sorted by name,
-/// routes by format, catalog entries by provider and model.
+/// The YAML agentgateway reads. Deterministic: providers sorted by name,
+/// model entries by environment name (each environment's models in its own
+/// order), catalog entries by key and model.
 pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
-    let mut envs: Vec<&EnvRoutes> = snapshot.environments.iter().collect();
-    envs.sort_by(|a, b| a.env.as_str().cmp(b.env.as_str()));
-
-    let mut routes = Vec::new();
-    for env in &envs {
-        let mut env_routes: Vec<&ModelRoute> = env.routes.iter().collect();
-        env_routes.sort_by_key(|r| r.format.path_segment());
-        for route in env_routes {
-            let segment = route.format.path_segment();
-            let mut policies = forwarding_policies();
-            policies.extend(hook_policies(&env.env.to_string(), snapshot, options));
-            routes.push(json!({
-                "name": format!("{}-{segment}", env.env),
-                "matches": [route_match(&format!("/env/{}/{segment}", env.env))],
-                "policies": policies,
-                "backends": [backend(route, true)],
-            }));
-        }
-    }
-    if options.bare_route
-        && let Some(route) = envs
-            .iter()
-            .find_map(|e| e.routes.iter().find(|r| r.format == ApiFormat::OpenAi))
-    {
-        routes.push(json!({
-            "name": "bare-openai",
-            "matches": [route_match("/bare/openai")],
-            "policies": forwarding_policies(),
-            // No prompt counting either, so the latency test that compares
-            // this route measures it together with the hooks.
-            "backends": [backend(route, false)],
-        }));
-    }
+    let mut providers: Vec<&ProviderEntry> = snapshot.providers.iter().collect();
+    providers.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+    let mut models: Vec<&ModelEntry> = snapshot.models.iter().collect();
+    // Stable, so each environment keeps its own order.
+    models.sort_by(|a, b| a.env.as_str().cmp(b.env.as_str()));
 
     let mut doc = Map::new();
     if !snapshot.priced_models.is_empty() {
@@ -76,51 +90,43 @@ pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
             json!({ "modelCatalog": [{ "inline": { "providers": catalog(&snapshot.priced_models) } }] }),
         );
     }
+    doc.insert("gateways".into(), json!({ GATEWAY: { "port": PORT } }));
+    let provider_blocks: Vec<Value> = providers.iter().map(|p| provider_block(p)).collect();
+    let model_entries: Vec<Value> = models.iter().map(|m| model_entry(m)).collect();
     doc.insert(
-        "binds".into(),
-        json!([{
-            "port": PORT,
-            "listeners": [{ "name": LISTENER, "protocol": "HTTP", "routes": routes }],
-        }]),
+        "llm".into(),
+        json!({
+            "gateways": GATEWAY,
+            "pathPrefix": PATH_PREFIX,
+            "policies": llm_policies(snapshot, options),
+            "providers": provider_blocks,
+            "models": model_entries,
+        }),
     );
+    if options.bare_route
+        && let Some(route) = bare_route(&providers, &models)
+    {
+        doc.insert("routes".into(), json!([route]));
+    }
     serde_yaml_ng::to_string(&Value::Object(doc)).expect("a JSON value always serialises to YAML")
 }
 
-/// Model calls are POSTs. agentgateway sends the client's method upstream, so
-/// a GET would reach the provider (OpenAI lists stored chat completions at
-/// `GET /v1/chat/completions`).
-fn route_match(prefix: &str) -> Value {
-    json!({ "path": { "pathPrefix": prefix }, "method": "POST" })
-}
-
-/// Strips client credentials and drops the `/env/<name>/<format>` prefix.
-fn forwarding_policies() -> Map<String, Value> {
-    let mut policies = Map::new();
-    policies.insert(
-        "requestHeaderModifier".into(),
-        json!({ "remove": STRIPPED_HEADERS }),
-    );
-    policies.insert("urlRewrite".into(), json!({ "path": { "prefix": "/" } }));
-    policies
-}
-
-/// `extAuthz` (keys, environment, budget pre-check), the rate-limit service
-/// (spend charging) and `ext_proc` (cutting streams on revocation).
-fn hook_policies(
-    env: &str,
-    snapshot: &GatewaySnapshot,
-    options: &RenderOptions,
-) -> Map<String, Value> {
+/// The policies every model route shares, in the order agentgateway runs
+/// them: `extAuthz` (keys, environment, budget pre-check), the
+/// authorization rule, the rate-limit service (spend charging), `ext_proc`
+/// (cutting streams on revocation), then the transformation.
+fn llm_policies(snapshot: &GatewaySnapshot, options: &RenderOptions) -> Value {
     let hooks = &snapshot.hooks;
-    let mut policies = Map::new();
-    policies.insert(
-        "extAuthz".into(),
-        json!({
+    json!({
+        "extAuthz": {
             "host": hooks.authz_http,
             "protocol": { "http": {
-                // Names the route's environment to the hook; the client's
-                // path is not trusted for it.
-                "addRequestHeaders": { "x-sekisho-env": cel_string(env) },
+                // Overwrite any client copy: the environment from the path,
+                // the model from the body or the Gemini path.
+                "addRequestHeaders": {
+                    ENV_HEADER: ENV_FROM_PATH,
+                    MODEL_HEADER: "llm.requestModel",
+                },
                 // Exposes the key id the hook verified (`none` for a
                 // session) as `extauthz.key`, and the person it names as
                 // `extauthz.person`.
@@ -131,36 +137,35 @@ fn hook_policies(
             } },
             "includeRequestHeaders": ["authorization"],
             "failureMode": if options.fail_open_authz { "allow" } else { "deny" },
-        }),
-    );
-    policies.insert(
-        "remoteRateLimit".into(),
-        json!({
+        },
+        "authorization": { "rules": [{ "require": MODEL_ROUTE_RULE }] },
+        "remoteRateLimit": {
             "host": hooks.grpc,
             "domain": RATE_LIMIT_DOMAIN,
             "failureMode": if options.fail_open_ratelimit { "failOpen" } else { "failClosed" },
-            "descriptors": spend_descriptors(env, &hooks.charge_secret),
-        }),
-    );
-    policies.insert(
-        "extProc".into(),
-        json!({
+            "descriptors": spend_descriptors(&hooks.charge_secret),
+        },
+        "extProc": {
             "host": hooks.grpc,
             "failureMode": if options.fail_open_extproc { "failOpen" } else { "failClosed" },
             "processingOptions": {
                 "requestBodyMode": "none",
                 "responseBodyMode": "fullDuplexStreamed",
             },
-        }),
-    );
-    policies
+        },
+        "transformations": { "request": {
+            "set": { ENV_HEADER: ENV_FROM_PATH, ":path": PATH_REWRITE },
+            "remove": CLIENT_CREDENTIAL_HEADERS,
+            "metadata": { ENV_METADATA: ENV_FROM_PATH },
+        } },
+    })
 }
 
 /// One descriptor per [`Measure`], all with the same entries. agentgateway
 /// evaluates the entries when the request starts and each cost when it ends;
 /// a cost it can't evaluate leaves its descriptor out. The descriptor
 /// without a cost carries the prompt count on the request-side call.
-fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
+fn spend_descriptors(charge_secret: &str) -> Value {
     Measure::ALL
         .iter()
         .map(|measure| {
@@ -178,9 +183,12 @@ fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
             let mut descriptor = json!({
                 "type": "tokens",
                 "entries": [
-                    { "key": "env", "value": cel_string(env) },
+                    // Not the header: the model entry has removed it by now,
+                    // and an entry that can't be evaluated drops the
+                    // descriptor silently.
+                    { "key": "env", "value": format!("metadata.{ENV_METADATA}") },
                     // Not the Authorization header: agentgateway evaluates these
-                    // after backendAuth has put the provider key there.
+                    // after the provider's credential has replaced it.
                     { "key": "key", "value": "extauthz.key" },
                     // The person charged: the key's owner, or the session's user.
                     { "key": "person", "value": "extauthz.person" },
@@ -200,92 +208,106 @@ fn spend_descriptors(env: &str, charge_secret: &str) -> Value {
         .collect()
 }
 
-/// `tokenize` has agentgateway count each prompt before sending it, for
-/// estimating streams that end early.
-fn backend(route: &ModelRoute, tokenize: bool) -> Value {
-    let provider = match route.kind {
-        ProviderKind::Anthropic => json!({ "anthropic": {} }),
-        ProviderKind::OpenAi => json!({ "openAI": {} }),
-        ProviderKind::Gemini => json!({ "gemini": {} }),
-        // The override names the catalog entry this provider's prices sit under.
-        ProviderKind::OpenAiCompatible => json!({ "custom": {
-            "providerOverride": route.provider.as_str(),
-            "formats": [{ "type": "completions" }],
-        } }),
-        // The store always gives these their setting. Without it the
-        // schema refuses the block, so such a config is never published.
-        ProviderKind::Bedrock => match &route.options {
-            ProviderOptions::Bedrock { region } => json!({ "bedrock": { "region": region } }),
-            _ => json!({ "bedrock": {} }),
-        },
-        ProviderKind::Azure => match &route.options {
-            ProviderOptions::Azure { endpoint } => json!({ "azure": azure_provider(endpoint) }),
-            _ => json!({ "azure": {} }),
-        },
+/// A provider in `llm.providers`, which the model entries name. Its
+/// `params` and `defaults` reach every entry that names it.
+fn provider_block(p: &ProviderEntry) -> Value {
+    let provider = match p.kind {
+        ProviderKind::Anthropic => json!("anthropic"),
+        ProviderKind::OpenAi => json!("openAI"),
+        ProviderKind::Gemini => json!("gemini"),
+        ProviderKind::Bedrock => json!("bedrock"),
+        ProviderKind::Azure => json!("azure"),
+        ProviderKind::OpenAiCompatible => json!({ "custom": custom_provider(p) }),
     };
-    let mut ai = Map::new();
-    ai.insert("name".into(), json!(route.provider.as_str()));
-    ai.insert("provider".into(), provider);
-    if tokenize {
-        ai.insert("tokenize".into(), json!(true));
+    let mut params = Map::new();
+    if let Some(url) = &p.base_url {
+        params.insert(
+            "baseUrl".into(),
+            json!(Upstream::parse(url).base_url(p.kind)),
+        );
     }
-    let mut policies = Map::new();
-    if let Some(url) = &route.base_url {
-        let upstream = Upstream::parse(url);
-        ai.insert("hostOverride".into(), json!(upstream.host_port));
-        // With a host override and no prefix, agentgateway v1.7.0 sends a
-        // built-in kind the client's own path, which could be any of the
-        // provider's endpoints. A prefix makes it choose the model endpoint.
-        if let Some(prefix) = upstream
-            .path_prefix
-            .or_else(|| default_path_prefix(route.kind))
-        {
-            ai.insert("pathPrefix".into(), json!(prefix));
+    match (p.kind, &p.options) {
+        (ProviderKind::Bedrock, ProviderOptions::Bedrock { region }) => {
+            params.insert("awsRegion".into(), json!(region));
         }
-        if upstream.tls {
-            policies.insert("backendTLS".into(), json!({}));
+        (ProviderKind::Azure, ProviderOptions::Azure { endpoint }) => {
+            params.insert("azureResourceName".into(), json!(endpoint.resource_name));
+            params.insert(
+                "azureResourceType".into(),
+                json!(match endpoint.resource_type {
+                    AzureResourceType::OpenAi => "openAI",
+                    AzureResourceType::Foundry => "foundry",
+                }),
+            );
+            if let Some(project) = &endpoint.project_name {
+                params.insert("azureProjectName".into(), json!(project));
+            }
         }
+        // The store always gives these their setting. agentgateway refuses
+        // the whole file without it, so a field the schema refuses keeps
+        // such a config from being published.
+        (ProviderKind::Bedrock | ProviderKind::Azure, _) => {
+            params.insert(
+                "unsupported".into(),
+                json!(format!("a {} provider needs its setting", p.kind.as_str())),
+            );
+        }
+        _ => {}
     }
-    policies.insert(
-        "ai".into(),
-        json!({ "routes": model_endpoints(route.format) }),
-    );
-    policies.insert("backendAuth".into(), backend_auth(route));
-    let models: Vec<String> = route
-        .models
-        .iter()
-        .map(|m| cel_string(m.as_str()))
-        .collect();
-    policies.insert(
-        "authorization".into(),
-        json!({ "rules": [{ "require": format!("llm.requestModel in [{}]", models.join(", ")) }] }),
-    );
-    json!({ "ai": ai, "policies": policies })
+    // agentgateway counts each prompt before sending it, for estimating
+    // streams that end early.
+    params.insert("tokenize".into(), json!(true));
+    json!({
+        "name": p.name.as_str(),
+        "provider": provider,
+        "params": params,
+        "defaults": { "auth": provider_auth(p) },
+    })
 }
 
-/// agentgateway's Azure provider, which builds the upstream host from the
-/// resource name and type.
-fn azure_provider(endpoint: &AzureEndpoint) -> Value {
-    let mut azure = json!({
-        "resourceName": endpoint.resource_name,
-        "resourceType": match endpoint.resource_type {
-            AzureResourceType::OpenAi => "openAI",
-            AzureResourceType::Foundry => "foundry",
-        },
-    });
-    if let Some(project) = &endpoint.project_name {
-        azure["projectName"] = json!(project);
-    }
-    azure
+/// An OpenAI-compatible host: the catalog key its prices sit under (its
+/// name when it has none) and the APIs it serves, each passed through.
+fn custom_provider(p: &ProviderEntry) -> Value {
+    let formats: Vec<Value> = p
+        .apis
+        .iter()
+        .map(|a| {
+            let mut format = json!({ "type": match a.api {
+                HostApi::ChatCompletions => "completions",
+                HostApi::Messages => "messages",
+                HostApi::Responses => "responses",
+            } });
+            if let Some(path) = &a.path {
+                format["path"] = json!(path);
+            }
+            format
+        })
+        .collect();
+    json!({
+        "providerOverride": p.catalog_key.as_deref().unwrap_or(p.name.as_str()),
+        "formats": formats,
+    })
+}
+
+/// One environment's model, served by the provider it names, matched on
+/// the environment header the transformation set from the path.
+fn model_entry(m: &ModelEntry) -> Value {
+    json!({
+        "id": format!("{}/{}", m.env.as_str(), m.model.as_str()),
+        "name": m.model.as_str(),
+        "provider": { "reference": m.provider.as_str() },
+        "matches": [{ "headers": [{ "name": ENV_HEADER, "value": { "exact": m.env.as_str() } }] }],
+        "requestHeaders": { "remove": [ENV_HEADER] },
+    })
 }
 
 /// How agentgateway authenticates to the provider. Always explicit: with a
-/// `hostOverride`, agentgateway v1.7.0 skips Bedrock's and Azure's default
-/// cloud auth (`proxy/httpproxy.rs`), so a request would go out unsigned.
-/// A cloud credential on a kind that doesn't take it (the store refuses
-/// such providers) renders a block the schema refuses, so it is never sent.
-fn backend_auth(route: &ModelRoute) -> Value {
-    match (&route.credential, route.kind) {
+/// base URL, agentgateway v1.7.0 skips Bedrock's and Azure's default cloud
+/// auth (`proxy/httpproxy.rs`), so a request would go out unsigned. A cloud
+/// credential on a kind that doesn't take it (the store refuses such
+/// providers) renders a block the schema refuses, so it is never sent.
+fn provider_auth(p: &ProviderEntry) -> Value {
+    match (&p.credential, p.kind) {
         (ProviderCredential::Key(key), _) => json!({ "key": key }),
         (
             ProviderCredential::AwsAccessKeys {
@@ -317,7 +339,7 @@ fn backend_auth(route: &ModelRoute) -> Value {
             "client_secret": client_secret,
         } } } }),
         // agentgateway signs with the gateway's own AWS credentials, for the
-        // region the Bedrock provider names, host override or not.
+        // region the Bedrock provider names, base URL or not.
         (ProviderCredential::CloudIdentity, ProviderKind::Bedrock) => json!({ "aws": {} }),
         (ProviderCredential::CloudIdentity, ProviderKind::Azure) => {
             json!({ "azure": { "implicit": {} } })
@@ -330,37 +352,100 @@ fn backend_auth(route: &ModelRoute) -> Value {
     }
 }
 
-/// The provider's default base path, which a `pathPrefix` replaces. `None`
-/// for OpenAI-compatible providers, which always choose their own path.
-fn default_path_prefix(kind: ProviderKind) -> Option<String> {
-    match kind {
-        ProviderKind::Anthropic | ProviderKind::OpenAi => Some("/v1".into()),
-        // Gemini's, Bedrock's and Azure's paths are absolute (`/v1beta/…`,
-        // `/model/{id}/converse`, `/openai/v1/…`).
-        ProviderKind::Gemini | ProviderKind::Bedrock | ProviderKind::Azure => Some("/".into()),
-        ProviderKind::OpenAiCompatible => None,
-    }
+/// The hook-free route of the end-to-end latency test, to the provider of
+/// the first model entry of an OpenAI kind, for that environment's models
+/// of that provider. An ordinary route, outside the `llm:` block.
+fn bare_route(providers: &[&ProviderEntry], models: &[&ModelEntry]) -> Option<Value> {
+    let by_name: HashMap<&str, &ProviderEntry> =
+        providers.iter().map(|p| (p.name.as_str(), *p)).collect();
+    let (first, provider) = models.iter().find_map(|m| {
+        let p = by_name.get(m.provider.as_str())?;
+        matches!(
+            p.kind,
+            ProviderKind::OpenAi | ProviderKind::OpenAiCompatible
+        )
+        .then_some((m, *p))
+    })?;
+    let served: Vec<&ModelName> = models
+        .iter()
+        .filter(|m| m.env == first.env && m.provider == first.provider)
+        .map(|m| &m.model)
+        .collect();
+    Some(json!({
+        "gateways": GATEWAY,
+        "name": "bare-openai",
+        // agentgateway sends the client's method upstream, so a GET would
+        // reach the provider (OpenAI lists stored chat completions at
+        // `GET /v1/chat/completions`). Model calls are POSTs.
+        "matches": [{ "path": { "pathPrefix": "/bare/openai" }, "method": "POST" }],
+        "policies": {
+            // `Authorization` is replaced by the provider's credential.
+            "requestHeaderModifier": { "remove": &CLIENT_CREDENTIAL_HEADERS[1..] },
+            "urlRewrite": { "path": { "prefix": "/" } },
+        },
+        "backends": [bare_backend(provider, &served)],
+    }))
 }
 
-/// Each format's model endpoints, by path suffix, and how agentgateway
-/// handles them. Without these it handles every request as an OpenAI chat
-/// completion; any other path still is, and goes to the provider's chat
-/// endpoint.
-fn model_endpoints(format: ApiFormat) -> Value {
-    match format {
-        ApiFormat::Anthropic => json!({
-            "/v1/messages": "messages",
-            "/v1/messages/count_tokens": "anthropicTokenCount",
-        }),
-        ApiFormat::OpenAi => json!({
+/// An `ai` backend for an OpenAI or OpenAI-compatible provider. No prompt
+/// counting, so the latency test that compares this route measures it
+/// together with the hooks.
+fn bare_backend(p: &ProviderEntry, models: &[&ModelName]) -> Value {
+    let provider = match p.kind {
+        ProviderKind::OpenAi => json!({ "openAI": {} }),
+        _ => json!({ "custom": custom_provider(p) }),
+    };
+    let mut ai = Map::new();
+    ai.insert("name".into(), json!(p.name.as_str()));
+    ai.insert("provider".into(), provider);
+    let mut policies = Map::new();
+    if let Some(url) = &p.base_url {
+        let upstream = Upstream::parse(url);
+        ai.insert("hostOverride".into(), json!(upstream.host_port));
+        // With a host override and no prefix, agentgateway v1.7.0 sends a
+        // built-in kind the client's own path, which could be any of the
+        // provider's endpoints. A prefix makes it choose the model endpoint.
+        if let Some(prefix) = upstream
+            .path_prefix
+            .as_deref()
+            .or(default_base_path(p.kind))
+        {
+            ai.insert("pathPrefix".into(), json!(prefix));
+        }
+        if upstream.tls {
+            policies.insert("backendTLS".into(), json!({}));
+        }
+    }
+    // Without route types agentgateway handles every request as a chat
+    // completion.
+    policies.insert(
+        "ai".into(),
+        json!({ "routes": {
             "/v1/chat/completions": "completions",
             "/v1/responses": "responses",
-        }),
-        ApiFormat::Gemini => json!({
-            ":generateContent": "generateContent",
-            ":streamGenerateContent": "generateContent",
-            ":countTokens": "geminiCountTokens",
-        }),
+        } }),
+    );
+    policies.insert("backendAuth".into(), provider_auth(p));
+    let models: Vec<String> = models.iter().map(|m| cel_string(m.as_str())).collect();
+    policies.insert(
+        "authorization".into(),
+        json!({ "rules": [{ "require": format!("llm.requestModel in [{}]", models.join(", ")) }] }),
+    );
+    json!({ "ai": ai, "policies": policies })
+}
+
+/// The base path of a built-in Anthropic or OpenAI provider whose base URL
+/// has none: agentgateway appends each endpoint to the base URL's path.
+/// Gemini's, Bedrock's and Azure's endpoint paths are absolute
+/// (`/v1beta/…`, `/model/{id}/converse`, `/openai/v1/…`), and an
+/// OpenAI-compatible host's base URL is used as the host documents it.
+fn default_base_path(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::Anthropic | ProviderKind::OpenAi => Some("/v1"),
+        ProviderKind::Gemini
+        | ProviderKind::Bedrock
+        | ProviderKind::Azure
+        | ProviderKind::OpenAiCompatible => None,
     }
 }
 
@@ -370,7 +455,9 @@ fn cel_string(s: &str) -> String {
     serde_json::to_string(s).expect("a string always serialises")
 }
 
-/// A provider base URL as agentgateway's `hostOverride` and `pathPrefix`.
+/// A provider base URL's parts: its scheme, host and port, and path. User
+/// info, a query and a fragment are dropped, since agentgateway v1.7.0
+/// refuses a `baseUrl` with any of them when it loads the file.
 struct Upstream {
     host_port: String,
     path_prefix: Option<String>,
@@ -403,6 +490,18 @@ impl Upstream {
             path_prefix: (!path.is_empty()).then(|| path.to_owned()),
             tls,
         }
+    }
+
+    /// `scheme://host:port[path]`, built from the parsed parts only. A
+    /// built-in Anthropic or OpenAI provider without a path gets `/v1`.
+    fn base_url(&self, kind: ProviderKind) -> String {
+        let scheme = if self.tls { "https" } else { "http" };
+        let path = self
+            .path_prefix
+            .as_deref()
+            .or(default_base_path(kind))
+            .unwrap_or_default();
+        format!("{scheme}://{}{path}", self.host_port)
     }
 }
 

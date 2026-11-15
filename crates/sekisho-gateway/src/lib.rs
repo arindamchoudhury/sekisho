@@ -9,7 +9,7 @@ pub mod agent;
 mod render;
 mod snapshot;
 
-pub use render::{RenderOptions, render, usd, validate};
+pub use render::{MODEL_ROUTE_RULE, RenderOptions, render, usd, validate};
 pub use snapshot::{
-    EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, build_snapshot,
+    GatewaySnapshot, HookTargets, ModelEntry, PricedModel, ProviderEntry, build_snapshot,
 };

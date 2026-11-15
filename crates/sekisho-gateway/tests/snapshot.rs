@@ -2,17 +2,17 @@ mod common;
 
 use std::time::Duration;
 
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
+use sekisho_core::formats::{ApiFormat, AzureEndpoint, HostApis, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_gateway::{
-    EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
+    GatewaySnapshot, HookTargets, ModelEntry, PricedModel, ProviderEntry, RenderOptions,
     build_snapshot, render, validate,
 };
 use sekisho_store::{
     CredentialKind, EnvironmentSpec, NewModel, NewProvider, ProviderCredential, ProviderOptions,
-    ProviderUpdate,
+    ProviderUpdate, Store,
 };
 use tokio::time::Instant;
 
@@ -32,6 +32,31 @@ fn provider(name: &str) -> ProviderName {
     ProviderName::parse(name).unwrap()
 }
 
+fn entry(env: &str, model_name: &str, provider_name: &str) -> ModelEntry {
+    ModelEntry {
+        env: EnvName::parse(env).unwrap(),
+        model: model(model_name),
+        provider: provider(provider_name),
+    }
+}
+
+async fn put_env(store: &Store, name: &str, models: &[&str]) {
+    store
+        .upsert_environment(
+            EnvironmentSpec {
+                name: EnvName::parse(name).unwrap(),
+                description: String::new(),
+                notice: String::new(),
+                access_groups: Vec::new(),
+                models: models.iter().map(|m| model(m)).collect(),
+                owner: None,
+            },
+            sekisho_testkit::people::person(store, "admin@example.com", &[]).await,
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn snapshot_reflects_the_store() {
     let (store, sb) = common::store().await;
@@ -43,12 +68,19 @@ async fn snapshot_reflects_the_store() {
             Some("http://mock:8000/v1"),
             "mock-secret",
         ),
+        // No environment uses it, so the gateway never gets its key.
+        (
+            "unused",
+            ProviderKind::OpenAiCompatible,
+            Some("http://unused:8000/v1"),
+            "unused-secret",
+        ),
     ] {
         store
             .create_provider(
                 &sb,
                 NewProvider {
-                    // `mock` doesn't resolve.
+                    // `mock` and `unused` don't resolve.
                     allow_private_network: base_url.is_some(),
                     ..NewProvider::keyed(provider(name), kind, base_url.map(String::from), key)
                 },
@@ -78,59 +110,45 @@ async fn snapshot_reflects_the_store() {
             .await
             .unwrap();
     }
-    for (env, models) in [
-        (
-            "data-team",
-            vec!["mock-model", "claude-sonnet-5-5", "claude-haiku-5-5"],
-        ),
-        ("empty", vec![]),
-    ] {
-        store
-            .upsert_environment(
-                EnvironmentSpec {
-                    name: EnvName::parse(env).unwrap(),
-                    description: String::new(),
-                    notice: String::new(),
-                    access_groups: Vec::new(),
-                    models: models.into_iter().map(model).collect(),
-                    owner: None,
-                },
-                sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
-            )
-            .await
-            .unwrap();
-    }
+    put_env(&store, "ml-team", &["claude-sonnet-5-5", "mock-model"]).await;
+    put_env(
+        &store,
+        "data-team",
+        &["mock-model", "claude-sonnet-5-5", "claude-haiku-5-5"],
+    )
+    .await;
+    put_env(&store, "empty", &[]).await;
 
     let snapshot = build_snapshot(&store, &sb, &hooks()).await.unwrap();
     let want = GatewaySnapshot {
-        environments: vec![
-            EnvRoutes {
-                env: EnvName::parse("data-team").unwrap(),
-                routes: vec![
-                    ModelRoute {
-                        format: ApiFormat::Anthropic,
-                        provider: provider("anthropic"),
-                        kind: ProviderKind::Anthropic,
-                        base_url: None,
-                        options: ProviderOptions::None,
-                        credential: ProviderCredential::Key("sk-ant-secret".into()),
-                        models: vec![model("claude-sonnet-5-5"), model("claude-haiku-5-5")], // environment order
-                    },
-                    ModelRoute {
-                        format: ApiFormat::OpenAi,
-                        provider: provider("mock"),
-                        kind: ProviderKind::OpenAiCompatible,
-                        base_url: Some("http://mock:8000/v1".into()),
-                        options: ProviderOptions::None,
-                        credential: ProviderCredential::Key("mock-secret".into()),
-                        models: vec![model("mock-model")],
-                    },
-                ],
+        // Each provider an environment uses, once, sorted by name.
+        providers: vec![
+            ProviderEntry {
+                name: provider("anthropic"),
+                kind: ProviderKind::Anthropic,
+                base_url: None,
+                options: ProviderOptions::None,
+                credential: ProviderCredential::Key("sk-ant-secret".into()),
+                apis: HostApis::chat_only(),
+                catalog_key: None,
             },
-            EnvRoutes {
-                env: EnvName::parse("empty").unwrap(),
-                routes: vec![],
+            ProviderEntry {
+                name: provider("mock"),
+                kind: ProviderKind::OpenAiCompatible,
+                base_url: Some("http://mock:8000/v1".into()),
+                options: ProviderOptions::None,
+                credential: ProviderCredential::Key("mock-secret".into()),
+                apis: HostApis::chat_only(),
+                catalog_key: None,
             },
+        ],
+        // By environment name, then the environment's own order.
+        models: vec![
+            entry("data-team", "mock-model", "mock"),
+            entry("data-team", "claude-sonnet-5-5", "anthropic"),
+            entry("data-team", "claude-haiku-5-5", "anthropic"),
+            entry("ml-team", "claude-sonnet-5-5", "anthropic"),
+            entry("ml-team", "mock-model", "mock"),
         ],
         // Every priced model, sorted by provider then model; unpriced ones use agentgateway's catalog.
         priced_models: vec![
@@ -177,12 +195,15 @@ async fn snapshot_reflects_the_store() {
         hooks: hooks(),
     };
     assert_eq!(snapshot, want);
+    let yaml = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&yaml), Ok(()));
+    assert!(!yaml.contains("unused-secret"));
 }
 
-/// A Bedrock route carries the stored credential, read once per provider,
-/// and the format the provider was added with, not its kind's first one.
+/// A Bedrock provider carries the stored credential and region, and serves
+/// its models beside another provider's in one environment.
 #[tokio::test]
-async fn bedrock_routes_carry_their_credential_and_format() {
+async fn a_bedrock_provider_carries_its_credential_and_region() {
     let (store, sb) = common::store().await;
     let aws = ProviderCredential::AwsAccessKeys {
         access_key_id: "AKIAEXAMPLE0000001".into(),
@@ -235,57 +256,55 @@ async fn bedrock_routes_carry_their_credential_and_format() {
             .await
             .unwrap();
     }
-    store
-        .upsert_environment(
-            EnvironmentSpec {
-                name: EnvName::parse("cloud").unwrap(),
-                description: String::new(),
-                notice: String::new(),
-                access_groups: Vec::new(),
-                models: vec![
-                    model("openai.gpt-oss-120b-1:0"),
-                    model("claude-sonnet-5-5"),
-                    model("openai.gpt-oss-20b-1:0"),
-                ],
-                owner: None,
-            },
-            sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
-        )
-        .await
-        .unwrap();
+    put_env(
+        &store,
+        "cloud",
+        &[
+            "openai.gpt-oss-120b-1:0",
+            "claude-sonnet-5-5",
+            "openai.gpt-oss-20b-1:0",
+        ],
+    )
+    .await;
 
     let snapshot = build_snapshot(&store, &sb, &hooks()).await.unwrap();
     assert_eq!(
-        snapshot.environments[0].routes,
+        snapshot.providers,
         [
-            ModelRoute {
-                format: ApiFormat::Anthropic,
-                provider: provider("anthropic"),
+            ProviderEntry {
+                name: provider("anthropic"),
                 kind: ProviderKind::Anthropic,
                 base_url: None,
                 options: ProviderOptions::None,
                 credential: ProviderCredential::Key("sk-ant".into()),
-                models: vec![model("claude-sonnet-5-5")],
+                apis: HostApis::chat_only(),
+                catalog_key: None,
             },
-            ModelRoute {
-                format: ApiFormat::OpenAi,
-                provider: provider("bedrock"),
+            ProviderEntry {
+                name: provider("bedrock"),
                 kind: ProviderKind::Bedrock,
                 base_url: None,
                 options: ProviderOptions::Bedrock {
                     region: "us-east-1".into()
                 },
                 credential: aws,
-                models: vec![
-                    model("openai.gpt-oss-120b-1:0"),
-                    model("openai.gpt-oss-20b-1:0")
-                ],
+                apis: HostApis::chat_only(),
+                catalog_key: None,
             },
+        ]
+    );
+    assert_eq!(
+        snapshot.models,
+        [
+            entry("cloud", "openai.gpt-oss-120b-1:0", "bedrock"),
+            entry("cloud", "claude-sonnet-5-5", "anthropic"),
+            entry("cloud", "openai.gpt-oss-20b-1:0", "bedrock"),
         ]
     );
     let yaml = render(&snapshot, &RenderOptions::default());
     assert_eq!(validate(&yaml), Ok(()));
-    assert!(yaml.contains("bedrock-secret") && yaml.contains("bedrock-session"));
+    assert_eq!(yaml.matches("bedrock-secret").count(), 1, "{yaml}");
+    assert!(yaml.contains("bedrock-session"));
 }
 
 /// A credential is rendered with the base URL and settings it was saved
@@ -322,20 +341,7 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
         })
         .await
         .unwrap();
-    store
-        .upsert_environment(
-            EnvironmentSpec {
-                name: EnvName::parse("cloud").unwrap(),
-                description: String::new(),
-                notice: String::new(),
-                access_groups: Vec::new(),
-                models: vec![model("gpt-deployment")],
-                owner: None,
-            },
-            sekisho_testkit::people::person(&store, "admin@example.com", &[]).await,
-        )
-        .await
-        .unwrap();
+    put_env(&store, "cloud", &["gpt-deployment"]).await;
 
     let mut blocker = store.pool().begin().await.unwrap();
     sqlx::query("lock table models in access exclusive mode")
@@ -379,10 +385,10 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
     blocker.rollback().await.unwrap();
 
     let snapshot = build.await.unwrap().unwrap();
-    let route = &snapshot.environments[0].routes[0];
+    let azure = &snapshot.providers[0];
     assert_eq!(
-        (route.credential.kind(), route.base_url.as_deref()),
+        (azure.credential.kind(), azure.base_url.as_deref()),
         (CredentialKind::CloudIdentity, None),
-        "{route:?}"
+        "{azure:?}"
     );
 }

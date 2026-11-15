@@ -1,13 +1,14 @@
 //! What the gateway config is rendered from: a read of the store.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::formats::{HostApis, ProviderKind};
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_core::secret_box::SecretBox;
-use sekisho_store::{Provider, ProviderCredential, ProviderOptions, Store, StoreError};
+use sekisho_store::{ProviderCredential, ProviderOptions, Store, StoreError};
 
 /// Where agentgateway reaches Sekisho's hooks, each as `host:port`, and the
 /// secret its rate-limit calls carry.
@@ -32,41 +33,47 @@ impl fmt::Debug for HookTargets {
     }
 }
 
-/// One environment's route for one API format, served by one provider.
+/// A provider some environment uses, written once in the config with its
+/// credential (`llm.providers`).
 #[derive(Clone, PartialEq, Eq)]
-pub struct ModelRoute {
-    pub format: ApiFormat,
-    pub provider: ProviderName,
+pub struct ProviderEntry {
+    pub name: ProviderName,
     pub kind: ProviderKind,
     pub base_url: Option<String>,
     /// The kind's settings: Bedrock's region, Azure's endpoint.
     pub options: ProviderOptions,
     /// The decrypted credential, written into the gateway config.
     pub credential: ProviderCredential,
-    /// The models this route allows, in the environment's order.
-    pub models: Vec<ModelName>,
+    /// The APIs an OpenAI-compatible host serves. Until providers store
+    /// theirs (plan 1d Task 4), Chat Completions only.
+    pub apis: HostApis,
+    /// The key an OpenAI-compatible host's prices are filed under in
+    /// agentgateway's catalog; its name when `None`.
+    pub catalog_key: Option<String>,
 }
 
 /// Shows only the credential's shape, so snapshots can be logged.
-impl fmt::Debug for ModelRoute {
+impl fmt::Debug for ProviderEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ModelRoute")
-            .field("format", &self.format)
-            .field("provider", &self.provider)
+        f.debug_struct("ProviderEntry")
+            .field("name", &self.name)
             .field("kind", &self.kind)
             .field("base_url", &self.base_url)
             .field("options", &self.options)
             .field("credential", &self.credential.kind())
-            .field("models", &self.models)
+            .field("apis", &self.apis)
+            .field("catalog_key", &self.catalog_key)
             .finish()
     }
 }
 
+/// One model an environment lists, and the provider that serves it
+/// (`llm.models`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnvRoutes {
+pub struct ModelEntry {
     pub env: EnvName,
-    /// Sorted by format; empty when the environment lists no models.
-    pub routes: Vec<ModelRoute>,
+    pub model: ModelName,
+    pub provider: ProviderName,
 }
 
 /// A model with admin-set prices, in micro-USD per 1,000,000 tokens, the key
@@ -86,15 +93,17 @@ pub struct PricedModel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewaySnapshot {
-    /// Sorted by name.
-    pub environments: Vec<EnvRoutes>,
+    /// Only the providers some environment uses, sorted by name.
+    pub providers: Vec<ProviderEntry>,
+    /// By environment name, then the environment's own order.
+    pub models: Vec<ModelEntry>,
     /// Sorted by provider, then model.
     pub priced_models: Vec<PricedModel>,
     pub hooks: HookTargets,
 }
 
-/// Reads providers, models and environments, decrypting each provider
-/// credential that a route needs.
+/// Reads providers, models and environments, decrypting the credential of
+/// each provider an environment uses, once.
 ///
 /// The three reads are separate, so a change committed between them can
 /// leave a model that the environment list names but the model list lacks.
@@ -107,16 +116,17 @@ pub async fn build_snapshot(
 ) -> Result<GatewaySnapshot, StoreError> {
     let providers = store.list_providers().await?;
     let models = store.list_models().await?;
-    let environments = store.list_environments().await?;
+    let mut environments = store.list_environments().await?;
+    environments.sort_by(|a, b| a.spec.name.as_str().cmp(b.spec.name.as_str()));
     let provider_by_name: HashMap<&str, _> =
         providers.iter().map(|p| (p.name.as_str(), p)).collect();
     let model_by_name: HashMap<&str, _> = models.iter().map(|m| (m.name.as_str(), m)).collect();
-    // Each provider as saved together with its credential (see below).
-    let mut saved: HashMap<_, (Provider, ProviderCredential)> = HashMap::new();
+    // Each provider an environment uses, as saved together with its
+    // credential (see below).
+    let mut used: HashMap<_, ProviderEntry> = HashMap::new();
 
-    let mut snapshot_envs = Vec::with_capacity(environments.len());
+    let mut entries = Vec::new();
     for env in &environments {
-        let mut routes: Vec<ModelRoute> = Vec::new();
         for name in &env.spec.models {
             let Some(provider) = model_by_name
                 .get(name.as_str())
@@ -125,47 +135,33 @@ pub async fn build_snapshot(
                 tracing::warn!(env = %env.spec.name, model = %name, "model changed while rendering; skipped");
                 continue;
             };
-            let format = provider.format;
-            match routes.iter_mut().find(|r| r.format == format) {
-                Some(route) if route.provider == provider.name => route.models.push(name.clone()),
-                // The store refuses this on save; skip rather than route to two providers.
-                Some(route) => tracing::warn!(
-                    env = %env.spec.name, model = %name, provider = %provider.name,
-                    route_provider = %route.provider, "two providers for one API format; model skipped"
-                ),
-                None => {
-                    // The credential, base URL and settings come from one
-                    // read of the provider, not the list above: a change
-                    // between the two could otherwise send the new credential
-                    // to the old host. The kind and format never change.
-                    let (current, credential) = match saved.get(&provider.id) {
-                        Some(found) => found.clone(),
-                        None => {
-                            let found = store
-                                .provider_with_credential(secret_box, provider.id)
-                                .await?;
-                            saved.insert(provider.id, found.clone());
-                            found
-                        }
-                    };
-                    routes.push(ModelRoute {
-                        format,
-                        provider: provider.name.clone(),
-                        kind: provider.kind,
-                        base_url: current.base_url,
-                        options: current.options,
-                        credential,
-                        models: vec![name.clone()],
-                    });
-                }
+            if let Entry::Vacant(slot) = used.entry(provider.id) {
+                // The credential, base URL and settings come from one read
+                // of the provider, not the list above: a change between the
+                // two could otherwise send the new credential to the old
+                // host. The name and kind never change.
+                let (current, credential) = store
+                    .provider_with_credential(secret_box, provider.id)
+                    .await?;
+                slot.insert(ProviderEntry {
+                    name: provider.name.clone(),
+                    kind: provider.kind,
+                    base_url: current.base_url,
+                    options: current.options,
+                    credential,
+                    apis: HostApis::chat_only(),
+                    catalog_key: None,
+                });
             }
+            entries.push(ModelEntry {
+                env: env.spec.name.clone(),
+                model: name.clone(),
+                provider: provider.name.clone(),
+            });
         }
-        routes.sort_by_key(|r| r.format.path_segment());
-        snapshot_envs.push(EnvRoutes {
-            env: env.spec.name.clone(),
-            routes,
-        });
     }
+    let mut provider_entries: Vec<ProviderEntry> = used.into_values().collect();
+    provider_entries.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
 
     let mut priced_models: Vec<PricedModel> = models
         .iter()
@@ -190,7 +186,8 @@ pub async fn build_snapshot(
         (a.provider.as_str(), a.model.as_str()).cmp(&(b.provider.as_str(), b.model.as_str()))
     });
     Ok(GatewaySnapshot {
-        environments: snapshot_envs,
+        providers: provider_entries,
+        models: entries,
         priced_models,
         hooks: hooks.clone(),
     })

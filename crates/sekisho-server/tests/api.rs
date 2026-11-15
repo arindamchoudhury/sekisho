@@ -563,7 +563,7 @@ async fn long_poll_wakes_when_config_changes() {
     let body = body.unwrap();
     assert!(body["version"].as_i64().unwrap() > latest);
     let yaml = body["yaml"].as_str().unwrap();
-    assert!(yaml.contains("pathPrefix: /env/data-team/openai"), "{yaml}");
+    assert!(yaml.contains("id: data-team/mock-model"), "{yaml}");
     assert!(yaml.contains("key: mock-secret-key"));
     assert_eq!(sekisho_gateway::validate(yaml), Ok(()));
 }
@@ -599,7 +599,7 @@ async fn missed_changes_are_published_by_the_timer() {
         r.body["yaml"]
             .as_str()
             .unwrap()
-            .contains("pathPrefix: /env/quiet-team/openai")
+            .contains("id: quiet-team/mock-model")
     );
 }
 
