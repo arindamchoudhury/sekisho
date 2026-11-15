@@ -332,6 +332,20 @@ impl ProviderKind {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
     }
 
+    /// The key agentgateway's model catalog files this kind's models under
+    /// (its providers' `NAME`). An OpenAI-compatible provider has none of
+    /// its own kind: its host's key, if any, is the provider's.
+    pub fn catalog_key(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Anthropic => Some("anthropic"),
+            ProviderKind::OpenAi => Some("openai"),
+            ProviderKind::Gemini => Some("gcp.gemini"),
+            ProviderKind::Bedrock => Some("aws.bedrock"),
+            ProviderKind::Azure => Some("azure"),
+            ProviderKind::OpenAiCompatible => None,
+        }
+    }
+
     /// The formats a provider of this kind can serve. A provider serves one
     /// of them, chosen when it is added; single-format kinds have no choice.
     pub fn formats(self) -> &'static [ApiFormat] {

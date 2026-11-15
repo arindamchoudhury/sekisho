@@ -5,7 +5,7 @@ use std::fmt;
 
 use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
-use sekisho_core::pricing::ModelPrices;
+use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{Provider, ProviderCredential, ProviderOptions, Store, StoreError};
 
@@ -69,15 +69,19 @@ pub struct EnvRoutes {
     pub routes: Vec<ModelRoute>,
 }
 
-/// A model with admin-set prices, in micro-USD per 1,000,000 tokens, and the
-/// API format its provider serves (which sets the default cache prices).
+/// A model with admin-set prices, in micro-USD per 1,000,000 tokens, the key
+/// the inline catalog files it under, and where its missing cache prices
+/// come from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PricedModel {
     pub provider: ProviderName,
     pub kind: ProviderKind,
-    pub format: ApiFormat,
+    /// The kind's own catalog key, or for an OpenAI-compatible provider its
+    /// name (its `providerOverride`).
+    pub catalog_key: String,
     pub model: ModelName,
     pub prices: ModelPrices,
+    pub cache: CacheDefaults,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,13 +170,19 @@ pub async fn build_snapshot(
     let mut priced_models: Vec<PricedModel> = models
         .iter()
         .filter_map(|m| {
+            // A provider deleted since the list was read leaves its model out.
+            provider_by_name.get(m.provider.as_str())?;
             Some(PricedModel {
                 provider: m.provider.clone(),
                 kind: m.provider_kind,
-                // A provider deleted since the list was read leaves its model out.
-                format: provider_by_name.get(m.provider.as_str())?.format,
+                catalog_key: m
+                    .provider_kind
+                    .catalog_key()
+                    .unwrap_or(m.provider.as_str())
+                    .to_owned(),
                 model: m.name.clone(),
                 prices: m.prices()?,
+                cache: CacheDefaults::for_model(m.provider_kind, m.name.as_str()),
             })
         })
         .collect();

@@ -4,7 +4,6 @@
 
 pub mod authz;
 pub mod cache;
-pub mod catalog;
 pub mod credential;
 pub mod extproc;
 pub mod ratelimit;

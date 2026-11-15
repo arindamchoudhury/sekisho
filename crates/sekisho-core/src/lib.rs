@@ -1,6 +1,7 @@
 //! Sekisho's domain types. Pure values and rules, no IO.
 
 pub mod access;
+pub mod catalog;
 pub mod formats;
 pub mod keys;
 pub mod money;

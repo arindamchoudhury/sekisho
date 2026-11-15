@@ -44,24 +44,32 @@ async fn rig() -> Rig {
 /// A rig whose charger waits `tally_wait`, after a stream ends, for
 /// agentgateway's report before it estimates. Its models:
 /// `claude-priced` (Anthropic, 3 / 15 USD per million tokens), `gpt-priced`
-/// (OpenAI, 3 / 15) and `claude-fable-5` (Anthropic, no admin price; 10 /
-/// 50 in the catalog).
+/// (OpenAI, 3 / 15), `claude-fable-5` (Anthropic, no admin price; 10 /
+/// 50 in the catalog) and `qwen3` (an OpenAI-compatible host, 1 / 2).
 async fn rig_waiting(tally_wait: Duration) -> Rig {
     let (store, secret_box) = sekisho_testkit::store().await;
-    for (provider, kind) in [
-        ("anthropic", ProviderKind::Anthropic),
-        ("openai", ProviderKind::OpenAi),
+    for (provider, kind, base_url) in [
+        ("anthropic", ProviderKind::Anthropic, None),
+        ("openai", ProviderKind::OpenAi, None),
+        (
+            "qwen-host",
+            ProviderKind::OpenAiCompatible,
+            Some("http://mock:8000/v1"),
+        ),
     ] {
         let name = ProviderName::parse(provider).unwrap();
-        store
-            .create_provider(&secret_box, NewProvider::keyed(name, kind, None, "k"))
-            .await
-            .unwrap();
+        let new = NewProvider {
+            // `mock` doesn't resolve.
+            allow_private_network: base_url.is_some(),
+            ..NewProvider::keyed(name, kind, base_url.map(Into::into), "k")
+        };
+        store.create_provider(&secret_box, new).await.unwrap();
     }
     for (model, provider, prices) in [
         ("claude-priced", "anthropic", Some((3, 15))),
         ("gpt-priced", "openai", Some((3, 15))),
         ("claude-fable-5", "anthropic", None),
+        ("qwen3", "qwen-host", Some((1, 2))),
     ] {
         let usd = |n: i64| MicroUsd(n * 1_000_000);
         store
@@ -521,6 +529,25 @@ async fn a_complete_request_with_an_admin_price_is_priced_by_sekisho() {
     // million (Anthropic's cache ratios).
     spent_becomes(&rig, MicroUsd(16_650)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(16_650); 3]);
+}
+
+/// An open-weight host's cache reads cost its input price unless the admin
+/// sets one: hosts rarely discount them, and a budget must not undercount.
+#[tokio::test]
+async fn an_open_weight_models_cache_reads_cost_its_input_price() {
+    let mut rig = rig().await;
+    rig.rls
+        .should_rate_limit(req(
+            (rig.key.as_str(), rig.person.as_str()),
+            "qwen3",
+            "",
+            &[("input", 1_000), ("cache_read", 600), ("output", 10)],
+        ))
+        .await
+        .unwrap();
+    // (400 uncached + 600 cached) × 1 + 10 × 2 USD per million.
+    spent_becomes(&rig, MicroUsd(1_020)).await;
+    assert_eq!(settled(&rig).await, [MicroUsd(1_020); 3]);
 }
 
 #[tokio::test]

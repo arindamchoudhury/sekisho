@@ -406,22 +406,13 @@ impl Upstream {
     }
 }
 
-/// Inline catalog entries, under the provider names agentgateway looks
-/// prices up by: its own for built-in kinds, and the provider's name for
-/// OpenAI-compatible ones (their `providerOverride`).
+/// Inline catalog entries, under the keys agentgateway looks prices up by
+/// ([`PricedModel::catalog_key`]), each cache price filled in.
 fn catalog(priced: &[PricedModel]) -> Value {
-    let mut providers: BTreeMap<String, BTreeMap<&str, Value>> = BTreeMap::new();
+    let mut providers: BTreeMap<&str, BTreeMap<&str, Value>> = BTreeMap::new();
     for m in priced {
-        let key = match m.kind {
-            ProviderKind::Anthropic => "anthropic".to_owned(),
-            ProviderKind::OpenAi => "openai".to_owned(),
-            ProviderKind::Gemini => "gcp.gemini".to_owned(),
-            ProviderKind::Bedrock => "aws.bedrock".to_owned(),
-            ProviderKind::Azure => "azure".to_owned(),
-            ProviderKind::OpenAiCompatible => m.provider.as_str().to_owned(),
-        };
-        let rates = m.prices.rates(m.format);
-        providers.entry(key).or_default().insert(
+        let rates = m.prices.rates(m.cache);
+        providers.entry(m.catalog_key.as_str()).or_default().insert(
             m.model.as_str(),
             json!({ "rates": {
                 "input": usd(rates.input),
@@ -436,7 +427,7 @@ fn catalog(priced: &[PricedModel]) -> Value {
         .map(|(key, models)| {
             let models: Map<String, Value> =
                 models.into_iter().map(|(m, v)| (m.to_owned(), v)).collect();
-            (key, json!({ "models": models }))
+            (key.to_owned(), json!({ "models": models }))
         })
         .collect();
     Value::Object(providers)

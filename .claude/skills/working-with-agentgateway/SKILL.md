@@ -26,9 +26,10 @@ clone (`git clone --depth 1 --branch v1.7.0`) is enough.
   edition. agentgateway has a closed enterprise edition, so a feature can
   leave the open-source one.
 - After a bump:
-  - replace `crates/sekisho-hooks/catalog/agentgateway-v1.7.0.model-catalog.json`
+  - replace `crates/sekisho-core/catalog/agentgateway-v1.7.0.model-catalog.json`
     with the new tag's `catalog/model-catalog.json`, byte for byte (Git's
-    blob, LF), renamed for the tag, and update `catalog.rs`;
+    blob, LF), renamed for the tag, and update
+    `crates/sekisho-core/src/catalog.rs`;
   - check `crates/sekisho-hooks/src/tokens.rs` (the Claude factors and
     `claude_version`) against the tag's `crates/llm/src/tokenizer.rs`;
   - re-validate every config and re-run the e2e tests of plans 1, 1b and 1c.

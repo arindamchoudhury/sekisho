@@ -33,6 +33,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sekisho_core::catalog;
 use sekisho_core::keys::{EnvKeyId, verify_secret};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName};
@@ -46,7 +47,6 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::cache::AuthCache;
-use crate::catalog::catalog_rates;
 use crate::tally::{Recorded, STALLED, Start, Tallies, Tally};
 use crate::tokens::answer_tokens;
 
@@ -355,7 +355,7 @@ impl Charger {
         let pricing = self.pricing(payer, model).await.ok()?;
         let admin = pricing
             .as_ref()
-            .and_then(|p| Some(p.prices?.rates(p.format)));
+            .and_then(|p| Some(p.prices?.rates(p.cache)));
         let usage = Usage {
             output,
             ..report.usage()
@@ -400,8 +400,8 @@ impl Charger {
                 .unwrap_or_else(|| answer_tokens(tally.answer_o200k, model));
         }
         let rates = pricing.as_ref().and_then(|p| match p.prices {
-            Some(prices) => Some(prices.rates(p.format)),
-            None => catalog_rates(p.kind, p.format, model),
+            Some(prices) => Some(prices.rates(p.cache)),
+            None => catalog::rates(p.catalog_key.as_deref()?, p.cache, model),
         });
         let Some(rates) = rates else {
             tracing::warn!(%payer, model, "spend not recorded: no price for this model");

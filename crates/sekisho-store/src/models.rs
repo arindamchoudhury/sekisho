@@ -1,7 +1,7 @@
 use sekisho_core::formats::{ApiFormat, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
-use sekisho_core::pricing::ModelPrices;
+use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
@@ -14,8 +14,8 @@ use crate::{Result, Store, StoreError};
 /// and output `None` to use agentgateway's catalog prices. An
 /// OpenAI-compatible provider's models need prices: the catalog has none for
 /// them. Cache prices are optional and only set with input and output
-/// prices; when unset, the provider's usual ratios apply
-/// ([`ModelPrices::rates`]).
+/// prices; when unset, the model's usual ratios apply
+/// ([`CacheDefaults::for_model`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewModel {
     pub name: ModelName,
@@ -50,13 +50,16 @@ impl Model {
     }
 }
 
-/// What charging needs to know about a model: whose it is, the API format
-/// its provider serves, and the admin's prices if any.
+/// What charging needs to know about a model: whose it is, where
+/// agentgateway's catalog files its prices, where its missing cache prices
+/// come from, and the admin's prices if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelPricing {
     pub provider: ProviderName,
     pub kind: ProviderKind,
-    pub format: ApiFormat,
+    /// The kind's own catalog key; `None` for OpenAI-compatible providers.
+    pub catalog_key: Option<String>,
+    pub cache: CacheDefaults,
     pub prices: Option<ModelPrices>,
 }
 
@@ -65,7 +68,7 @@ pub struct ModelPricing {
 macro_rules! select {
     () => {
         "select m.id, m.name, p.name as provider, p.kind as provider_kind, \
-         p.api_format, m.input_price_micro_usd, m.output_price_micro_usd, \
+         m.input_price_micro_usd, m.output_price_micro_usd, \
          m.cache_read_price_micro_usd, m.cache_write_price_micro_usd \
          from models m join providers p on p.id = m.provider_id"
     };
@@ -200,9 +203,9 @@ impl Store {
             return Ok(None);
         };
         let model = from_row(&row)?;
-        let format: String = row.try_get("api_format")?;
         Ok(Some(ModelPricing {
-            format: ApiFormat::parse(&format).ok_or_else(|| bad_column("API format", &format))?,
+            catalog_key: model.provider_kind.catalog_key().map(str::to_owned),
+            cache: CacheDefaults::for_model(model.provider_kind, model.name.as_str()),
             prices: model.prices(),
             provider: model.provider,
             kind: model.provider_kind,

@@ -1,7 +1,7 @@
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
-use sekisho_core::pricing::ModelPrices;
+use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions, render, usd,
     validate,
@@ -102,7 +102,8 @@ mod fixtures {
         PricedModel {
             provider: ProviderName::parse(provider).unwrap(),
             kind,
-            format: kind.formats()[0],
+            catalog_key: kind.catalog_key().unwrap_or(provider).to_owned(),
+            cache: CacheDefaults::for_model(kind, model),
             model: ModelName::parse(model).unwrap(),
             prices: ModelPrices {
                 input: MicroUsd(input),
@@ -243,17 +244,13 @@ mod fixtures {
                     3_000_000,
                     15_000_000,
                 ),
-                // The Azure route serves the OpenAI format.
-                PricedModel {
-                    format: ApiFormat::OpenAi,
-                    ..priced(
-                        "azure",
-                        ProviderKind::Azure,
-                        "gpt-deployment",
-                        1_250_000,
-                        10_000_000,
-                    )
-                },
+                priced(
+                    "azure",
+                    ProviderKind::Azure,
+                    "gpt-deployment",
+                    1_250_000,
+                    10_000_000,
+                ),
             ],
             hooks: hooks(),
         }
@@ -481,9 +478,10 @@ fn every_kind_renders_sorted_and_valid() {
             "vllm"
         ]
     );
+    // An OpenAI-compatible host's cache prices default to its input price.
     assert_eq!(
         catalog["vllm"]["models"]["qwen3"]["rates"],
-        serde_json::json!({ "input": "0.1", "output": "0.4", "cacheRead": "0.05", "cacheWrite": "0.1" })
+        serde_json::json!({ "input": "0.1", "output": "0.4", "cacheRead": "0.1", "cacheWrite": "0.1" })
     );
     assert_eq!(
         catalog["openai"]["models"]["gpt-5"]["rates"],
@@ -1152,6 +1150,20 @@ fn inline_catalog_carries_cache_rates() {
                 15_000_000,
             )
         },
+        fixtures::priced(
+            "scaleway",
+            ProviderKind::OpenAiCompatible,
+            "qwen3-235b-a22b-instruct-2507",
+            750_000,
+            2_250_000,
+        ),
+        fixtures::priced(
+            "bedrock",
+            ProviderKind::Bedrock,
+            "amazon.nova-pro-v1:0",
+            800_000,
+            3_200_000,
+        ),
     ];
     let y = render(&snapshot, &RenderOptions::default());
     assert_eq!(validate(&y), Ok(()));
@@ -1164,5 +1176,16 @@ fn inline_catalog_carries_cache_rates() {
     assert_eq!(
         catalog["openai"]["models"]["gpt-5"]["rates"],
         json!({ "input": "3", "output": "15", "cacheRead": "0.1", "cacheWrite": "3" })
+    );
+    // An OpenAI-compatible model's cache prices are its input price, filed
+    // under the provider's name (its providerOverride).
+    assert_eq!(
+        catalog["scaleway"]["models"]["qwen3-235b-a22b-instruct-2507"]["rates"],
+        json!({ "input": "0.75", "output": "2.25", "cacheRead": "0.75", "cacheWrite": "0.75" })
+    );
+    // A Bedrock model that isn't Claude takes OpenAI's ratios.
+    assert_eq!(
+        catalog["aws.bedrock"]["models"]["amazon.nova-pro-v1:0"]["rates"],
+        json!({ "input": "0.8", "output": "3.2", "cacheRead": "0.4", "cacheWrite": "0.8" })
     );
 }

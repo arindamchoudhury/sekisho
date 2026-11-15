@@ -8,7 +8,7 @@ config:
               rates:
                 input: '3'
                 output: '15'
-                cacheRead: '1.5'
+                cacheRead: '3'
                 cacheWrite: '3'
 binds:
 - port: 3000

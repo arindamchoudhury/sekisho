@@ -1,8 +1,51 @@
 //! What a request costs: an admin's model prices, the rates they give, and
 //! the measures agentgateway reports for each request.
 
-use crate::formats::ApiFormat;
+use crate::formats::{ProviderKind, is_claude};
 use crate::money::MicroUsd;
+
+/// Where a model's missing cache prices come from: its maker's usual ratio
+/// to the input price, or for an open-weight host the input price itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CacheDefaults {
+    /// Read 0.1, write 1.25 times the input price.
+    Anthropic,
+    /// Read 0.5, write 1.0 times the input price.
+    OpenAi,
+    /// Read 0.25, write 1.0 times the input price.
+    Gemini,
+    /// Read and write at the input price: an open-weight host's discounts,
+    /// if any, are its own, and a budget must not undercount.
+    InputPrice,
+}
+
+impl CacheDefaults {
+    /// By the model, not the API its provider is reached through: Claude
+    /// on Bedrock or Azure keeps Anthropic's ratios ([`is_claude`]), and
+    /// every other Bedrock and Azure model takes OpenAI's.
+    pub fn for_model(kind: ProviderKind, model: &str) -> CacheDefaults {
+        match kind {
+            _ if is_claude(kind, model) => CacheDefaults::Anthropic,
+            ProviderKind::Gemini => CacheDefaults::Gemini,
+            ProviderKind::OpenAiCompatible => CacheDefaults::InputPrice,
+            ProviderKind::Anthropic
+            | ProviderKind::OpenAi
+            | ProviderKind::Bedrock
+            | ProviderKind::Azure => CacheDefaults::OpenAi,
+        }
+    }
+
+    /// (numerator, denominator) of the cache read and cache write prices
+    /// as fractions of the input price.
+    fn ratios(self) -> ((i128, i128), (i128, i128)) {
+        match self {
+            CacheDefaults::Anthropic => ((1, 10), (5, 4)),
+            CacheDefaults::OpenAi => ((1, 2), (1, 1)),
+            CacheDefaults::Gemini => ((1, 4), (1, 1)),
+            CacheDefaults::InputPrice => ((1, 1), (1, 1)),
+        }
+    }
+}
 
 /// An admin's prices for a model, in micro-USD per 1,000,000 tokens. The
 /// cache prices are optional: [`ModelPrices::rates`] fills them in.
@@ -34,16 +77,10 @@ pub struct Usage {
 }
 
 impl ModelPrices {
-    /// The admin's prices, with each missing cache price taken from the
-    /// provider's usual ratio to the input price for this API format.
-    pub fn rates(&self, format: ApiFormat) -> Rates {
-        // (numerator, denominator) of the cache read and cache write prices
-        // as fractions of the input price.
-        let (read, write) = match format {
-            ApiFormat::Anthropic => ((1, 10), (5, 4)),
-            ApiFormat::OpenAi => ((1, 2), (1, 1)),
-            ApiFormat::Gemini => ((1, 4), (1, 1)),
-        };
+    /// The prices, with each missing cache price taken from `defaults`,
+    /// rounded half up.
+    pub fn rates(&self, defaults: CacheDefaults) -> Rates {
+        let (read, write) = defaults.ratios();
         Rates {
             input: self.input,
             output: self.output,
@@ -133,7 +170,7 @@ impl Measure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::ApiFormat;
+    use crate::formats::ProviderKind;
     use crate::money::MicroUsd;
 
     fn rates(input: i64, output: i64, cache_read: i64, cache_write: i64) -> Rates {
@@ -185,22 +222,55 @@ mod tests {
     }
 
     #[test]
-    fn default_cache_rates_follow_the_format() {
+    fn cache_defaults_follow_the_model() {
+        use CacheDefaults as C;
+        use ProviderKind as K;
+        for (kind, model, want) in [
+            (K::Anthropic, "claude-x", C::Anthropic),
+            (
+                K::Bedrock,
+                "us.anthropic.claude-sonnet-4-5-v1:0",
+                C::Anthropic,
+            ),
+            (K::Bedrock, "ANTHROPIC.CLAUDE-x", C::Anthropic),
+            (K::Bedrock, "amazon.nova-pro", C::OpenAi),
+            (K::Bedrock, "openai.gpt-oss-120b-1:0", C::OpenAi),
+            (K::Azure, "claude-sonnet", C::Anthropic),
+            (K::Azure, "Claude-x", C::Anthropic),
+            (K::Azure, "gpt-5", C::OpenAi),
+            (K::OpenAi, "gpt-5", C::OpenAi),
+            (K::OpenAi, "claude-x", C::OpenAi),
+            (K::Gemini, "gemini-2.5-pro", C::Gemini),
+            (K::OpenAiCompatible, "claude-lookalike", C::InputPrice),
+            (K::OpenAiCompatible, "qwen3", C::InputPrice),
+        ] {
+            assert_eq!(
+                CacheDefaults::for_model(kind, model),
+                want,
+                "{kind:?} {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_cache_rates_follow_the_defaults() {
         let prices = ModelPrices {
             input: MicroUsd(3_000_000),
             output: MicroUsd(15_000_000),
             cache_read: None,
             cache_write: None,
         };
-        for (format, read, write) in [
-            (ApiFormat::Anthropic, 300_000, 3_750_000),
-            (ApiFormat::OpenAi, 1_500_000, 3_000_000),
-            (ApiFormat::Gemini, 750_000, 3_000_000),
-        ] {
+        let all = [
+            (CacheDefaults::Anthropic, 300_000, 3_750_000),
+            (CacheDefaults::OpenAi, 1_500_000, 3_000_000),
+            (CacheDefaults::Gemini, 750_000, 3_000_000),
+            (CacheDefaults::InputPrice, 3_000_000, 3_000_000),
+        ];
+        for (defaults, read, write) in all {
             assert_eq!(
-                prices.rates(format),
+                prices.rates(defaults),
                 rates(3_000_000, 15_000_000, read, write),
-                "{format:?}"
+                "{defaults:?}"
             );
         }
         let explicit = ModelPrices {
@@ -208,30 +278,46 @@ mod tests {
             cache_write: Some(MicroUsd(2)),
             ..prices
         };
-        for format in ApiFormat::ALL {
+        for (defaults, _, _) in all {
             assert_eq!(
-                explicit.rates(format),
+                explicit.rates(defaults),
                 rates(3_000_000, 15_000_000, 1, 2),
-                "{format:?}"
+                "{defaults:?}"
             );
         }
+        // One given, the other defaulted.
+        let read_only = ModelPrices {
+            cache_read: Some(MicroUsd(7)),
+            ..prices
+        };
+        assert_eq!(
+            read_only.rates(CacheDefaults::InputPrice),
+            rates(3_000_000, 15_000_000, 7, 3_000_000)
+        );
     }
 
     #[test]
     fn default_cache_rates_round_half_up() {
-        // 0.1 × 5 = 0.5 → 1; 1.25 × 2 = 2.5 → 3
+        // 0.1 × 5 = 0.5 → 1; 1.25 × 2 = 2.5 → 3; 0.25 × 2 = 0.5 → 1
         let prices = ModelPrices {
             input: MicroUsd(5),
             output: MicroUsd(0),
             cache_read: None,
             cache_write: None,
         };
-        assert_eq!(prices.rates(ApiFormat::Anthropic).cache_read, MicroUsd(1));
+        assert_eq!(
+            prices.rates(CacheDefaults::Anthropic).cache_read,
+            MicroUsd(1)
+        );
         let prices = ModelPrices {
             input: MicroUsd(2),
             ..prices
         };
-        assert_eq!(prices.rates(ApiFormat::Anthropic).cache_write, MicroUsd(3));
+        assert_eq!(
+            prices.rates(CacheDefaults::Anthropic).cache_write,
+            MicroUsd(3)
+        );
+        assert_eq!(prices.rates(CacheDefaults::Gemini).cache_read, MicroUsd(1));
     }
 
     #[test]

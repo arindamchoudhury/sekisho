@@ -6,7 +6,7 @@ use std::time::Duration;
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
-use sekisho_core::pricing::ModelPrices;
+use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_store::{
     ChangeKind, CredentialKind, FieldError, ModelPricing, NewModel, NewProvider,
     ProviderCredential, ProviderOptions, ProviderUpdate, Store, StoreError,
@@ -1622,7 +1622,8 @@ async fn model_pricing_reads_one_model() {
         Some(ModelPricing {
             provider: pname("bedrock-oss"),
             kind: ProviderKind::Bedrock,
-            format: ApiFormat::OpenAi,
+            catalog_key: Some("aws.bedrock".into()),
+            cache: CacheDefaults::OpenAi,
             prices: Some(ModelPrices {
                 input: MicroUsd(1),
                 output: MicroUsd(2),
@@ -1641,4 +1642,52 @@ async fn model_pricing_reads_one_model() {
         None
     );
     assert_eq!(store.model_pricing(&name("nope")).await.unwrap(), None);
+}
+
+/// Default cache prices follow the model, not the route format its
+/// provider was added with: Claude on a Bedrock provider added for the
+/// OpenAI format keeps Anthropic's ratios.
+#[tokio::test]
+async fn model_pricing_names_the_cache_defaults_and_catalog_key() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(
+            &sb,
+            bedrock("bedrock", ApiFormat::OpenAi, "us-east-1", key("k")),
+        )
+        .await
+        .unwrap();
+    store
+        .create_provider(&sb, mock_provider("qwen-host", "k"))
+        .await
+        .unwrap();
+    for (model, provider, prices) in [
+        ("anthropic.claude-x", "bedrock", None),
+        ("amazon.nova-pro", "bedrock", None),
+        ("qwen3", "qwen-host", Some((1, 2))),
+    ] {
+        store
+            .create_model(new_model(model, provider, prices))
+            .await
+            .unwrap();
+    }
+    let pricing = async |n: &str| {
+        store
+            .model_pricing(&ModelName::parse(n).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+
+    let claude = pricing("anthropic.claude-x").await;
+    assert_eq!(claude.cache, CacheDefaults::Anthropic);
+    assert_eq!(claude.catalog_key.as_deref(), Some("aws.bedrock"));
+    assert_eq!(
+        pricing("amazon.nova-pro").await.cache,
+        CacheDefaults::OpenAi
+    );
+    let qwen = pricing("qwen3").await;
+    assert_eq!(qwen.cache, CacheDefaults::InputPrice);
+    assert_eq!(qwen.catalog_key, None);
+    assert_eq!(qwen.kind, ProviderKind::OpenAiCompatible);
 }

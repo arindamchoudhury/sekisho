@@ -5,7 +5,7 @@ use std::time::Duration;
 use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
-use sekisho_core::pricing::ModelPrices;
+use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_gateway::{
     EnvRoutes, GatewaySnapshot, HookTargets, ModelRoute, PricedModel, RenderOptions,
     build_snapshot, render, validate,
@@ -137,7 +137,8 @@ async fn snapshot_reflects_the_store() {
             PricedModel {
                 provider: provider("anthropic"),
                 kind: ProviderKind::Anthropic,
-                format: ApiFormat::Anthropic,
+                catalog_key: "anthropic".into(),
+                cache: CacheDefaults::Anthropic,
                 model: model("claude-sonnet-5-5"),
                 prices: ModelPrices {
                     input: MicroUsd(3_000_000),
@@ -149,7 +150,8 @@ async fn snapshot_reflects_the_store() {
             PricedModel {
                 provider: provider("mock"),
                 kind: ProviderKind::OpenAiCompatible,
-                format: ApiFormat::OpenAi,
+                catalog_key: "mock".into(),
+                cache: CacheDefaults::InputPrice,
                 model: model("mock-model"),
                 prices: ModelPrices {
                     input: MicroUsd(3_000_000),
@@ -161,7 +163,8 @@ async fn snapshot_reflects_the_store() {
             PricedModel {
                 provider: provider("mock"),
                 kind: ProviderKind::OpenAiCompatible,
-                format: ApiFormat::OpenAi,
+                catalog_key: "mock".into(),
+                cache: CacheDefaults::InputPrice,
                 model: model("unused-model"),
                 prices: ModelPrices {
                     input: MicroUsd(1),
