@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::names::EnvName;
 
-/// The API a route speaks. Each environment has at most one provider per
-/// format in release 1.
+/// The API format of a client route (`/env/<name>/anthropic|openai|gemini`).
+/// It picks no provider: an environment's models may come from any
+/// providers, and [`reaches_format`] says which models a format reaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ApiFormat {
     Anthropic,
@@ -345,19 +346,6 @@ impl ProviderKind {
             ProviderKind::OpenAiCompatible => None,
         }
     }
-
-    /// The formats a provider of this kind can serve. A provider serves one
-    /// of them, chosen when it is added; single-format kinds have no choice.
-    pub fn formats(self) -> &'static [ApiFormat] {
-        match self {
-            ProviderKind::Anthropic => &[ApiFormat::Anthropic],
-            ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => &[ApiFormat::OpenAi],
-            ProviderKind::Gemini => &[ApiFormat::Gemini],
-            ProviderKind::Bedrock | ProviderKind::Azure => {
-                &[ApiFormat::Anthropic, ApiFormat::OpenAi]
-            }
-        }
-    }
 }
 
 /// Which Azure service an endpoint belongs to.
@@ -463,24 +451,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_formats() {
-        assert_eq!(
-            ProviderKind::OpenAiCompatible.formats(),
-            [ApiFormat::OpenAi]
-        );
-        assert_eq!(ApiFormat::Gemini.path_segment(), "gemini");
-    }
-
-    #[test]
-    fn every_kind_maps_to_its_formats() {
-        assert_eq!(ProviderKind::Anthropic.formats(), [ApiFormat::Anthropic]);
-        assert_eq!(ProviderKind::OpenAi.formats(), [ApiFormat::OpenAi]);
-        assert_eq!(ProviderKind::Gemini.formats(), [ApiFormat::Gemini]);
-        for cloud in [ProviderKind::Bedrock, ProviderKind::Azure] {
-            assert_eq!(cloud.formats(), [ApiFormat::Anthropic, ApiFormat::OpenAi]);
-        }
+    fn path_segments() {
         assert_eq!(ApiFormat::Anthropic.path_segment(), "anthropic");
         assert_eq!(ApiFormat::OpenAi.path_segment(), "openai");
+        assert_eq!(ApiFormat::Gemini.path_segment(), "gemini");
     }
 
     #[test]

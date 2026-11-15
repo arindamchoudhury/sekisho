@@ -1,4 +1,5 @@
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::catalog;
+use sekisho_core::formats::{ProviderKind, is_claude};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
 use sekisho_core::pricing::{CacheDefaults, ModelPrices};
@@ -8,14 +9,18 @@ use uuid::Uuid;
 
 use crate::error::{FieldError, bad_column, check, is_foreign_key_violation, is_unique_violation};
 use crate::notify::{ChangeKind, notify};
+use crate::providers::{
+    CLAUDE_ON_AZURE_CREDENTIALS, CLAUDE_ON_AZURE_ENTRA, CLAUDE_ON_AZURE_FOUNDRY, CredentialKind,
+    is_foundry, options_from_json,
+};
 use crate::{Result, Store, StoreError};
 
 /// A model to add. Prices are micro-USD per 1,000,000 tokens; leave input
 /// and output `None` to use agentgateway's catalog prices. An
-/// OpenAI-compatible provider's models need prices: the catalog has none for
-/// them. Cache prices are optional and only set with input and output
-/// prices; when unset, the model's usual ratios apply
-/// ([`CacheDefaults::for_model`]).
+/// OpenAI-compatible provider's models need prices unless the catalog has
+/// the model under the provider's catalog key. Cache prices are optional and
+/// only set with input and output prices; when unset, the model's usual
+/// ratios apply ([`CacheDefaults::for_model`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewModel {
     pub name: ModelName,
@@ -57,7 +62,8 @@ impl Model {
 pub struct ModelPricing {
     pub provider: ProviderName,
     pub kind: ProviderKind,
-    /// The kind's own catalog key; `None` for OpenAI-compatible providers.
+    /// The kind's own catalog key, or an OpenAI-compatible host's; `None`
+    /// for a host without one.
     pub catalog_key: Option<String>,
     pub cache: CacheDefaults,
     pub prices: Option<ModelPrices>,
@@ -68,6 +74,7 @@ pub struct ModelPricing {
 macro_rules! select {
     () => {
         "select m.id, m.name, p.name as provider, p.kind as provider_kind, \
+         p.catalog_key as provider_catalog_key, \
          m.input_price_micro_usd, m.output_price_micro_usd, \
          m.cache_read_price_micro_usd, m.cache_write_price_micro_usd \
          from models m join providers p on p.id = m.provider_id"
@@ -137,30 +144,53 @@ impl Store {
             )])
         };
         let mut tx = self.pool.begin().await?;
-        let (provider_id, kind, format): (Uuid, String, String) =
-            sqlx::query_as("select id, kind, api_format from providers where name = $1")
-                .bind(new.provider.as_str())
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(unknown_provider)?;
-        if kind == ProviderKind::OpenAiCompatible.as_str() && new.input_price.is_none() {
-            const NEEDED: &str = "an OpenAI-compatible provider's models need prices:                                   agentgateway's catalog has none for them";
-            return Err(StoreError::Validation(vec![
-                FieldError::new("input_price", NEEDED),
-                FieldError::new("output_price", NEEDED),
-            ]));
+        // Share-locked, so a provider update that its models must follow
+        // (see `update_provider`) waits for this model, or this waits for it.
+        let provider = sqlx::query(
+            "select id, kind, options::text as options, credential_kind, catalog_key \
+             from providers where name = $1 for share",
+        )
+        .bind(new.provider.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(unknown_provider)?;
+        let provider_id: Uuid = provider.try_get("id")?;
+        let kind: String = provider.try_get("kind")?;
+        let kind = ProviderKind::parse(&kind).ok_or_else(|| bad_column("provider kind", &kind))?;
+        let mut errors = Vec::new();
+        if kind == ProviderKind::OpenAiCompatible && new.input_price.is_none() {
+            let catalog_key: Option<String> = provider.try_get("catalog_key")?;
+            if !catalog_key
+                .as_deref()
+                .is_some_and(|key| catalog::knows(key, new.name.as_str()))
+            {
+                let why = match catalog_key {
+                    Some(key) => format!(
+                        "agentgateway's catalog has no prices for {} under {key}",
+                        new.name
+                    ),
+                    None => "its provider has no catalog key, so agentgateway's catalog \
+                         can't price it"
+                        .to_owned(),
+                };
+                let message = format!("an OpenAI-compatible provider's model needs prices: {why}");
+                errors.push(FieldError::new("input_price", message.clone()));
+                errors.push(FieldError::new("output_price", message));
+            }
         }
-        // agentgateway sends an Azure deployment to Foundry's
-        // /anthropic/v1/messages only when its name starts with "claude".
-        if kind == ProviderKind::Azure.as_str()
-            && format == ApiFormat::Anthropic.as_str()
-            && !new.name.as_str().to_ascii_lowercase().starts_with("claude")
-        {
-            return Err(StoreError::Validation(vec![FieldError::new(
-                "name",
-                "Claude on Azure is served by deployments whose names start with claude",
-            )]));
+        if is_claude(kind, new.name.as_str()) && kind == ProviderKind::Azure {
+            let options: String = provider.try_get("options")?;
+            if !is_foundry(&options_from_json(kind, &options)?) {
+                errors.push(FieldError::new("name", CLAUDE_ON_AZURE_FOUNDRY));
+            }
+            let credential: String = provider.try_get("credential_kind")?;
+            let credential = CredentialKind::parse(&credential)
+                .ok_or_else(|| bad_column("credential kind", &credential))?;
+            if !CLAUDE_ON_AZURE_CREDENTIALS.contains(&credential) {
+                errors.push(FieldError::new("name", CLAUDE_ON_AZURE_ENTRA));
+            }
         }
+        check(errors)?;
         let id: Uuid = sqlx::query_scalar(
             "insert into models (name, provider_id, input_price_micro_usd, \
              output_price_micro_usd, cache_read_price_micro_usd, cache_write_price_micro_usd) \
@@ -203,8 +233,13 @@ impl Store {
             return Ok(None);
         };
         let model = from_row(&row)?;
+        let host_key: Option<String> = row.try_get("provider_catalog_key")?;
         Ok(Some(ModelPricing {
-            catalog_key: model.provider_kind.catalog_key().map(str::to_owned),
+            catalog_key: model
+                .provider_kind
+                .catalog_key()
+                .map(str::to_owned)
+                .or(host_key),
             cache: CacheDefaults::for_model(model.provider_kind, model.name.as_str()),
             prices: model.prices(),
             provider: model.provider,

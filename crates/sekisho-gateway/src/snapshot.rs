@@ -44,8 +44,8 @@ pub struct ProviderEntry {
     pub options: ProviderOptions,
     /// The decrypted credential, written into the gateway config.
     pub credential: ProviderCredential,
-    /// The APIs an OpenAI-compatible host serves. Until providers store
-    /// theirs (plan 1d Task 4), Chat Completions only.
+    /// The APIs an OpenAI-compatible host serves; Chat Completions for the
+    /// other kinds, which don't render it.
     pub apis: HostApis,
     /// The key an OpenAI-compatible host's prices are filed under in
     /// agentgateway's catalog; its name when `None`.
@@ -84,7 +84,7 @@ pub struct PricedModel {
     pub provider: ProviderName,
     pub kind: ProviderKind,
     /// The kind's own catalog key, or for an OpenAI-compatible provider its
-    /// name (its `providerOverride`).
+    /// catalog key or else its name (its `providerOverride` either way).
     pub catalog_key: String,
     pub model: ModelName,
     pub prices: ModelPrices,
@@ -149,8 +149,8 @@ pub async fn build_snapshot(
                     base_url: current.base_url,
                     options: current.options,
                     credential,
-                    apis: HostApis::chat_only(),
-                    catalog_key: None,
+                    apis: current.apis.unwrap_or_else(HostApis::chat_only),
+                    catalog_key: current.catalog_key,
                 });
             }
             entries.push(ModelEntry {
@@ -162,18 +162,29 @@ pub async fn build_snapshot(
     }
     let mut provider_entries: Vec<ProviderEntry> = used.into_values().collect();
     provider_entries.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+    // A host's catalog key, as its provider entry has it when an
+    // environment uses it (the inline catalog must match its
+    // providerOverride), else as listed.
+    let mut host_keys: HashMap<&str, Option<&str>> = providers
+        .iter()
+        .map(|p| (p.name.as_str(), p.catalog_key.as_deref()))
+        .collect();
+    for entry in &provider_entries {
+        host_keys.insert(entry.name.as_str(), entry.catalog_key.as_deref());
+    }
 
     let mut priced_models: Vec<PricedModel> = models
         .iter()
         .filter_map(|m| {
             // A provider deleted since the list was read leaves its model out.
-            provider_by_name.get(m.provider.as_str())?;
+            let host_key = *host_keys.get(m.provider.as_str())?;
             Some(PricedModel {
                 provider: m.provider.clone(),
                 kind: m.provider_kind,
                 catalog_key: m
                     .provider_kind
                     .catalog_key()
+                    .or(host_key)
                     .unwrap_or(m.provider.as_str())
                     .to_owned(),
                 model: m.name.clone(),

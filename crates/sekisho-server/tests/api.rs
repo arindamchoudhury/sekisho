@@ -652,7 +652,7 @@ async fn bedrock_and_azure_providers_round_trip() {
     let app = app().await;
     let bedrock = app
         .post_provider(json!({
-            "name": "bedrock-claude", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock-claude", "kind": "bedrock", "region": "us-east-1",
             "aws_access_key_id": "AKIAEXAMPLE0000001", "aws_secret_access_key": "aws-secret"
         }))
         .await;
@@ -660,7 +660,8 @@ async fn bedrock_and_azure_providers_round_trip() {
     assert_eq!(
         (
             &bedrock.body["kind"],
-            &bedrock.body["format"],
+            &bedrock.body["apis"],
+            &bedrock.body["catalog_key"],
             &bedrock.body["credential"],
             &bedrock.body["region"],
             &bedrock.body["allow_private_network"],
@@ -668,7 +669,8 @@ async fn bedrock_and_azure_providers_round_trip() {
         ),
         (
             &json!("bedrock"),
-            &json!("anthropic"),
+            &Value::Null,
+            &Value::Null,
             &json!("aws_access_keys"),
             &json!("us-east-1"),
             &json!(false),
@@ -679,19 +681,14 @@ async fn bedrock_and_azure_providers_round_trip() {
 
     let gpt = app
         .post_provider(json!({
-            "name": "azure-gpt", "kind": "azure", "format": "openai",
+            "name": "azure-gpt", "kind": "azure",
             "endpoint": "https://my-resource.openai.azure.com/", "cloud_identity": true
         }))
         .await;
     assert_eq!(gpt.status, 201, "{}", gpt.text);
     assert_eq!(
+        (&gpt.body["credential"], &gpt.body["endpoint"],),
         (
-            &gpt.body["format"],
-            &gpt.body["credential"],
-            &gpt.body["endpoint"],
-        ),
-        (
-            &json!("openai"),
             &json!("cloud_identity"),
             &json!("https://my-resource.openai.azure.com"), // canonical
         )
@@ -700,35 +697,30 @@ async fn bedrock_and_azure_providers_round_trip() {
 
     let claude = app
         .post_provider(json!({
-            "name": "azure-claude", "kind": "azure", "format": "anthropic",
+            "name": "azure-claude", "kind": "azure",
             "endpoint": "https://my-foundry.services.ai.azure.com/api/projects/team",
             "azure_tenant_id": TENANT, "azure_client_id": CLIENT, "azure_client_secret": "sp-secret"
         }))
         .await;
     assert_eq!(claude.status, 201, "{}", claude.text);
     assert_eq!(
+        (&claude.body["credential"], &claude.body["endpoint"],),
         (
-            &claude.body["format"],
-            &claude.body["credential"],
-            &claude.body["endpoint"],
-        ),
-        (
-            &json!("anthropic"),
             &json!("azure_client_secret"),
             &json!("https://my-foundry.services.ai.azure.com/api/projects/team"),
         )
     );
 
-    // A single-format kind may name its format, or leave it out.
+    // Built-in kinds declare no APIs: agentgateway knows theirs.
     let anthropic = app
         .post_provider(json!({
-            "name": "anthropic", "kind": "anthropic", "format": "anthropic", "api_key": "sk-ant"
+            "name": "anthropic", "kind": "anthropic", "api_key": "sk-ant"
         }))
         .await;
     assert_eq!(anthropic.status, 201, "{}", anthropic.text);
     assert_eq!(
-        (&anthropic.body["format"], &anthropic.body["credential"]),
-        (&json!("anthropic"), &json!("key"))
+        (&anthropic.body["apis"], &anthropic.body["credential"]),
+        (&Value::Null, &json!("key"))
     );
 
     let listed = app.admin("GET", "/api/v1/providers", None).await;
@@ -741,67 +733,45 @@ async fn bedrock_and_azure_providers_round_trip() {
 }
 
 #[tokio::test]
-async fn provider_credentials_and_formats_are_validated() {
+async fn provider_credentials_are_validated() {
     let app = app().await;
     for (body, field) in [
-        (
-            json!({ "name": "b", "kind": "bedrock", "region": "us-east-1", "api_key": "k" }),
-            "format",
-        ),
-        (
-            json!({ "name": "a", "kind": "azure", "endpoint": "https://r1.openai.azure.com", "api_key": "k" }),
-            "format",
-        ),
-        (
-            json!({ "name": "b", "kind": "bedrock", "format": "gemini", "region": "us-east-1", "api_key": "k" }),
-            "format",
-        ),
-        (
-            json!({ "name": "b", "kind": "bedrock", "format": "Anthropic", "region": "us-east-1", "api_key": "k" }),
-            "format",
-        ),
-        // Foundry takes Claude API keys only in a header agentgateway can't send.
-        (
-            json!({ "name": "a", "kind": "azure", "format": "anthropic",
-                    "endpoint": "https://my-foundry.services.ai.azure.com/api/projects/team", "api_key": "k" }),
-            "credential",
-        ),
         (json!({ "name": "a", "kind": "anthropic" }), "credential"),
         (
             json!({ "name": "a", "kind": "anthropic", "api_key": "k", "cloud_identity": true }),
             "credential",
         ),
         (
-            json!({ "name": "b", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            json!({ "name": "b", "kind": "bedrock", "region": "us-east-1",
                     "api_key": "k", "aws_access_key_id": "AKIAEXAMPLE0000001", "aws_secret_access_key": "s" }),
             "credential",
         ),
         (
-            json!({ "name": "b", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            json!({ "name": "b", "kind": "bedrock", "region": "us-east-1",
                     "aws_access_key_id": "AKIAEXAMPLE0000001" }),
             "aws_secret_access_key",
         ),
         (
-            json!({ "name": "b", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            json!({ "name": "b", "kind": "bedrock", "region": "us-east-1",
                     "aws_session_token": "t" }),
             "aws_access_key_id",
         ),
         (
-            json!({ "name": "a", "kind": "azure", "format": "openai",
+            json!({ "name": "a", "kind": "azure",
                     "endpoint": "https://r1.openai.azure.com", "azure_tenant_id": TENANT }),
             "azure_client_id",
         ),
         (
-            json!({ "name": "a", "kind": "azure", "format": "openai",
+            json!({ "name": "a", "kind": "azure",
                     "endpoint": "https://evil.com/r1.openai.azure.com", "api_key": "k" }),
             "endpoint",
         ),
         (
-            json!({ "name": "b", "kind": "bedrock", "format": "anthropic", "api_key": "k" }),
+            json!({ "name": "b", "kind": "bedrock", "api_key": "k" }),
             "region",
         ),
         (
-            json!({ "name": "b", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            json!({ "name": "b", "kind": "bedrock", "region": "us-east-1",
                     "endpoint": "https://r1.openai.azure.com", "api_key": "k" }),
             "endpoint",
         ),
@@ -826,10 +796,7 @@ async fn provider_credentials_and_formats_are_validated() {
         .collect();
     assert_eq!(
         (r.status, fields),
-        (
-            422,
-            vec![&json!("name"), &json!("format"), &json!("credential")]
-        ),
+        (422, vec![&json!("name"), &json!("credential")]),
         "{}",
         r.text
     );
@@ -858,14 +825,14 @@ async fn provider_secrets_never_returned() {
     };
     let replies = [
         app.post_provider(with(
-            json!({ "name": "bedrock", "kind": "bedrock", "format": "anthropic", "region": "us-east-1" }),
+            json!({ "name": "bedrock", "kind": "bedrock", "region": "us-east-1" }),
             &aws,
         ))
         .await,
         app.patch_provider("bedrock", with(json!({ "region": "eu-west-1" }), &aws))
             .await,
         app.post_provider(with(
-            json!({ "name": "azure", "kind": "azure", "format": "openai",
+            json!({ "name": "azure", "kind": "azure",
                     "endpoint": "https://my-resource.openai.azure.com" }),
             &sp,
         ))
@@ -919,7 +886,7 @@ async fn moving_a_provider_needs_its_secret_again() {
 
     let created = app
         .post_provider(json!({
-            "name": "bedrock", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock", "kind": "bedrock", "region": "us-east-1",
             "aws_access_key_id": "AKIAEXAMPLE0000001", "aws_secret_access_key": "aws-secret"
         }))
         .await;
@@ -942,13 +909,13 @@ async fn moving_a_provider_needs_its_secret_again() {
     // The gateway's cloud identity only goes to AWS hosts.
     let r = app
         .post_provider(json!({
-            "name": "bedrock-cloud", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock-cloud", "kind": "bedrock", "region": "us-east-1",
             "cloud_identity": true, "base_url": "https://proxy.example.com"
         }))
         .await;
     assert_eq!(first_field(&r), (422, &json!("base_url")), "{}", r.text);
 
-    // A provider's name, kind and format never change.
+    // A provider's name and kind never change, and it has no format.
     for field in [
         json!({ "kind": "azure" }),
         json!({ "format": "openai" }),
@@ -962,6 +929,240 @@ async fn moving_a_provider_needs_its_secret_again() {
             r.text
         );
     }
+}
+
+/// A preset fills in a known host's kind, base URL, APIs and catalog key;
+/// whatever the request gives wins.
+#[tokio::test]
+async fn a_preset_fills_in_the_host() {
+    let app = app().await;
+    // `allow_private_network` keeps the test off public DNS.
+    let r = app
+        .post_provider(json!({
+            "name": "scw", "preset": "scaleway", "api_key": "k", "allow_private_network": true
+        }))
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        (
+            &r.body["kind"],
+            &r.body["base_url"],
+            &r.body["apis"],
+            &r.body["catalog_key"]
+        ),
+        (
+            &json!("openai_compatible"),
+            &json!("https://api.scaleway.ai/v1"),
+            &json!([{ "api": "chat_completions", "path": null }]),
+            &Value::Null,
+        ),
+        "{}",
+        r.text
+    );
+    let r = app
+        .post_provider(json!({
+            "name": "ds", "preset": "deepseek", "api_key": "k", "allow_private_network": true
+        }))
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        (&r.body["apis"], &r.body["catalog_key"]),
+        (
+            &json!([
+                { "api": "chat_completions", "path": null },
+                { "api": "messages", "path": "/anthropic/v1/messages" },
+                { "api": "responses", "path": null },
+            ]),
+            &json!("deepseek")
+        )
+    );
+    // What the request gives wins over the preset.
+    let r = app
+        .post_provider(json!({
+            "name": "ds-proxy", "preset": "deepseek", "base_url": "https://203.0.113.10/v1",
+            "apis": [{ "api": "chat_completions" }], "catalog_key": "deepseek-eu", "api_key": "k"
+        }))
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        (&r.body["base_url"], &r.body["apis"], &r.body["catalog_key"]),
+        (
+            &json!("https://203.0.113.10/v1"),
+            &json!([{ "api": "chat_completions", "path": null }]),
+            &json!("deepseek-eu")
+        )
+    );
+    for (body, field) in [
+        (
+            json!({ "name": "x", "preset": "nope", "api_key": "k" }),
+            "preset",
+        ),
+        (
+            json!({ "name": "x", "preset": "scaleway", "kind": "anthropic", "api_key": "k" }),
+            "kind",
+        ),
+        (json!({ "name": "x", "api_key": "k" }), "kind"),
+        // Ollama runs on the admin's own server.
+        (
+            json!({ "name": "x", "preset": "ollama", "api_key": "k" }),
+            "base_url",
+        ),
+    ] {
+        let r = app.post_provider(body.clone()).await;
+        assert_eq!(first_field(&r), (422, &json!(field)), "{body}: {}", r.text);
+        // An unknown preset is the only thing wrong, not a missing kind too.
+        assert_eq!(r.body["fields"].as_array().unwrap().len(), 1, "{}", r.text);
+    }
+}
+
+#[tokio::test]
+async fn presets_are_listed() {
+    let app = app().await;
+    let r = app.admin("GET", "/api/v1/provider-presets", None).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    let ids: Vec<&str> = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "baseten",
+            "cerebras",
+            "deepinfra",
+            "deepseek",
+            "fireworks",
+            "groq",
+            "huggingface",
+            "mistral",
+            "ollama",
+            "openrouter",
+            "scaleway",
+            "togetherai"
+        ]
+    );
+    assert_eq!(
+        r.body[3],
+        json!({
+            "id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1",
+            "apis": [
+                { "api": "chat_completions", "path": null },
+                { "api": "messages", "path": "/anthropic/v1/messages" },
+                { "api": "responses", "path": null },
+            ],
+            "catalog_key": "deepseek",
+        })
+    );
+    assert_eq!(
+        (&r.body[8]["id"], &r.body[8]["base_url"]),
+        (&json!("ollama"), &Value::Null)
+    );
+    assert_eq!(
+        (&r.body[10]["id"], &r.body[10]["catalog_key"]),
+        (&json!("scaleway"), &Value::Null)
+    );
+    let (_, token) = app.sign_in("eve@example.com", &[]).await;
+    assert_eq!(
+        app.by(&token, "GET", "/api/v1/provider-presets", None)
+            .await
+            .status,
+        403
+    );
+}
+
+/// Providers lost their route format with plan 1d: one Bedrock or Azure
+/// provider serves every tool.
+#[tokio::test]
+async fn format_is_no_longer_a_provider_field() {
+    let app = app().await;
+    let r = app
+        .post_provider(json!({
+            "name": "b", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "api_key": "k"
+        }))
+        .await;
+    assert_eq!(
+        (r.status, &r.body["error"]),
+        (400, &json!("bad_request")),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains("format"), "{}", r.text);
+    let r = app
+        .post_provider(json!({
+            "name": "b", "kind": "bedrock", "region": "us-east-1", "api_key": "k"
+        }))
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert!(r.body.get("format").is_none(), "{}", r.text);
+}
+
+/// A host's APIs and catalog key can be edited without its credential,
+/// since they don't move the provider to another host; the config is
+/// rendered again.
+#[tokio::test]
+async fn a_hosts_apis_can_be_edited() {
+    let app = app().await;
+    app.provider_and_model().await;
+    assert_eq!(app.put_env("data-team", &["mock-model"]).await.status, 200);
+    let settled = app.settled_version().await;
+    let r = app
+        .patch_provider(
+            "mock",
+            json!({
+                "apis": [{ "api": "chat_completions" }, { "api": "responses", "path": "/v1/responses" }],
+                "catalog_key": "mock-host"
+            }),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(
+        (&r.body["apis"], &r.body["catalog_key"]),
+        (
+            &json!([
+                { "api": "chat_completions", "path": null },
+                { "api": "responses", "path": "/v1/responses" },
+            ]),
+            &json!("mock-host")
+        )
+    );
+    let after = app
+        .call(
+            "GET",
+            &format!("/internal/gateway/config?after={settled}"),
+            Some(GATEWAY),
+            None,
+        )
+        .await;
+    assert_eq!(after.status, 200, "no new version after the edit");
+    let yaml = after.body["yaml"].as_str().unwrap();
+    assert!(
+        yaml.contains("providerOverride: mock-host\n") && yaml.contains("path: /v1/responses\n"),
+        "{yaml}"
+    );
+
+    for apis in [
+        json!([]),
+        json!([{ "api": "messages" }]),
+        json!([{ "api": "chat" }]),
+        json!([{ "api": "chat_completions", "path": "/../x" }]),
+        json!([{ "api": "chat_completions" }, { "api": "chat_completions" }]),
+    ] {
+        let r = app.patch_provider("mock", json!({ "apis": apis })).await;
+        assert_eq!(first_field(&r), (422, &json!("apis")), "{apis}: {}", r.text);
+    }
+    let r = app
+        .patch_provider("mock", json!({ "catalog_key": null }))
+        .await;
+    assert_eq!(
+        (r.status, &r.body["catalog_key"]),
+        (200, &Value::Null),
+        "{}",
+        r.text
+    );
 }
 
 #[tokio::test]
@@ -1008,7 +1209,7 @@ async fn switching_to_cloud_identity_republishes_without_the_key() {
     let app = app().await;
     let r = app
         .post_provider(json!({
-            "name": "bedrock", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock", "kind": "bedrock", "region": "us-east-1",
             "api_key": "bedrock-key-123"
         }))
         .await;

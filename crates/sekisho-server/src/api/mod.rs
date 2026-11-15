@@ -48,6 +48,7 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/providers/{name}",
             patch(providers::update).delete(providers::delete),
         )
+        .route("/api/v1/provider-presets", get(providers::list_presets))
         .route("/api/v1/models", get(models::list).post(models::create))
         .route("/api/v1/models/{name}", delete(models::delete))
         .route("/api/v1/environments", get(environments::list))

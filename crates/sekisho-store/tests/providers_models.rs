@@ -1,15 +1,18 @@
 mod common;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
+use sekisho_core::formats::{
+    AzureEndpoint, AzureResourceType, HostApi, HostApiPath, HostApis, ProviderKind,
+};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{ModelName, ProviderName};
 use sekisho_core::pricing::{CacheDefaults, ModelPrices};
 use sekisho_store::{
     ChangeKind, CredentialKind, FieldError, ModelPricing, NewModel, NewProvider,
-    ProviderCredential, ProviderOptions, ProviderUpdate, Store, StoreError,
+    ProviderCredential, ProviderOptions, ProviderUpdate, Store, StoreError, StoreOptions,
 };
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -61,41 +64,33 @@ fn entra(tenant: &str, client: &str, secret: &str) -> ProviderCredential {
     }
 }
 
-fn bedrock(
-    name: &str,
-    format: ApiFormat,
-    region: &str,
-    credential: ProviderCredential,
-) -> NewProvider {
+fn bedrock(name: &str, region: &str, credential: ProviderCredential) -> NewProvider {
     NewProvider {
         name: pname(name),
         kind: ProviderKind::Bedrock,
-        format,
         base_url: None,
         options: ProviderOptions::Bedrock {
             region: region.into(),
         },
         credential,
         allow_private_network: false,
+        apis: None,
+        catalog_key: None,
     }
 }
 
-fn azure(
-    name: &str,
-    format: ApiFormat,
-    endpoint: &str,
-    credential: ProviderCredential,
-) -> NewProvider {
+fn azure(name: &str, endpoint: &str, credential: ProviderCredential) -> NewProvider {
     NewProvider {
         name: pname(name),
         kind: ProviderKind::Azure,
-        format,
         base_url: None,
         options: ProviderOptions::Azure {
             endpoint: AzureEndpoint::parse(endpoint).unwrap(),
         },
         credential,
         allow_private_network: false,
+        apis: None,
+        catalog_key: None,
     }
 }
 
@@ -180,12 +175,16 @@ async fn provider_round_trip_and_lookups() {
         .unwrap();
     assert_eq!(mock.name.as_str(), "mock");
     assert_eq!(mock.kind, ProviderKind::OpenAiCompatible);
-    assert_eq!(mock.format, ApiFormat::OpenAi);
+    assert_eq!(mock.apis, Some(HostApis::chat_only()));
+    assert_eq!(mock.catalog_key, None);
     assert_eq!(mock.base_url.as_deref(), Some("http://mock:8000/v1"));
     assert_eq!(mock.options, ProviderOptions::None);
     assert_eq!(mock.credential, CredentialKind::Key);
     assert!(mock.allow_private_network);
-    assert_eq!(anthropic.format, ApiFormat::Anthropic);
+    assert_eq!(
+        (anthropic.apis.as_ref(), anthropic.catalog_key.as_deref()),
+        (None, None)
+    );
     assert!(!anthropic.allow_private_network);
     assert_eq!(store.get_provider(&mock.name).await.unwrap(), mock);
     assert_eq!(store.list_providers().await.unwrap(), vec![anthropic, mock]); // sorted by name
@@ -578,30 +577,10 @@ async fn bedrock_and_azure_round_trip() {
     ];
     let mut created = Vec::new();
     for new in [
-        bedrock(
-            "bedrock-claude",
-            ApiFormat::Anthropic,
-            "us-east-1",
-            credentials[0].1.clone(),
-        ),
-        bedrock(
-            "bedrock-oss",
-            ApiFormat::OpenAi,
-            "eu-central-1",
-            credentials[1].1.clone(),
-        ),
-        azure(
-            "azure-gpt",
-            ApiFormat::OpenAi,
-            AZURE_OPENAI,
-            credentials[2].1.clone(),
-        ),
-        azure(
-            "azure-claude",
-            ApiFormat::Anthropic,
-            AZURE_FOUNDRY,
-            credentials[3].1.clone(),
-        ),
+        bedrock("bedrock-claude", "us-east-1", credentials[0].1.clone()),
+        bedrock("bedrock-oss", "eu-central-1", credentials[1].1.clone()),
+        azure("azure-gpt", AZURE_OPENAI, credentials[2].1.clone()),
+        azure("azure-claude", AZURE_FOUNDRY, credentials[3].1.clone()),
     ] {
         created.push(store.create_provider(&sb, new).await.unwrap());
     }
@@ -609,7 +588,7 @@ async fn bedrock_and_azure_round_trip() {
     let listed = store.list_providers().await.unwrap();
     let summary: Vec<_> = listed
         .iter()
-        .map(|p| (p.name.as_str(), p.kind, p.format, p.credential))
+        .map(|p| (p.name.as_str(), p.kind, p.credential))
         .collect();
     assert_eq!(
         summary,
@@ -617,27 +596,19 @@ async fn bedrock_and_azure_round_trip() {
             (
                 "azure-claude",
                 ProviderKind::Azure,
-                ApiFormat::Anthropic,
                 CredentialKind::AzureClientSecret
             ),
             (
                 "azure-gpt",
                 ProviderKind::Azure,
-                ApiFormat::OpenAi,
                 CredentialKind::CloudIdentity
             ),
             (
                 "bedrock-claude",
                 ProviderKind::Bedrock,
-                ApiFormat::Anthropic,
                 CredentialKind::AwsAccessKeys
             ),
-            (
-                "bedrock-oss",
-                ProviderKind::Bedrock,
-                ApiFormat::OpenAi,
-                CredentialKind::Key
-            ),
+            ("bedrock-oss", ProviderKind::Bedrock, CredentialKind::Key),
         ]
     );
     let options: Vec<_> = listed.iter().map(|p| p.options.clone()).collect();
@@ -723,17 +694,9 @@ async fn credentials_must_fit_the_kind() {
             },
             "credential",
         ),
+        (azure("p", AZURE_OPENAI, aws()), "credential"),
         (
-            azure("p", ApiFormat::OpenAi, AZURE_OPENAI, aws()),
-            "credential",
-        ),
-        (
-            bedrock(
-                "p",
-                ApiFormat::Anthropic,
-                "us-east-1",
-                entra(TENANT, CLIENT, "s"),
-            ),
+            bedrock("p", "us-east-1", entra(TENANT, CLIENT, "s")),
             "credential",
         ),
         (
@@ -742,33 +705,6 @@ async fn credentials_must_fit_the_kind() {
                 ..new_provider("p", ProviderKind::OpenAi, "k")
             },
             "credential",
-        ),
-        // Foundry takes Claude API keys only in x-api-key, which
-        // agentgateway's Azure provider can't send.
-        (
-            azure("p", ApiFormat::Anthropic, AZURE_FOUNDRY, key("k")),
-            "credential",
-        ),
-        // Claude on Azure is served by Foundry.
-        (
-            azure(
-                "p",
-                ApiFormat::Anthropic,
-                "https://rs.openai.azure.com",
-                ProviderCredential::CloudIdentity,
-            ),
-            "endpoint",
-        ),
-        (
-            bedrock("p", ApiFormat::Gemini, "us-east-1", key("k")),
-            "format",
-        ),
-        (
-            NewProvider {
-                format: ApiFormat::Anthropic,
-                ..new_provider("p", ProviderKind::OpenAi, "k")
-            },
-            "format",
         ),
     ] {
         let what = format!("{new:?}");
@@ -781,7 +717,7 @@ async fn credentials_must_fit_the_kind() {
 async fn cloud_settings_are_validated() {
     let (store, sb) = common::store().await;
     let aws = || aws_keys("AKIAEXAMPLE0000001", "aws-secret", None);
-    let in_region = |region: &str| bedrock("bedrock", ApiFormat::Anthropic, region, aws());
+    let in_region = |region: &str| bedrock("bedrock", region, aws());
 
     let no_region = NewProvider {
         options: ProviderOptions::None,
@@ -828,11 +764,11 @@ async fn cloud_settings_are_validated() {
 
     let at = |endpoint: AzureEndpoint| NewProvider {
         options: ProviderOptions::Azure { endpoint },
-        ..azure("azure", ApiFormat::OpenAi, AZURE_OPENAI, key("k"))
+        ..azure("azure", AZURE_OPENAI, key("k"))
     };
     let no_endpoint = NewProvider {
         options: ProviderOptions::None,
-        ..azure("azure", ApiFormat::OpenAi, AZURE_OPENAI, key("k"))
+        ..azure("azure", AZURE_OPENAI, key("k"))
     };
     assert_eq!(refused(&store, &sb, no_endpoint).await, ["endpoint"]);
     // Endpoints built by hand must still be ones AzureEndpoint::parse accepts.
@@ -887,7 +823,7 @@ async fn cloud_settings_are_validated() {
     assert_eq!(refused(&store, &sb, bedrock_at_azure).await, ["region"]);
 
     // Credential fields.
-    let with = |credential| bedrock("bedrock", ApiFormat::Anthropic, "us-east-1", credential);
+    let with = |credential| bedrock("bedrock", "us-east-1", credential);
     for (credential, field) in [
         (aws_keys("akia lower", "s", None), "aws_access_key_id"),
         (aws_keys("AKIA", "s", None), "aws_access_key_id"),
@@ -908,12 +844,7 @@ async fn cloud_settings_are_validated() {
         assert_eq!(refused(&store, &sb, with(credential)).await, [field]);
     }
     let sp = |tenant: &str, client: &str, secret: &str| {
-        azure(
-            "azure",
-            ApiFormat::OpenAi,
-            AZURE_OPENAI,
-            entra(tenant, client, secret),
-        )
+        azure("azure", AZURE_OPENAI, entra(tenant, client, secret))
     };
     for (new, field) in [
         (sp("not a tenant!", CLIENT, "s"), "azure_tenant_id"),
@@ -952,7 +883,6 @@ async fn switching_credentials_drops_the_old_secret() {
             &sb,
             bedrock(
                 "bedrock",
-                ApiFormat::Anthropic,
                 "us-east-1",
                 aws_keys("AKIAEXAMPLE0000001", "aws-secret", Some("aws-session")),
             ),
@@ -1006,10 +936,7 @@ async fn switching_credentials_drops_the_old_secret() {
 
     // A refused update changes nothing.
     let az = store
-        .create_provider(
-            &sb,
-            azure("azure", ApiFormat::OpenAi, AZURE_OPENAI, key("az-key")),
-        )
+        .create_provider(&sb, azure("azure", AZURE_OPENAI, key("az-key")))
         .await
         .unwrap();
     assert_eq!(next_change(&mut rx).await, ChangeKind::Providers);
@@ -1058,7 +985,7 @@ async fn cloud_credentials_only_go_to_cloud_hosts() {
         ProviderCredential::CloudIdentity,
         aws_keys("AKIAEXAMPLE0000001", "aws-secret", None),
     ] {
-        let b = || bedrock("b", ApiFormat::Anthropic, "us-east-1", credential.clone());
+        let b = || bedrock("b", "us-east-1", credential.clone());
         for url in [
             "https://proxy.example.com",
             "http://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1093,7 +1020,7 @@ async fn cloud_credentials_only_go_to_cloud_hosts() {
         ProviderCredential::CloudIdentity,
         entra(TENANT, CLIENT, "sp-secret"),
     ] {
-        let a = || azure("a", ApiFormat::OpenAi, AZURE_OPENAI, credential.clone());
+        let a = || azure("a", AZURE_OPENAI, credential.clone());
         for url in [
             "https://proxy.example.com",
             "http://my-resource.openai.azure.com",
@@ -1122,7 +1049,7 @@ async fn cloud_credentials_only_go_to_cloud_hosts() {
     // An API key goes wherever a keyed provider's base URL points.
     let keyed = NewProvider {
         base_url: Some("http://203.0.113.10:8000".into()),
-        ..bedrock("bedrock-key", ApiFormat::OpenAi, "us-east-1", key("k"))
+        ..bedrock("bedrock-key", "us-east-1", key("k"))
     };
     store.create_provider(&sb, keyed).await.unwrap();
 
@@ -1132,7 +1059,6 @@ async fn cloud_credentials_only_go_to_cloud_hosts() {
             &sb,
             bedrock(
                 "bedrock-cloud",
-                ApiFormat::Anthropic,
                 "us-east-1",
                 ProviderCredential::CloudIdentity,
             ),
@@ -1168,12 +1094,7 @@ async fn an_e2e_build_lets_cloud_credentials_reach_a_mock() {
         let new = NewProvider {
             base_url: Some("http://mock-model:8000".into()),
             allow_private_network: true,
-            ..bedrock(
-                &format!("bedrock-{i}"),
-                ApiFormat::Anthropic,
-                "us-east-1",
-                credential,
-            )
+            ..bedrock(&format!("bedrock-{i}"), "us-east-1", credential)
         };
         store.create_provider(&sb, new).await.unwrap();
     }
@@ -1222,10 +1143,7 @@ async fn moving_a_stored_secret_needs_it_again() {
     };
     let aws = || aws_keys("AKIAEXAMPLE0000001", "aws-secret", None);
     let b = store
-        .create_provider(
-            &sb,
-            bedrock("bedrock-aws", ApiFormat::Anthropic, "us-east-1", aws()),
-        )
+        .create_provider(&sb, bedrock("bedrock-aws", "us-east-1", aws()))
         .await
         .unwrap();
     let err = store
@@ -1254,12 +1172,7 @@ async fn moving_a_stored_secret_needs_it_again() {
     let az = store
         .create_provider(
             &sb,
-            azure(
-                "azure-sp",
-                ApiFormat::OpenAi,
-                AZURE_OPENAI,
-                entra(TENANT, CLIENT, "sp-secret"),
-            ),
+            azure("azure-sp", AZURE_OPENAI, entra(TENANT, CLIENT, "sp-secret")),
         )
         .await
         .unwrap();
@@ -1290,7 +1203,6 @@ async fn moving_a_stored_secret_needs_it_again() {
             &sb,
             bedrock(
                 "bedrock-cloud",
-                ApiFormat::Anthropic,
                 "us-east-1",
                 ProviderCredential::CloudIdentity,
             ),
@@ -1334,7 +1246,6 @@ async fn provider_addresses_are_checked() {
         "http://100.64.0.1",
         "http://[fc00::1]",
         "http://[::ffff:10.1.2.3]",
-        "http://203.0.113.10@10.1.2.3/v1", // the host is after the @
         "http://10.1.2.3./v1",
     ]
     .into_iter()
@@ -1426,45 +1337,578 @@ async fn provider_addresses_are_checked() {
     );
 }
 
+/// One Bedrock or Azure provider serves every tool, so neither has a route
+/// format: Claude and GPT behind one Bedrock provider, and one Foundry
+/// project for both.
 #[tokio::test]
-async fn claude_on_azure_needs_claude_deployments() {
+async fn one_bedrock_or_azure_provider_needs_no_format() {
     let (store, sb) = common::store().await;
+    let bedrock = store
+        .create_provider(
+            &sb,
+            bedrock(
+                "bedrock",
+                "us-east-1",
+                aws_keys("AKIAEXAMPLE0000001", "s", None),
+            ),
+        )
+        .await
+        .unwrap();
+    let foundry = store
+        .create_provider(
+            &sb,
+            azure("foundry", AZURE_FOUNDRY, entra(TENANT, CLIENT, "s")),
+        )
+        .await
+        .unwrap();
+    // GPT on Foundry with a key, and on Azure OpenAI with the gateway's
+    // identity: no route decides the credential any more.
+    store
+        .create_provider(&sb, azure("foundry-key", AZURE_FOUNDRY, key("k")))
+        .await
+        .unwrap();
     store
         .create_provider(
             &sb,
             azure(
-                "azure-claude",
-                ApiFormat::Anthropic,
-                AZURE_FOUNDRY,
+                "azure-cloud",
+                AZURE_OPENAI,
                 ProviderCredential::CloudIdentity,
             ),
         )
         .await
         .unwrap();
-    store
+    for (model, provider) in [
+        ("us.anthropic.claude-sonnet-4-6-v1:0", "bedrock"),
+        ("openai.gpt-oss-120b-1:0", "bedrock"),
+        ("claude-sonnet-x", "foundry"),
+        ("gpt-5", "foundry"),
+        ("gpt-5-mini", "foundry-key"),
+        ("gpt-5-nano", "azure-cloud"),
+    ] {
+        store
+            .create_model(new_model(model, provider, None))
+            .await
+            .unwrap();
+    }
+    let listed = store.list_providers().await.unwrap();
+    assert_eq!(listed.len(), 4);
+    assert!(
+        listed
+            .iter()
+            .all(|p| p.apis.is_none() && p.catalog_key.is_none()),
+        "{listed:?}"
+    );
+    assert_eq!(store.get_provider(&bedrock.name).await.unwrap(), bedrock);
+    assert_eq!(store.get_provider(&foundry.name).await.unwrap(), foundry);
+}
+
+/// An OpenAI-compatible host says which APIs it serves, each with its path
+/// when it isn't the standard one, and the key agentgateway's catalog files
+/// its prices under.
+#[tokio::test]
+async fn an_open_weight_host_declares_its_apis() {
+    let (store, sb) = common::store().await;
+    let apis = HostApis::new(vec![
+        HostApiPath {
+            api: HostApi::ChatCompletions,
+            path: None,
+        },
+        HostApiPath {
+            api: HostApi::Messages,
+            path: Some("/anthropic/v1/messages".into()),
+        },
+    ])
+    .unwrap();
+    let created = store
         .create_provider(
             &sb,
-            azure("azure-gpt", ApiFormat::OpenAi, AZURE_OPENAI, key("k")),
+            NewProvider {
+                apis: Some(apis.clone()),
+                catalog_key: Some("deepseek".into()),
+                ..mock_provider("deepseek", "k")
+            },
         )
         .await
         .unwrap();
-    // agentgateway sends a deployment to Foundry's /anthropic/v1/messages
-    // only when its name starts with "claude".
+    assert_eq!(
+        (created.apis.as_ref(), created.catalog_key.as_deref()),
+        (Some(&apis), Some("deepseek"))
+    );
+    assert_eq!(store.get_provider(&created.name).await.unwrap(), created);
+    // No list of APIs without Chat Completions gets this far: the type
+    // refuses it (the API answers 422 on `apis`).
+    assert!(HostApis::new(vec![]).is_err());
+    assert!(
+        HostApis::new(vec![HostApiPath {
+            api: HostApi::Messages,
+            path: None,
+        }])
+        .is_err()
+    );
+    for (new, field) in [
+        (
+            NewProvider {
+                apis: None,
+                ..mock_provider("p", "k")
+            },
+            "apis",
+        ),
+        (
+            NewProvider {
+                apis: Some(HostApis::chat_only()),
+                ..bedrock("p", "us-east-1", key("k"))
+            },
+            "apis",
+        ),
+        (
+            NewProvider {
+                catalog_key: Some("Bad Key".into()),
+                ..mock_provider("p", "k")
+            },
+            "catalog_key",
+        ),
+        (
+            NewProvider {
+                catalog_key: Some("anthropic".into()),
+                ..new_provider("p", ProviderKind::Anthropic, "k")
+            },
+            "catalog_key",
+        ),
+    ] {
+        let what = format!("{new:?}");
+        let err = store.create_provider(&sb, new).await.unwrap_err();
+        assert!(!format!("{err:?}").contains("Bad Key"), "{err:?}");
+        assert_eq!(fields(err), [field], "{what}");
+    }
+
+    // Editing the APIs, or the catalog key, doesn't move the provider to
+    // another host, so it needs no credential.
+    let updated = store
+        .update_provider(
+            &sb,
+            &created.name,
+            ProviderUpdate {
+                apis: Some(HostApis::chat_only()),
+                catalog_key: Some(None),
+                ..ProviderUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (updated.apis, updated.catalog_key),
+        (Some(HostApis::chat_only()), None)
+    );
+    let bedrock = store
+        .create_provider(&sb, bedrock("bedrock", "us-east-1", key("k")))
+        .await
+        .unwrap();
     let err = store
-        .create_model(new_model("gpt-x", "azure-claude", None))
+        .update_provider(
+            &sb,
+            &bedrock.name,
+            ProviderUpdate {
+                apis: Some(HostApis::chat_only()),
+                ..ProviderUpdate::default()
+            },
+        )
         .await
         .unwrap_err();
-    assert_eq!(fields(err), ["name"]);
-    for name in ["claude-sonnet-x", "Claude-Opus"] {
+    assert_eq!(fields(err), ["apis"]);
+}
+
+/// agentgateway v1.7.0 refuses a base URL with user info, a query or a
+/// fragment when it loads the file, which would hold back every
+/// environment's config.
+#[tokio::test]
+async fn base_urls_with_user_info_query_or_fragment_are_refused() {
+    const NO_EXTRAS: &str = "use a URL without user name, password, query or fragment";
+    let (store, sb) = common::store().await;
+    let bad = [
+        "https://u:p@h.example/v1",
+        "https://u@h.example/v1",
+        "https://h.example/v1?x=1",
+        "https://h.example/v1#f",
+    ];
+    for url in bad {
+        let err = store
+            .create_provider(
+                &sb,
+                NewProvider {
+                    base_url: Some(url.into()),
+                    ..mock_provider("p", "k")
+                },
+            )
+            .await
+            .unwrap_err();
+        let StoreError::Validation(errors) = err else {
+            panic!("{err:?}")
+        };
+        let got: Vec<(&str, &str)> = errors
+            .iter()
+            .map(|e| (e.field.as_str(), e.message.as_str()))
+            .collect();
+        assert_eq!(got, [("base_url", NO_EXTRAS)], "{url}");
+    }
+    let p = store
+        .create_provider(&sb, mock_provider("p", "k"))
+        .await
+        .unwrap();
+    for url in bad {
+        let err = store
+            .update_provider(&sb, &p.name, update(Some("k2"), Some(Some(url))))
+            .await
+            .unwrap_err();
+        assert_eq!(message(err), NO_EXTRAS, "{url}");
+    }
+    // An `@` in the path is not user info.
+    store
+        .update_provider(
+            &sb,
+            &p.name,
+            update(Some("k2"), Some(Some("http://mock:8000/v1/@team"))),
+        )
+        .await
+        .unwrap();
+}
+
+/// A host's model that agentgateway's catalog prices under the host's
+/// catalog key needs no Sekisho prices; any other still does.
+#[tokio::test]
+async fn a_preset_hosts_model_known_to_the_catalog_needs_no_price() {
+    let (store, sb) = common::store().await;
+    store
+        .create_provider(
+            &sb,
+            NewProvider {
+                catalog_key: Some("togetherai".into()),
+                ..mock_provider("together", "k")
+            },
+        )
+        .await
+        .unwrap();
+    let model = store
+        .create_model(new_model("zai-org/GLM-5.1", "together", None))
+        .await
+        .unwrap();
+    assert_eq!(model.prices(), None);
+    let err = store
+        .create_model(new_model("unknown-model", "together", None))
+        .await
+        .unwrap_err();
+    let StoreError::Validation(errors) = err else {
+        panic!("{err:?}")
+    };
+    let named: Vec<&str> = errors.iter().map(|e| e.field.as_str()).collect();
+    assert_eq!(named, ["input_price", "output_price"]);
+    assert!(
+        errors[0].message.contains("togetherai"),
+        "{}",
+        errors[0].message
+    );
+    store
+        .create_model(new_model("unknown-model", "together", Some((1, 2))))
+        .await
+        .unwrap();
+}
+
+/// A catalog key change that would leave an unpriced model without a price
+/// is refused, naming the model.
+#[tokio::test]
+async fn changing_the_catalog_key_keeps_every_model_priced() {
+    let (store, sb) = common::store().await;
+    let together = store
+        .create_provider(
+            &sb,
+            NewProvider {
+                catalog_key: Some("togetherai".into()),
+                ..mock_provider("together", "k")
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .create_model(new_model("zai-org/GLM-5.1", "together", None))
+        .await
+        .unwrap();
+    let change = |key: Option<&str>| ProviderUpdate {
+        catalog_key: Some(key.map(Into::into)),
+        ..ProviderUpdate::default()
+    };
+    for key in [None, Some("mistral")] {
+        let err = store
+            .update_provider(&sb, &together.name, change(key))
+            .await
+            .unwrap_err();
+        let StoreError::Validation(errors) = err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, "catalog_key");
+        assert!(
+            errors[0].message.contains("zai-org/GLM-5.1"),
+            "{}",
+            errors[0].message
+        );
+    }
+    store
+        .update_provider(&sb, &together.name, change(Some("togetherai")))
+        .await
+        .unwrap();
+    // Once the model has its own prices, the key can go.
+    store
+        .delete_model(&ModelName::parse("zai-org/GLM-5.1").unwrap())
+        .await
+        .unwrap();
+    store
+        .create_model(new_model("zai-org/GLM-5.1", "together", Some((1, 2))))
+        .await
+        .unwrap();
+    let updated = store
+        .update_provider(&sb, &together.name, change(None))
+        .await
+        .unwrap();
+    assert_eq!(updated.catalog_key, None);
+}
+
+/// agentgateway sends an Azure deployment whose name starts with `claude`
+/// to Foundry's Messages endpoint, which takes Claude API keys only in a
+/// header agentgateway can't send. So Claude on Azure needs Foundry and an
+/// Entra credential, checked when the model is added and when the provider
+/// changes.
+#[tokio::test]
+async fn claude_on_azure_needs_foundry_and_entra() {
+    let (store, sb) = common::store().await;
+    let sp = || entra(TENANT, CLIENT, "s");
+    for new in [
+        azure("azure-openai", AZURE_OPENAI, sp()),
+        azure("foundry-key", AZURE_FOUNDRY, key("k")),
+        azure("foundry-sp", AZURE_FOUNDRY, sp()),
+        azure("azure-gpt", AZURE_OPENAI, key("k")),
+    ] {
+        store.create_provider(&sb, new).await.unwrap();
+    }
+    let refusal = async |model: &str, provider: &str| {
+        let err = store
+            .create_model(new_model(model, provider, None))
+            .await
+            .unwrap_err();
+        let StoreError::Validation(errors) = err else {
+            panic!("{err:?}")
+        };
+        errors
+    };
+    let foundry = refusal("claude-sonnet", "azure-openai").await;
+    assert_eq!(foundry.len(), 1, "{foundry:?}");
+    assert_eq!(foundry[0].field, "name");
+    assert!(foundry[0].message.contains("Foundry"), "{foundry:?}");
+    let entra_needed = refusal("claude-sonnet", "foundry-key").await;
+    assert_eq!(entra_needed.len(), 1, "{entra_needed:?}");
+    assert_eq!(entra_needed[0].field, "name");
+    assert!(
+        entra_needed[0].message.contains("Entra"),
+        "{entra_needed:?}"
+    );
+    for name in ["claude-sonnet", "Claude-Opus"] {
         store
-            .create_model(new_model(name, "azure-claude", None))
+            .create_model(new_model(name, "foundry-sp", None))
             .await
             .unwrap();
     }
     store
-        .create_model(new_model("gpt-x", "azure-gpt", None))
+        .create_model(new_model("gpt-5", "azure-gpt", None))
         .await
         .unwrap();
+
+    // The provider can't change under its Claude models.
+    let name = pname("foundry-sp");
+    for (update, field) in [
+        (
+            ProviderUpdate {
+                credential: Some(key("k")),
+                ..ProviderUpdate::default()
+            },
+            "credential",
+        ),
+        (
+            ProviderUpdate {
+                credential: Some(sp()),
+                options: Some(ProviderOptions::Azure {
+                    endpoint: AzureEndpoint::parse(AZURE_OPENAI).unwrap(),
+                }),
+                ..ProviderUpdate::default()
+            },
+            "endpoint",
+        ),
+    ] {
+        let err = store.update_provider(&sb, &name, update).await.unwrap_err();
+        let StoreError::Validation(errors) = err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, field);
+        for model in ["Claude-Opus", "claude-sonnet"] {
+            assert!(errors[0].message.contains(model), "{errors:?}");
+        }
+    }
+    // A GPT-only Azure provider still switches to a key.
+    store
+        .update_provider(
+            &sb,
+            &pname("azure-gpt"),
+            ProviderUpdate {
+                credential: Some(key("k2")),
+                ..ProviderUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// Plan 1b's rows lose their route format and keep everything else: an
+/// OpenAI-compatible provider gets Chat Completions and no catalog key.
+#[tokio::test]
+async fn migration_0008_keeps_existing_providers() {
+    let (store, sb) = common::store().await;
+    sqlx::query("create database pre1d")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let url = format!(
+        "postgres://postgres:sekisho@127.0.0.1:{}/pre1d",
+        store.pool().connect_options().get_port()
+    );
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let mut before = sqlx::migrate!("./migrations");
+    before.migrations = Cow::Owned(
+        before
+            .migrations
+            .iter()
+            .filter(|m| m.version <= 7)
+            .cloned()
+            .collect(),
+    );
+    before.run(&pool).await.unwrap();
+    let sealed = sb.seal(b"mock-key");
+    for (name, kind, format, base_url, options, credential, ciphertext) in [
+        (
+            "bedrock",
+            "bedrock",
+            "anthropic",
+            None,
+            r#"{"region": "us-east-1"}"#,
+            "cloud_identity",
+            None,
+        ),
+        (
+            "azure",
+            "azure",
+            "openai",
+            None,
+            r#"{"endpoint": "https://my-resource.openai.azure.com"}"#,
+            "cloud_identity",
+            None,
+        ),
+        (
+            "mock",
+            "openai_compatible",
+            "openai",
+            Some("http://mock:8000/v1"),
+            "{}",
+            "key",
+            Some(sealed.clone()),
+        ),
+    ] {
+        sqlx::query(
+            "insert into providers (name, kind, api_format, base_url, options, \
+             credential_kind, credential_ciphertext, allow_private_network) \
+             values ($1, $2, $3, $4, $5::jsonb, $6, $7, true)",
+        )
+        .bind(name)
+        .bind(kind)
+        .bind(format)
+        .bind(base_url)
+        .bind(options)
+        .bind(credential)
+        .bind(ciphertext)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for (model, provider, prices) in [
+        ("us.anthropic.claude-x", "bedrock", None),
+        ("gpt-x", "azure", None),
+        ("qwen", "mock", Some((1_i64, 2_i64))),
+    ] {
+        sqlx::query(
+            "insert into models (name, provider_id, input_price_micro_usd, \
+             output_price_micro_usd) select $1, id, $3, $4 from providers where name = $2",
+        )
+        .bind(model)
+        .bind(provider)
+        .bind(prices.map(|p| p.0))
+        .bind(prices.map(|p| p.1))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+
+    let migrated = Store::connect(&url, StoreOptions::default()).await.unwrap();
+    migrated.migrate().await.unwrap();
+    let listed = migrated.list_providers().await.unwrap();
+    let summary: Vec<_> = listed
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.kind,
+                p.apis.clone(),
+                p.catalog_key.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("azure", ProviderKind::Azure, None, None),
+            ("bedrock", ProviderKind::Bedrock, None, None),
+            (
+                "mock",
+                ProviderKind::OpenAiCompatible,
+                Some(HostApis::chat_only()),
+                None
+            ),
+        ]
+    );
+    assert_eq!(
+        migrated
+            .provider_credential(&sb, listed[2].id)
+            .await
+            .unwrap(),
+        key("mock-key")
+    );
+    for model in ["us.anthropic.claude-x", "gpt-x", "qwen"] {
+        let pricing = migrated
+            .model_pricing(&ModelName::parse(model).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pricing.prices.is_some(),
+            model == "qwen",
+            "{model}: {pricing:?}"
+        );
+    }
+    let format_columns: i64 = sqlx::query_scalar(
+        "select count(*) from information_schema.columns \
+         where table_name = 'providers' and column_name = 'api_format'",
+    )
+    .fetch_one(migrated.pool())
+    .await
+    .unwrap();
+    assert_eq!(format_columns, 0);
 }
 
 #[test]
@@ -1486,10 +1930,7 @@ fn debug_hides_cloud_secrets() {
         let shape = format!("{:?}", credential.kind());
         for text in [
             format!("{credential:?}"),
-            format!(
-                "{:?}",
-                bedrock("p", ApiFormat::Anthropic, "us-east-1", credential.clone())
-            ),
+            format!("{:?}", bedrock("p", "us-east-1", credential.clone())),
             format!(
                 "{:?}",
                 ProviderUpdate {
@@ -1599,10 +2040,7 @@ async fn cache_prices_need_input_and_output() {
 async fn model_pricing_reads_one_model() {
     let (store, sb) = common::store().await;
     store
-        .create_provider(
-            &sb,
-            bedrock("bedrock-oss", ApiFormat::OpenAi, "us-east-1", key("k")),
-        )
+        .create_provider(&sb, bedrock("bedrock-oss", "us-east-1", key("k")))
         .await
         .unwrap();
     store
@@ -1644,17 +2082,14 @@ async fn model_pricing_reads_one_model() {
     assert_eq!(store.model_pricing(&name("nope")).await.unwrap(), None);
 }
 
-/// Default cache prices follow the model, not the route format its
-/// provider was added with: Claude on a Bedrock provider added for the
-/// OpenAI format keeps Anthropic's ratios.
+/// Default cache prices follow the model: Claude on Bedrock keeps
+/// Anthropic's ratios, another Bedrock model takes OpenAI's, and an
+/// OpenAI-compatible host without a catalog key has none.
 #[tokio::test]
 async fn model_pricing_names_the_cache_defaults_and_catalog_key() {
     let (store, sb) = common::store().await;
     store
-        .create_provider(
-            &sb,
-            bedrock("bedrock", ApiFormat::OpenAi, "us-east-1", key("k")),
-        )
+        .create_provider(&sb, bedrock("bedrock", "us-east-1", key("k")))
         .await
         .unwrap();
     store

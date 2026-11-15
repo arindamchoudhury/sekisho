@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, HostApis, ProviderKind};
+use sekisho_core::formats::{AzureEndpoint, HostApi, HostApiPath, HostApis, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::pricing::{CacheDefaults, ModelPrices};
@@ -216,13 +216,14 @@ async fn a_bedrock_provider_carries_its_credential_and_region() {
             NewProvider {
                 name: provider("bedrock"),
                 kind: ProviderKind::Bedrock,
-                format: ApiFormat::OpenAi,
                 base_url: None,
                 options: ProviderOptions::Bedrock {
                     region: "us-east-1".into(),
                 },
                 credential: aws.clone(),
                 allow_private_network: false,
+                apis: None,
+                catalog_key: None,
             },
         )
         .await
@@ -307,9 +308,106 @@ async fn a_bedrock_provider_carries_its_credential_and_region() {
     assert!(yaml.contains("bedrock-session"));
 }
 
+/// A host's APIs and catalog key reach its provider entry, and the inline
+/// catalog files its priced models under that key; a host without one keeps
+/// its name.
+#[tokio::test]
+async fn host_apis_and_catalog_keys_reach_the_snapshot() {
+    let (store, sb) = common::store().await;
+    let apis = HostApis::new(vec![
+        HostApiPath {
+            api: HostApi::ChatCompletions,
+            path: None,
+        },
+        HostApiPath {
+            api: HostApi::Messages,
+            path: Some("/anthropic/v1/messages".into()),
+        },
+        HostApiPath {
+            api: HostApi::Responses,
+            path: None,
+        },
+    ])
+    .unwrap();
+    for (name, catalog_key, apis) in [
+        ("deepseek-host", Some("deepseek"), apis.clone()),
+        ("scaleway", None, HostApis::chat_only()),
+    ] {
+        store
+            .create_provider(
+                &sb,
+                NewProvider {
+                    allow_private_network: true,
+                    apis: Some(apis),
+                    catalog_key: catalog_key.map(Into::into),
+                    ..NewProvider::keyed(
+                        provider(name),
+                        ProviderKind::OpenAiCompatible,
+                        Some("http://mock:8000/v1".into()),
+                        "k",
+                    )
+                },
+            )
+            .await
+            .unwrap();
+    }
+    for (name, provider_name, prices) in [
+        ("deepseek-v4-pro", "deepseek-host", None),
+        ("deepseek-priced", "deepseek-host", Some(1)),
+        ("qwen3-235b", "scaleway", Some(2)),
+    ] {
+        store
+            .create_model(NewModel {
+                name: model(name),
+                provider: provider(provider_name),
+                input_price: prices.map(MicroUsd),
+                output_price: prices.map(MicroUsd),
+                cache_read_price: None,
+                cache_write_price: None,
+            })
+            .await
+            .unwrap();
+    }
+    put_env(
+        &store,
+        "team",
+        &["deepseek-v4-pro", "deepseek-priced", "qwen3-235b"],
+    )
+    .await;
+
+    let snapshot = build_snapshot(&store, &sb, &hooks()).await.unwrap();
+    let hosts: Vec<_> = snapshot
+        .providers
+        .iter()
+        .map(|p| (p.name.as_str(), p.apis.clone(), p.catalog_key.as_deref()))
+        .collect();
+    assert_eq!(
+        hosts,
+        [
+            ("deepseek-host", apis, Some("deepseek")),
+            ("scaleway", HostApis::chat_only(), None),
+        ]
+    );
+    let keys: Vec<(&str, &str)> = snapshot
+        .priced_models
+        .iter()
+        .map(|m| (m.model.as_str(), m.catalog_key.as_str()))
+        .collect();
+    assert_eq!(
+        keys,
+        [("deepseek-priced", "deepseek"), ("qwen3-235b", "scaleway")]
+    );
+    let yaml = render(&snapshot, &RenderOptions::default());
+    assert_eq!(validate(&yaml), Ok(()));
+    assert!(yaml.contains("providerOverride: deepseek\n"), "{yaml}");
+    assert!(yaml.contains("path: /anthropic/v1/messages\n"), "{yaml}");
+}
+
 /// A credential is rendered with the base URL and settings it was saved
 /// with. Here an update lands while `build_snapshot` waits between its list
-/// of providers and the rest of its reads (held by a lock on `models`): an
+/// of providers and its reads of each provider used (held by a lock on
+/// `environments`, which it reads in between; not `models`, which
+/// `update_provider` reads for the provider's own models): an
 /// Azure provider with a key and a base URL off Azure switches to the
 /// gateway's cloud identity and drops the base URL. Pairing the new identity
 /// with the old URL would send the gateway's Entra token to that host.
@@ -320,7 +418,6 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
         .create_provider(
             &sb,
             NewProvider {
-                format: ApiFormat::OpenAi,
                 base_url: Some("https://203.0.113.10".into()),
                 options: ProviderOptions::Azure {
                     endpoint: AzureEndpoint::parse("https://my-resource.openai.azure.com").unwrap(),
@@ -344,7 +441,7 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
     put_env(&store, "cloud", &["gpt-deployment"]).await;
 
     let mut blocker = store.pool().begin().await.unwrap();
-    sqlx::query("lock table models in access exclusive mode")
+    sqlx::query("lock table environments in access exclusive mode")
         .execute(&mut *blocker)
         .await
         .unwrap();
@@ -356,17 +453,17 @@ async fn a_credential_renders_with_the_settings_saved_with_it() {
     loop {
         let waiting: i64 = sqlx::query_scalar(
             "select count(*) from pg_stat_activity \
-             where wait_event_type = 'Lock' and query ilike '%from models%'",
+             where wait_event_type = 'Lock' and query ilike '%from environments%'",
         )
         .fetch_one(store.pool())
         .await
         .unwrap();
         if waiting > 0 {
-            break; // the providers are listed; the models read waits
+            break; // providers and models are listed; the environments read waits
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "build_snapshot never reached the models"
+            "build_snapshot never reached the environments"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

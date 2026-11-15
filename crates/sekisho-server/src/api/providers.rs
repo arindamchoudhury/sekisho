@@ -1,8 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, ProviderKind};
+use sekisho_core::formats::{AzureEndpoint, HostApi, HostApiPath, HostApis, ProviderKind};
 use sekisho_core::names::ProviderName;
+use sekisho_core::presets::{self, HostPreset, PRESETS};
 use sekisho_store::{NewProvider, Provider, ProviderCredential, ProviderOptions, ProviderUpdate};
 use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
@@ -11,21 +12,31 @@ use uuid::Uuid;
 use super::{ApiError, ApiJson, Fields};
 use crate::app::AppState;
 
-/// Adds a provider. `format` is required for Bedrock and Azure, which serve
-/// either route; other kinds have only one. Exactly one credential shape:
-/// `api_key`; `aws_access_key_id` with `aws_secret_access_key` and an
-/// optional `aws_session_token`; `azure_tenant_id`, `azure_client_id` and
+/// Adds a provider. A `preset` (a known OpenAI-compatible host, listed at
+/// `/api/v1/provider-presets`) fills in `kind`, `base_url`, `apis` and
+/// `catalog_key` where the request leaves them out; without one, `kind` is
+/// required. An OpenAI-compatible provider without `apis` serves Chat
+/// Completions. Exactly one credential shape: `api_key`;
+/// `aws_access_key_id` with `aws_secret_access_key` and an optional
+/// `aws_session_token`; `azure_tenant_id`, `azure_client_id` and
 /// `azure_client_secret`; or `"cloud_identity": true`. Credential fields are
 /// write-only.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewProviderBody {
     name: String,
-    kind: String,
     #[serde(default)]
-    format: Option<String>,
+    kind: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
     #[serde(default)]
     base_url: Option<String>,
+    /// The APIs an OpenAI-compatible host serves.
+    #[serde(default)]
+    apis: Option<Vec<HostApiBody>>,
+    /// The key agentgateway's model catalog files the host's prices under.
+    #[serde(default)]
+    catalog_key: Option<String>,
     /// Bedrock's AWS region.
     #[serde(default)]
     region: Option<String>,
@@ -55,14 +66,20 @@ pub struct NewProviderBody {
 }
 
 /// Changes a provider. Absent fields stay as they are; `"base_url": null`
-/// removes the override. At most one credential shape, as on create,
-/// replaces the stored credential; changing where requests go needs it. The
-/// name, kind and format never change, so they are unknown fields here.
+/// removes the override and `"catalog_key": null` the catalog key. At most
+/// one credential shape, as on create, replaces the stored credential;
+/// changing where requests go needs it, but changing the host's APIs or
+/// catalog key doesn't. The name and kind never change, so they are unknown
+/// fields here.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderUpdateBody {
     #[serde(default, deserialize_with = "present")]
     base_url: Option<Option<String>>,
+    #[serde(default)]
+    apis: Option<Vec<HostApiBody>>,
+    #[serde(default, deserialize_with = "present")]
+    catalog_key: Option<Option<String>>,
     #[serde(default)]
     region: Option<String>,
     #[serde(default)]
@@ -92,6 +109,29 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Optio
     T::deserialize(d).map(Some)
 }
 
+/// One API an OpenAI-compatible host serves, and its whole upstream path
+/// when it isn't the standard one under the base URL:
+/// `{"api": "messages", "path": "/anthropic/v1/messages"}`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostApiBody {
+    /// `chat_completions`, `messages` or `responses`.
+    api: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+impl HostApiBody {
+    fn list(apis: &HostApis) -> Vec<HostApiBody> {
+        apis.iter()
+            .map(|a| HostApiBody {
+                api: a.api.as_str().to_owned(),
+                path: a.path.clone(),
+            })
+            .collect()
+    }
+}
+
 /// A provider as answered. No credential value appears, not even an AWS
 /// access key ID or an Entra client ID: only the credential's shape.
 #[derive(Serialize)]
@@ -99,8 +139,10 @@ pub struct ProviderBody {
     id: Uuid,
     name: String,
     kind: &'static str,
-    format: &'static str,
     base_url: Option<String>,
+    /// An OpenAI-compatible host's APIs; `null` for the other kinds.
+    apis: Option<Vec<HostApiBody>>,
+    catalog_key: Option<String>,
     /// Bedrock providers only.
     #[serde(skip_serializing_if = "Option::is_none")]
     region: Option<String>,
@@ -125,8 +167,9 @@ impl From<Provider> for ProviderBody {
             id: p.id,
             name: p.name.to_string(),
             kind: p.kind.as_str(),
-            format: p.format.as_str(),
             base_url: p.base_url,
+            apis: p.apis.as_ref().map(HostApiBody::list),
+            catalog_key: p.catalog_key,
             region,
             endpoint,
             credential: p.credential.as_str(),
@@ -215,32 +258,44 @@ impl CredentialFields {
     }
 }
 
-/// The format named, or the kind's only one. Whether it fits the kind is
-/// the store's rule.
-fn format(
+/// The APIs given, checked as `HostApis` checks them.
+fn host_apis(fields: &mut Fields, given: Vec<HostApiBody>) -> Option<HostApis> {
+    let mut apis = Vec::with_capacity(given.len());
+    for a in given {
+        let Some(api) = HostApi::parse(&a.api) else {
+            fields.push("apis", "use chat_completions, messages or responses");
+            return None;
+        };
+        apis.push(HostApiPath { api, path: a.path });
+    }
+    fields.check("apis", HostApis::new(apis))
+}
+
+const KINDS: &str = "anthropic, openai, gemini, openai_compatible, bedrock or azure";
+
+/// The kind given, or a preset's (always OpenAI-compatible).
+fn kind(
     fields: &mut Fields,
-    kind: Option<ProviderKind>,
     given: Option<&str>,
-) -> Option<ApiFormat> {
-    match (given, kind) {
-        (Some(given), _) => fields.check(
-            "format",
-            ApiFormat::parse(given).ok_or("use anthropic, openai or gemini"),
-        ),
-        (None, Some(kind)) if kind.formats().len() == 1 => Some(kind.formats()[0]),
-        (None, Some(kind)) => {
-            let formats: Vec<_> = kind.formats().iter().map(|f| f.as_str()).collect();
-            fields.push(
-                "format",
-                format!(
-                    "a {} provider serves {}: choose one",
-                    kind.as_str(),
-                    formats.join(" or ")
-                ),
-            );
+    preset: Option<&HostPreset>,
+) -> Option<ProviderKind> {
+    match (given, preset) {
+        (Some(given), _) => {
+            let kind = fields.check(
+                "kind",
+                ProviderKind::parse(given).ok_or(format!("use {KINDS}")),
+            )?;
+            if preset.is_some() && kind != ProviderKind::OpenAiCompatible {
+                fields.push("kind", "a preset is an openai_compatible host");
+                return None;
+            }
+            Some(kind)
+        }
+        (None, Some(_)) => Some(ProviderKind::OpenAiCompatible),
+        (None, None) => {
+            fields.push("kind", format!("give a kind ({KINDS}) or a preset"));
             None
         }
-        (None, None) => None,
     }
 }
 
@@ -287,12 +342,34 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<ProviderBody>), ApiError> {
     let mut fields = Fields::default();
     let name = fields.check("name", ProviderName::parse(&body.name));
-    let kind = fields.check(
-        "kind",
-        ProviderKind::parse(&body.kind)
-            .ok_or("use anthropic, openai, gemini, openai_compatible, bedrock or azure"),
-    );
-    let format = format(&mut fields, kind, body.format.as_deref());
+    let preset = match body.preset.as_deref() {
+        Some(id) => {
+            let ids: Vec<&str> = PRESETS.iter().map(|p| p.id).collect();
+            fields.check(
+                "preset",
+                presets::preset(id).ok_or(format!("use one of {}", ids.join(", "))),
+            )
+        }
+        None => None,
+    };
+    // An unknown preset is reported alone, not as a missing kind too.
+    let kind = if body.preset.is_some() && preset.is_none() {
+        None
+    } else {
+        kind(&mut fields, body.kind.as_deref(), preset)
+    };
+    let apis = match body.apis {
+        Some(given) => host_apis(&mut fields, given),
+        None => preset
+            .map(HostPreset::host_apis)
+            .or_else(|| (kind == Some(ProviderKind::OpenAiCompatible)).then(HostApis::chat_only)),
+    };
+    let base_url = body
+        .base_url
+        .or_else(|| preset.and_then(|p| p.base_url).map(Into::into));
+    let catalog_key = body
+        .catalog_key
+        .or_else(|| preset.and_then(|p| p.catalog_key).map(Into::into));
     let options = settings(&mut fields, kind, body.region, body.endpoint);
     let credential = CredentialFields {
         api_key: body.api_key,
@@ -305,8 +382,7 @@ pub async fn create(
         cloud_identity: body.cloud_identity,
     }
     .check(&mut fields, true);
-    let (Some(name), Some(kind), Some(format), Some(credential)) = (name, kind, format, credential)
-    else {
+    let (Some(name), Some(kind), Some(credential)) = (name, kind, credential) else {
         return Err(fields.fail());
     };
     fields.finish()?;
@@ -317,11 +393,12 @@ pub async fn create(
             NewProvider {
                 name,
                 kind,
-                format,
-                base_url: body.base_url,
+                base_url,
                 options: options.unwrap_or(ProviderOptions::None),
                 credential,
                 allow_private_network: body.allow_private_network,
+                apis,
+                catalog_key,
             },
         )
         .await?;
@@ -344,6 +421,7 @@ pub async fn update(
     let current = state.store().get_provider(&name).await?;
     let mut fields = Fields::default();
     let options = settings(&mut fields, Some(current.kind), body.region, body.endpoint);
+    let apis = body.apis.and_then(|given| host_apis(&mut fields, given));
     let credential = CredentialFields {
         api_key: body.api_key,
         aws_access_key_id: body.aws_access_key_id,
@@ -366,6 +444,8 @@ pub async fn update(
                 base_url: body.base_url,
                 options,
                 allow_private_network: body.allow_private_network,
+                apis,
+                catalog_key: body.catalog_key,
             },
         )
         .await?;
@@ -379,4 +459,32 @@ pub async fn delete(
     let name = ProviderName::parse(&name).map_err(|_| ApiError::NotFound)?;
     state.store().delete_provider(&name).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A known OpenAI-compatible host, as `preset` fills it in.
+#[derive(Serialize)]
+pub struct PresetBody {
+    id: &'static str,
+    name: &'static str,
+    /// `null` when every install runs its own server (Ollama).
+    base_url: Option<&'static str>,
+    apis: Vec<HostApiBody>,
+    /// `null` when agentgateway's catalog doesn't have the host.
+    catalog_key: Option<&'static str>,
+}
+
+/// The known hosts, in `PRESETS` order.
+pub async fn list_presets() -> Json<Vec<PresetBody>> {
+    Json(
+        PRESETS
+            .iter()
+            .map(|p| PresetBody {
+                id: p.id,
+                name: p.name,
+                base_url: p.base_url,
+                apis: HostApiBody::list(&p.host_apis()),
+                catalog_key: p.catalog_key,
+            })
+            .collect(),
+    )
 }

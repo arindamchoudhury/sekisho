@@ -557,7 +557,7 @@ async fn ensure_cloud_provider(provider: Value, model: &str) {
 async fn ensure_bedrock_keys() {
     ensure_cloud_provider(
         json!({
-            "name": "bedrock-keys", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock-keys", "kind": "bedrock", "region": "us-east-1",
             "aws_access_key_id": E2E_ACCESS_KEY, "aws_secret_access_key": "e2e-aws-secret"
         }),
         BEDROCK_CLAUDE,
@@ -733,7 +733,7 @@ async fn revoking_a_key_cuts_a_bedrock_stream_under_2s() {
 async fn bedrock_openai_route_uses_its_api_key() {
     ensure_cloud_provider(
         json!({
-            "name": "bedrock-oss", "kind": "bedrock", "format": "openai", "region": "us-east-1",
+            "name": "bedrock-oss", "kind": "bedrock", "region": "us-east-1",
             "api_key": BEDROCK_API_KEY
         }),
         BEDROCK_OSS,
@@ -774,7 +774,7 @@ async fn bedrock_openai_route_uses_its_api_key() {
 async fn bedrock_cloud_identity_signs_with_the_gateways_credentials() {
     ensure_cloud_provider(
         json!({
-            "name": "bedrock-cloud", "kind": "bedrock", "format": "anthropic", "region": "us-east-1",
+            "name": "bedrock-cloud", "kind": "bedrock", "region": "us-east-1",
             "cloud_identity": true
         }),
         BEDROCK_CLOUD_CLAUDE,
@@ -810,7 +810,7 @@ async fn bedrock_cloud_identity_signs_with_the_gateways_credentials() {
 async fn azure_openai_route_uses_its_api_key_and_is_charged() {
     ensure_cloud_provider(
         json!({
-            "name": "azure-openai", "kind": "azure", "format": "openai",
+            "name": "azure-openai", "kind": "azure",
             "endpoint": "https://e2e-resource.openai.azure.com", "api_key": AZURE_KEY
         }),
         AZURE_DEPLOYMENT,

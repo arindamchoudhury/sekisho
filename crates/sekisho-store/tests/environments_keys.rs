@@ -3,7 +3,7 @@ mod common;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use sekisho_core::formats::{ApiFormat, ProviderKind};
+use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::{EnvKeyId, KeyState, hash_secret, parse_token};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
@@ -210,88 +210,30 @@ async fn environment_input_is_validated() {
     ));
 }
 
+/// Each environment chooses a provider by model (plan 1d), so its models
+/// may come from any providers: two of one kind, OpenAI beside an
+/// OpenAI-compatible host, or two Bedrock providers.
 #[tokio::test]
-async fn two_providers_same_format_rejected() {
+async fn an_environment_mixes_providers_of_one_format() {
     let (store, sb) = common::store().await;
-    provider_with_models(
-        &store,
-        &sb,
-        "anthropic-a",
-        ProviderKind::Anthropic,
-        &["m-a"],
-    )
-    .await;
-    provider_with_models(
-        &store,
-        &sb,
-        "anthropic-b",
-        ProviderKind::Anthropic,
-        &["m-b"],
-    )
-    .await;
-    let err = store
-        .upsert_environment(
-            spec("data-team", &["m-a", "m-b"]),
-            common::admin(&store).await,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, StoreError::Validation(ref f) if f[0].field == "models" && f[0].message.contains("anthropic-a") && f[0].message.contains("anthropic-b")),
-        "{err:?}"
-    );
-
-    // OpenAI and an OpenAI-compatible endpoint share the openai format too.
-    provider_with_models(&store, &sb, "openai", ProviderKind::OpenAi, &["gpt-5"]).await;
-    provider_with_models(
-        &store,
-        &sb,
-        "mock",
-        ProviderKind::OpenAiCompatible,
-        &["mock-model"],
-    )
-    .await;
-    assert_eq!(
-        fields(
-            store
-                .upsert_environment(
-                    spec("data-team", &["gpt-5", "mock-model"]),
-                    common::admin(&store).await
-                )
-                .await
-                .unwrap_err()
-        ),
-        ["models"]
-    );
-
-    // One provider per format is fine, across formats.
-    store
-        .upsert_environment(
-            spec("data-team", &["m-a", "gpt-5"]),
-            common::admin(&store).await,
-        )
-        .await
-        .unwrap();
-}
-
-/// A Bedrock provider serves the format it was added with, so two Bedrock
-/// providers can share an environment, one per format.
-#[tokio::test]
-async fn bedrock_formats_count_per_provider() {
-    let (store, sb) = common::store().await;
-    for (name, format, model) in [
+    for (name, kind, models) in [
         (
-            "bedrock-claude",
-            ApiFormat::Anthropic,
-            "us.anthropic.claude-mock-v1:0",
+            "scaleway",
+            ProviderKind::OpenAiCompatible,
+            &["qwen3-235b"][..],
         ),
-        ("bedrock-oss", ApiFormat::OpenAi, "gpt-oss-mock"),
+        ("mock", ProviderKind::OpenAiCompatible, &["mock-model"][..]),
+        ("openai", ProviderKind::OpenAi, &["gpt-5"][..]),
+        ("anthropic-a", ProviderKind::Anthropic, &["m-a"][..]),
+        ("anthropic-b", ProviderKind::Anthropic, &["m-b"][..]),
     ] {
+        provider_with_models(&store, &sb, name, kind, models).await;
+    }
+    for name in ["bedrock-a", "bedrock-b"] {
         store
             .create_provider(
                 &sb,
                 NewProvider {
-                    format,
                     options: ProviderOptions::Bedrock {
                         region: "us-east-1".into(),
                     },
@@ -307,39 +249,31 @@ async fn bedrock_formats_count_per_provider() {
             .unwrap();
         store
             .create_model(NewModel {
-                name: ModelName::parse(model).unwrap(),
+                name: ModelName::parse(&format!("{name}-model")).unwrap(),
                 provider: ProviderName::parse(name).unwrap(),
-                input_price: Some(MicroUsd(3_000_000)),
-                output_price: Some(MicroUsd(15_000_000)),
+                input_price: None,
+                output_price: None,
                 cache_read_price: None,
                 cache_write_price: None,
             })
             .await
             .unwrap();
     }
-    store
-        .upsert_environment(
-            spec("cloud", &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock"]),
-            common::admin(&store).await,
-        )
+    let models = [
+        "qwen3-235b",
+        "mock-model",
+        "gpt-5",
+        "m-a",
+        "m-b",
+        "bedrock-a-model",
+        "bedrock-b-model",
+    ];
+    let saved = store
+        .upsert_environment(spec("data-team", &models), common::admin(&store).await)
         .await
         .unwrap();
-
-    provider_with_models(&store, &sb, "openai", ProviderKind::OpenAi, &["gpt-5"]).await;
-    let err = store
-        .upsert_environment(
-            spec(
-                "cloud",
-                &["us.anthropic.claude-mock-v1:0", "gpt-oss-mock", "gpt-5"],
-            ),
-            common::admin(&store).await,
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(err, StoreError::Validation(ref f) if f.len() == 1 && f[0].field == "models" && f[0].message.contains("bedrock-oss") && f[0].message.contains("openai")),
-        "{err:?}"
-    );
+    let names: Vec<&str> = saved.spec.models.iter().map(|m| m.as_str()).collect();
+    assert_eq!(names, models);
 }
 
 #[tokio::test]

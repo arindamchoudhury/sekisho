@@ -1,6 +1,9 @@
 use std::fmt;
 
-use sekisho_core::formats::{ApiFormat, AzureEndpoint, AzureResourceType, ProviderKind};
+use sekisho_core::catalog;
+use sekisho_core::formats::{
+    AzureEndpoint, AzureResourceType, HostApi, HostApiPath, HostApis, ProviderKind, is_claude,
+};
 use sekisho_core::names::ProviderName;
 use sekisho_core::secret_box::{SecretBox, SecretError};
 use serde::Deserialize;
@@ -124,8 +127,6 @@ pub enum ProviderOptions {
 pub struct NewProvider {
     pub name: ProviderName,
     pub kind: ProviderKind,
-    /// One of `kind.formats()`; fixed once the provider is added.
-    pub format: ApiFormat,
     /// Required for `OpenAiCompatible`; otherwise overrides the provider's
     /// default endpoint.
     pub base_url: Option<String>,
@@ -135,11 +136,17 @@ pub struct NewProvider {
     /// Lets the base URL be on a loopback or private network address, or a
     /// host the server can't resolve.
     pub allow_private_network: bool,
+    /// The APIs an OpenAI-compatible host serves: required for that kind,
+    /// refused for the others, whose APIs agentgateway knows.
+    pub apis: Option<HostApis>,
+    /// The key agentgateway's model catalog files an OpenAI-compatible
+    /// host's prices under (`^[a-z0-9][a-z0-9._-]{0,63}$`); that kind only.
+    pub catalog_key: Option<String>,
 }
 
 impl NewProvider {
-    /// A provider of a single-format kind with an API key, no settings and
-    /// no private network.
+    /// A provider with an API key, no settings, no private network and no
+    /// catalog key. An OpenAI-compatible one serves Chat Completions.
     pub fn keyed(
         name: ProviderName,
         kind: ProviderKind,
@@ -149,17 +156,18 @@ impl NewProvider {
         NewProvider {
             name,
             kind,
-            format: kind.formats()[0],
             base_url,
             options: ProviderOptions::None,
             credential: ProviderCredential::Key(key.into()),
             allow_private_network: false,
+            apis: (kind == ProviderKind::OpenAiCompatible).then(HostApis::chat_only),
+            catalog_key: None,
         }
     }
 }
 
-/// Changes to a provider; `None` leaves a field as it is. The name, kind and
-/// format never change.
+/// Changes to a provider; `None` leaves a field as it is. The name and kind
+/// never change.
 #[derive(Debug, Default)]
 pub struct ProviderUpdate {
     /// A new credential, of any shape the provider takes, replacing the old
@@ -170,6 +178,12 @@ pub struct ProviderUpdate {
     pub base_url: Option<Option<String>>,
     pub options: Option<ProviderOptions>,
     pub allow_private_network: Option<bool>,
+    /// An OpenAI-compatible host's APIs. They don't move the provider to
+    /// another host, so they need no credential.
+    pub apis: Option<HostApis>,
+    /// `Some(None)` removes the catalog key. Refused while it would leave a
+    /// model without prices that the catalog doesn't price either.
+    pub catalog_key: Option<Option<String>>,
 }
 
 /// A provider as listed. Its credential is read only through
@@ -179,19 +193,21 @@ pub struct Provider {
     pub id: Uuid,
     pub name: ProviderName,
     pub kind: ProviderKind,
-    pub format: ApiFormat,
     pub base_url: Option<String>,
     pub options: ProviderOptions,
     pub credential: CredentialKind,
     pub allow_private_network: bool,
+    /// An OpenAI-compatible host's APIs; `None` for the other kinds.
+    pub apis: Option<HostApis>,
+    pub catalog_key: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
 /// Expands to the provider columns, for building fixed SQL with `concat!`.
 macro_rules! columns {
     () => {
-        "id, name, kind, api_format, base_url, options::text as options, credential_kind, \
-         allow_private_network, created_at"
+        "id, name, kind, base_url, options::text as options, credential_kind, \
+         allow_private_network, apis::text as apis, catalog_key, created_at"
     };
 }
 
@@ -199,11 +215,12 @@ macro_rules! columns {
 /// the validation rules look at.
 struct Settings<'a> {
     kind: ProviderKind,
-    format: ApiFormat,
     base_url: Option<&'a str>,
     options: &'a ProviderOptions,
     credential: CredentialKind,
     allow_private_network: bool,
+    apis: Option<&'a HostApis>,
+    catalog_key: Option<&'a str>,
 }
 
 const AWS_HOSTS: [&str; 2] = [".amazonaws.com", ".api.aws"];
@@ -213,16 +230,32 @@ const AZURE_HOSTS: [&str; 3] = [
     ".cognitiveservices.azure.com",
 ];
 
-/// The shapes each kind takes. Foundry takes Claude API keys only in
-/// `x-api-key`, which agentgateway's Azure provider can't send, so Claude
-/// on Azure needs an Entra credential.
-fn allowed_credentials(kind: ProviderKind, format: ApiFormat) -> &'static [CredentialKind] {
+/// Claude on Azure: agentgateway sends a deployment whose name starts with
+/// `claude` to Foundry's Messages endpoint, which takes Claude API keys only
+/// in `x-api-key`, a header agentgateway's Azure provider can't send. So it
+/// needs Foundry and an Entra credential, checked per model.
+pub(crate) const CLAUDE_ON_AZURE_FOUNDRY: &str = "Claude on Azure is served by Foundry: use \
+     https://<resource>.services.ai.azure.com/api/projects/<project>";
+pub(crate) const CLAUDE_ON_AZURE_ENTRA: &str = "Claude on Azure (Foundry takes Claude API keys only \
+     in a header agentgateway can't send) takes an Entra service principal or the gateway's \
+     cloud identity";
+/// The credentials Claude on Azure works with.
+pub(crate) const CLAUDE_ON_AZURE_CREDENTIALS: [CredentialKind; 2] = [
+    CredentialKind::AzureClientSecret,
+    CredentialKind::CloudIdentity,
+];
+
+/// Whether Claude on Azure is served by this endpoint.
+pub(crate) fn is_foundry(options: &ProviderOptions) -> bool {
+    matches!(options, ProviderOptions::Azure { endpoint }
+        if endpoint.resource_type == AzureResourceType::Foundry)
+}
+
+/// The shapes each kind takes.
+fn allowed_credentials(kind: ProviderKind) -> &'static [CredentialKind] {
     use CredentialKind::*;
     match kind {
         ProviderKind::Bedrock => &[Key, AwsAccessKeys, CloudIdentity],
-        ProviderKind::Azure if format == ApiFormat::Anthropic => {
-            &[AzureClientSecret, CloudIdentity]
-        }
         ProviderKind::Azure => &[Key, AzureClientSecret, CloudIdentity],
         ProviderKind::Anthropic
         | ProviderKind::OpenAi
@@ -233,42 +266,54 @@ fn allowed_credentials(kind: ProviderKind, format: ApiFormat) -> &'static [Crede
 
 /// Checks a provider as it will be saved; `new_credential` is the credential
 /// being set, if any. The address check resolves the base URL's host, so this
-/// runs before any transaction. Errors come in a fixed order: `format`,
-/// `credential`, `region`, `endpoint`, `base_url`, then the credential's own
-/// fields.
+/// runs before any transaction. Errors come in a fixed order: `credential`,
+/// `region`, `endpoint`, `base_url`, `apis`, `catalog_key`, then the
+/// credential's own fields.
 async fn validate(
     s: &Settings<'_>,
     new_credential: Option<&ProviderCredential>,
 ) -> Vec<FieldError> {
     let mut errors = Vec::new();
-    if !s.kind.formats().contains(&s.format) {
-        let formats: Vec<_> = s.kind.formats().iter().map(|f| f.as_str()).collect();
-        errors.push(FieldError::new(
-            "format",
-            format!(
-                "a {} provider serves {}",
-                s.kind.as_str(),
-                formats.join(" or ")
-            ),
-        ));
-    }
-    let allowed = allowed_credentials(s.kind, s.format);
+    let allowed = allowed_credentials(s.kind);
     let fits = allowed.contains(&s.credential);
     if !fits {
         let shapes: Vec<_> = allowed.iter().map(|k| k.described()).collect();
-        let what = match (s.kind, s.format) {
-            (ProviderKind::Azure, ApiFormat::Anthropic) => {
-                "Claude on Azure (Foundry takes Claude API keys only in a header agentgateway can't send)".to_owned()
-            }
-            (kind, _) => format!("a {} provider", kind.as_str()),
-        };
         errors.push(FieldError::new(
             "credential",
-            format!("{what} takes {}", shapes.join(" or ")),
+            format!(
+                "a {} provider takes {}",
+                s.kind.as_str(),
+                shapes.join(" or ")
+            ),
         ));
     }
     validate_options(&mut errors, s);
     validate_base_url(&mut errors, s).await;
+    let compatible = s.kind == ProviderKind::OpenAiCompatible;
+    match (compatible, s.apis) {
+        (true, None) => errors.push(FieldError::new(
+            "apis",
+            "an OpenAI-compatible provider needs its host's APIs: chat_completions, \
+             and messages or responses where the host serves them",
+        )),
+        (false, Some(_)) => errors.push(FieldError::new(
+            "apis",
+            "only OpenAI-compatible providers declare their APIs; agentgateway knows the others'",
+        )),
+        _ => {}
+    }
+    match s.catalog_key {
+        Some(_) if !compatible => errors.push(FieldError::new(
+            "catalog_key",
+            "only OpenAI-compatible providers have a catalog key",
+        )),
+        Some(key) if !is_catalog_key(key) => errors.push(FieldError::new(
+            "catalog_key",
+            "use up to 64 lowercase letters, digits, dots, underscores or hyphens, \
+             starting with a letter or digit",
+        )),
+        _ => {}
+    }
     if let Some(credential) = new_credential.filter(|_| fits) {
         validate_credential(&mut errors, credential);
     }
@@ -276,8 +321,6 @@ async fn validate(
 }
 
 fn validate_options(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
-    const FOUNDRY: &str = "Claude on Azure is served by Foundry: use \
-         https://<resource>.services.ai.azure.com/api/projects/<project>";
     match (s.kind, s.options) {
         (ProviderKind::Bedrock, ProviderOptions::Bedrock { region }) => {
             if !is_aws_region(region) {
@@ -295,13 +338,7 @@ fn validate_options(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
             // The fields are public, so an endpoint may not have come from
             // parse; it must still be one that parse accepts.
             match AzureEndpoint::parse(&endpoint.url()) {
-                Ok(parsed) if parsed == *endpoint => {
-                    if s.format == ApiFormat::Anthropic
-                        && endpoint.resource_type != AzureResourceType::Foundry
-                    {
-                        errors.push(FieldError::new("endpoint", FOUNDRY));
-                    }
-                }
+                Ok(parsed) if parsed == *endpoint => {}
                 Ok(_) => errors.push(FieldError::new(
                     "endpoint",
                     "an Azure OpenAI endpoint has no project",
@@ -339,6 +376,16 @@ async fn validate_base_url(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
         errors.push(FieldError::new(
             "base_url",
             "use an http:// or https:// URL with a host",
+        ));
+        return;
+    }
+    // agentgateway v1.7.0 refuses such a base URL when it loads the file,
+    // which would hold back every environment's config. Never quoted: user
+    // info is a credential.
+    if has_user_info_query_or_fragment(url) {
+        errors.push(FieldError::new(
+            "base_url",
+            "use a URL without user name, password, query or fragment",
         ));
         return;
     }
@@ -422,6 +469,28 @@ fn validate_credential(errors: &mut Vec<FieldError>, credential: &ProviderCreden
         }
         ProviderCredential::CloudIdentity => {}
     }
+}
+
+/// User info (an `@` before the path), a query or a fragment.
+fn has_user_info_query_or_fragment(url: &str) -> bool {
+    if url.contains(['?', '#']) {
+        return true;
+    }
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    authority.contains('@')
+}
+
+/// `^[a-z0-9][a-z0-9._-]{0,63}$`, as agentgateway's catalog names hosts.
+fn is_catalog_key(key: &str) -> bool {
+    key.len() <= 64
+        && key
+            .bytes()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && key
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
 }
 
 fn is_http_url(url: &str) -> bool {
@@ -550,7 +619,7 @@ fn options_json(options: &ProviderOptions) -> String {
     .to_string()
 }
 
-fn options_from_json(kind: ProviderKind, text: &str) -> Result<ProviderOptions> {
+pub(crate) fn options_from_json(kind: ProviderKind, text: &str) -> Result<ProviderOptions> {
     let bad = || bad_column("provider options", text);
     let value: serde_json::Value = serde_json::from_str(text).map_err(|_| bad())?;
     let field = |name: &str| value.get(name).and_then(|v| v.as_str()).ok_or_else(bad);
@@ -565,23 +634,55 @@ fn options_from_json(kind: ProviderKind, text: &str) -> Result<ProviderOptions> 
     })
 }
 
+/// `[{"api": "chat_completions"}, {"api": "messages", "path": "/anthropic/v1/messages"}]`.
+fn apis_json(apis: &HostApis) -> String {
+    let list: Vec<serde_json::Value> = apis
+        .iter()
+        .map(|a| match &a.path {
+            Some(path) => json!({ "api": a.api.as_str(), "path": path }),
+            None => json!({ "api": a.api.as_str() }),
+        })
+        .collect();
+    serde_json::Value::from(list).to_string()
+}
+
+fn apis_from_json(text: &str) -> Result<HostApis> {
+    let bad = || bad_column("provider APIs", text);
+    let list: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|_| bad())?;
+    let apis = list
+        .iter()
+        .map(|entry| {
+            let api = entry.get("api").and_then(|a| a.as_str()).ok_or_else(bad)?;
+            Ok(HostApiPath {
+                api: HostApi::parse(api).ok_or_else(bad)?,
+                path: match entry.get("path") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(path) => Some(path.as_str().ok_or_else(bad)?.to_owned()),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    HostApis::new(apis).map_err(|_| bad())
+}
+
 fn from_row(row: &PgRow) -> Result<Provider> {
     let name: String = row.try_get("name")?;
     let kind: String = row.try_get("kind")?;
     let kind = ProviderKind::parse(&kind).ok_or_else(|| bad_column("provider kind", &kind))?;
-    let format: String = row.try_get("api_format")?;
     let credential: String = row.try_get("credential_kind")?;
     let options: String = row.try_get("options")?;
+    let apis: Option<String> = row.try_get("apis")?;
     Ok(Provider {
         id: row.try_get("id")?,
         name: ProviderName::parse(&name).map_err(|_| bad_column("provider name", &name))?,
         kind,
-        format: ApiFormat::parse(&format).ok_or_else(|| bad_column("API format", &format))?,
         base_url: row.try_get("base_url")?,
         options: options_from_json(kind, &options)?,
         credential: CredentialKind::parse(&credential)
             .ok_or_else(|| bad_column("credential kind", &credential))?,
         allow_private_network: row.try_get("allow_private_network")?,
+        apis: apis.as_deref().map(apis_from_json).transpose()?,
+        catalog_key: row.try_get("catalog_key")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -595,29 +696,31 @@ impl Store {
     ) -> Result<Provider> {
         let settings = Settings {
             kind: new.kind,
-            format: new.format,
             base_url: new.base_url.as_deref(),
             options: &new.options,
             credential: new.credential.kind(),
             allow_private_network: new.allow_private_network,
+            apis: new.apis.as_ref(),
+            catalog_key: new.catalog_key.as_deref(),
         };
         check(validate(&settings, Some(&new.credential)).await)?;
         let ciphertext = seal(secret_box, &new.credential);
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(concat!(
-            "insert into providers (name, kind, api_format, base_url, options, \
-             credential_kind, credential_ciphertext, allow_private_network) \
-             values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) returning ",
+            "insert into providers (name, kind, base_url, options, credential_kind, \
+             credential_ciphertext, allow_private_network, apis, catalog_key) \
+             values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9) returning ",
             columns!()
         ))
         .bind(new.name.as_str())
         .bind(new.kind.as_str())
-        .bind(new.format.as_str())
         .bind(&new.base_url)
         .bind(options_json(&new.options))
         .bind(new.credential.kind().as_str())
         .bind(&ciphertext)
         .bind(new.allow_private_network)
+        .bind(new.apis.as_ref().map(apis_json))
+        .bind(&new.catalog_key)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -660,11 +763,13 @@ impl Store {
     }
 
     /// Replaces a provider's credential (of any shape it takes) or changes
-    /// its base URL, settings or `allow_private_network`. The result is
-    /// validated as `create_provider` validates a new provider. A change to
-    /// where requests go needs the credential again while a secret is
-    /// stored. Its models and environments keep using it; the gateway config
-    /// is re-rendered.
+    /// its base URL, settings, `allow_private_network`, APIs or catalog key.
+    /// The result is validated as `create_provider` validates a new
+    /// provider. A change to where requests go needs the credential again
+    /// while a secret is stored. A change its models can't follow is refused:
+    /// Claude on Azure needs Foundry and an Entra credential, and an unpriced
+    /// model needs the catalog key that prices it. Its models and
+    /// environments keep using it; the gateway config is re-rendered.
     pub async fn update_provider(
         &self,
         secret_box: &SecretBox,
@@ -682,9 +787,13 @@ impl Store {
             .options
             .clone()
             .unwrap_or_else(|| current.options.clone());
+        let apis = update.apis.clone().or_else(|| current.apis.clone());
+        let catalog_key = match &update.catalog_key {
+            Some(key) => key.clone(),
+            None => current.catalog_key.clone(),
+        };
         let settings = Settings {
             kind: current.kind,
-            format: current.format,
             base_url: base_url.as_deref(),
             options: &options,
             credential: update
@@ -694,6 +803,8 @@ impl Store {
             allow_private_network: update
                 .allow_private_network
                 .unwrap_or(current.allow_private_network),
+            apis: apis.as_ref(),
+            catalog_key: catalog_key.as_deref(),
         };
         let mut errors = validate(&settings, update.credential.as_ref()).await;
         let moves = base_url != current.base_url || options != current.options;
@@ -726,12 +837,29 @@ impl Store {
                 "provider {name} changed while this update was checked; try again"
             )));
         }
+        // The lock makes create_model, which share-locks the provider,
+        // wait, so no model is added under the old settings meanwhile.
+        let models: Vec<(String, bool)> = sqlx::query_as(
+            "select name, input_price_micro_usd is null from models \
+             where provider_id = $1 order by name",
+        )
+        .bind(current.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        check(models_follow(
+            &current,
+            &settings,
+            &options,
+            catalog_key.as_deref(),
+            &models,
+        ))?;
         let row = sqlx::query(concat!(
             "update providers set base_url = $2, options = $3::jsonb, \
              allow_private_network = $4, \
              credential_kind = coalesce($5, credential_kind), \
              credential_ciphertext = case when $5::text is null \
-             then credential_ciphertext else $6 end \
+             then credential_ciphertext else $6 end, \
+             apis = $7::jsonb, catalog_key = $8 \
              where id = $1 returning ",
             columns!()
         ))
@@ -741,6 +869,8 @@ impl Store {
         .bind(settings.allow_private_network)
         .bind(credential.as_ref().map(|(kind, _)| *kind))
         .bind(credential.and_then(|(_, sealed)| sealed))
+        .bind(apis.as_ref().map(apis_json))
+        .bind(&catalog_key)
         .fetch_one(&mut *tx)
         .await?;
         notify(&mut tx, ChangeKind::Providers).await?;
@@ -814,6 +944,68 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// What a provider's models need of an update: Claude on Azure keeps Foundry
+/// and an Entra credential, and every unpriced model of an OpenAI-compatible
+/// host keeps a catalog key that prices it. `models` are its models' names,
+/// each with whether it has no prices of its own.
+fn models_follow(
+    current: &Provider,
+    s: &Settings<'_>,
+    options: &ProviderOptions,
+    catalog_key: Option<&str>,
+    models: &[(String, bool)],
+) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    if current.kind == ProviderKind::Azure {
+        let claude: Vec<&str> = models
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| is_claude(ProviderKind::Azure, name))
+            .collect();
+        if !claude.is_empty() {
+            let serves = format!("; this provider serves {}", claude.join(", "));
+            if !CLAUDE_ON_AZURE_CREDENTIALS.contains(&s.credential) {
+                errors.push(FieldError::new(
+                    "credential",
+                    format!("{CLAUDE_ON_AZURE_ENTRA}{serves}"),
+                ));
+            }
+            if !is_foundry(options) {
+                errors.push(FieldError::new(
+                    "endpoint",
+                    format!("{CLAUDE_ON_AZURE_FOUNDRY}{serves}"),
+                ));
+            }
+        }
+    }
+    if current.kind == ProviderKind::OpenAiCompatible
+        && catalog_key != current.catalog_key.as_deref()
+    {
+        let unpriced: Vec<&str> = models
+            .iter()
+            .filter(|(name, unpriced)| {
+                *unpriced && !catalog_key.is_some_and(|key| catalog::knows(key, name))
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !unpriced.is_empty() {
+            let under = match catalog_key {
+                Some(key) => format!("under {key}"),
+                None => "without a catalog key".to_owned(),
+            };
+            errors.push(FieldError::new(
+                "catalog_key",
+                format!(
+                    "{} would have no prices: agentgateway's catalog has none for them {under}; \
+                     give them prices first",
+                    unpriced.join(", ")
+                ),
+            ));
+        }
+    }
+    errors
 }
 
 /// Opens a sealed credential of shape `kind`; the cloud identity has none.

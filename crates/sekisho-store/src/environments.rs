@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use sekisho_core::access::{GROUP_RULE, is_group_reference};
-use sekisho_core::formats::ApiFormat;
 use sekisho_core::names::{EnvName, ModelName};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -50,14 +49,10 @@ macro_rules! select_environments {
     };
 }
 
-/// A listed model that exists, with what the format rule needs.
-struct KnownModel {
-    id: Uuid,
-    provider: String,
-    format: ApiFormat,
-}
-
-fn validate(spec: &EnvironmentSpec, known: &HashMap<String, KnownModel>) -> Vec<FieldError> {
+/// The listed models that exist, by name, with their ids. An environment
+/// may list models of any providers (plan 1d): agentgateway's router picks
+/// each one's provider.
+fn validate(spec: &EnvironmentSpec, known: &HashMap<String, Uuid>) -> Vec<FieldError> {
     let mut errors = Vec::new();
     let mut seen = HashSet::new();
     for (i, model) in spec.models.iter().enumerate() {
@@ -66,33 +61,6 @@ fn validate(spec: &EnvironmentSpec, known: &HashMap<String, KnownModel>) -> Vec<
             errors.push(FieldError::new(field, format!("{model} is listed twice")));
         } else if !known.contains_key(model.as_str()) {
             errors.push(FieldError::new(field, format!("no model named {model}")));
-        }
-    }
-
-    // Release 1 routes each API format of an environment to one provider.
-    let mut providers_by_format: Vec<(ApiFormat, Vec<&str>)> = Vec::new();
-    for model in &spec.models {
-        let Some(m) = known.get(model.as_str()) else {
-            continue;
-        };
-        match providers_by_format.iter_mut().find(|(f, _)| *f == m.format) {
-            Some((_, providers)) if !providers.contains(&m.provider.as_str()) => {
-                providers.push(&m.provider)
-            }
-            Some(_) => {}
-            None => providers_by_format.push((m.format, vec![&m.provider])),
-        }
-    }
-    for (format, providers) in providers_by_format {
-        if providers.len() > 1 {
-            errors.push(FieldError::new(
-                "models",
-                format!(
-                    "providers {} all serve the {} API; an environment can use one provider per API format",
-                    providers.join(" and "),
-                    format.path_segment()
-                ),
-            ));
         }
     }
 
@@ -163,25 +131,16 @@ impl Store {
         // The share lock makes a concurrent delete_model of a listed model
         // wait, then find this environment and refuse.
         let rows = sqlx::query(
-            "select m.id, m.name, p.name as provider, p.api_format from models m \
-             join providers p on p.id = m.provider_id \
-             where m.name = any($1) for key share of m",
+            "select m.id, m.name from models m where m.name = any($1) for key share of m",
         )
         .bind(&names)
         .fetch_all(&mut *tx)
         .await?;
         let mut known = HashMap::new();
         for row in rows {
-            let format: String = row.try_get("api_format")?;
-            let format =
-                ApiFormat::parse(&format).ok_or_else(|| bad_column("API format", &format))?;
             known.insert(
                 row.try_get::<String, _>("name")?,
-                KnownModel {
-                    id: row.try_get("id")?,
-                    provider: row.try_get("provider")?,
-                    format,
-                },
+                row.try_get::<Uuid, _>("id")?,
             );
         }
         let mut errors = validate(&spec, &known);
@@ -213,7 +172,7 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        let model_ids: Vec<Uuid> = spec.models.iter().map(|m| known[m.as_str()].id).collect();
+        let model_ids: Vec<Uuid> = spec.models.iter().map(|m| known[m.as_str()]).collect();
         sqlx::query(
             "insert into environment_models (environment_id, model_id, position) \
              select $1, model_id, (position - 1)::integer \
