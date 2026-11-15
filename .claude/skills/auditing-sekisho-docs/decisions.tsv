@@ -145,3 +145,8 @@ D143	Release 2: local mode, ungoverned installs from Git or a folder with no ser
 D144	Release 3: SBOM export (CycloneDX, SPDX) as one format of the dated inventory export (decided 2026-11-15)	SBOM	design
 D145	Not planned: APM's tighten-only source policy, packages that depend on other packages, and Sekisho mirroring package registries itself (decided 2026-11-15)	tighten-only|source policy	design comparison
 D146	Plugins packed with Microsoft APM (apm pack's Claude Code plugin bundle) are read as ordinary plugins; their agents and instructions reach each tool; APM's own source layout is not read; plan 3 decides on checking the bundle's embedded hashes (decided 2026-11-15)	apm pack	design plans README
+D147	Release 1 (plan 8): each sealed value names the data key that sealed it, and data keys are wrapped by the install key, so either can be rotated without re-encrypting every record (decided 2026-11-15)	data key	design plans
+D148	Release 2: AWS KMS, Azure Key Vault or Google Cloud KMS can wrap the data keys, as Obot offers (decided 2026-11-15)	Key Vault	design
+D149	Release 1 (plan 8): an optional SEKISHO_ADMIN_LISTEN serves the admin API and admin pages only there, for an internal-only Service; admins still sign in on every request (decided 2026-11-15)	SEKISHO_ADMIN_LISTEN	design plans
+D150	Release 3: a trusted chat bridge acts for a person only after that person consented and where an admin's rule allows it, through RFC 8693 actor tokens and release 2's workload identity (decided 2026-11-15)	chat bridge	design
+D151	Agents and automation use environment keys: no separate agent registry, and no key narrower than its environment (decided 2026-11-15)	agent registry|narrower than (its|their) environment	design
