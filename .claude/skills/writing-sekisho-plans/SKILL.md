@@ -69,6 +69,17 @@ Global Constraints, Review Focus, test-first tasks and self-review.
     `docs/api.md`'s routes table;
   - Global Constraints' bookkeeping list includes "update `docs/` in the
     same task".
+- **An independent review when the plan is done.** Global Constraints say
+  that a reviewer with a fresh context, on the most capable model, reviews
+  the plan's whole commit range before it is pushed: the code, and also
+  `docs/` and the README against the code as built. For the docs it checks
+  that every claim the range touched is true (statuses, error codes, fields,
+  limits, settings, defaults, examples); that everything the range changed
+  that anyone can see is documented, and nothing is still described the old
+  way; that the "not yet proven end to end" list is honest; and that links
+  and anchors resolve. Wrong docs are findings like wrong code, graded by
+  their effect: docs that would lead to an insecure setup, a broken install
+  or a wrong spend figure are Important.
 - End with an acceptance task that proves the design sections this plan owns,
   against a real agentgateway where traffic is involved. It also updates
   `docs/README.md`'s list of what isn't yet proven end to end, and the
