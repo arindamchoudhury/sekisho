@@ -49,11 +49,25 @@ macro_rules! select_environments {
     };
 }
 
+/// An environment name agentgateway's Gemini paths can't carry.
+const RESERVED_NAME: &str = "models";
+
 /// The listed models that exist, by name, with their ids. An environment
 /// may list models of any providers (plan 1d): agentgateway's router picks
 /// each one's provider.
 fn validate(spec: &EnvironmentSpec, known: &HashMap<String, Uuid>) -> Vec<FieldError> {
     let mut errors = Vec::new();
+    // agentgateway v1.7.0 takes a Gemini path's model from after its first
+    // `/models/` (`extract_model_from_path`), so in
+    // `/env/models/gemini/v1beta/models/<model>:…` it would read the wrong
+    // one, and Sekisho would refuse or misprice every Gemini call.
+    if spec.name.as_str() == RESERVED_NAME {
+        errors.push(FieldError::new(
+            "name",
+            "models is reserved: in a Gemini path the gateway reads the model from after \
+             /models/",
+        ));
+    }
     let mut seen = HashSet::new();
     for (i, model) in spec.models.iter().enumerate() {
         let field = format!("models[{i}]");

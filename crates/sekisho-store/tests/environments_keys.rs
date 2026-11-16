@@ -760,3 +760,21 @@ async fn the_auth_snapshot_lists_each_environments_models() {
         ]
     );
 }
+
+/// agentgateway takes the model in a Gemini path from after the first
+/// `/models/`, so in `/env/models/gemini/v1beta/models/<model>:…` it would
+/// read `gemini/v1beta/models/<model>`. The name is reserved.
+#[tokio::test]
+async fn an_environment_cannot_be_named_models() {
+    let (store, _sb) = common::store().await;
+    let err = store
+        .upsert_environment(spec("models", &[]), common::admin(&store).await)
+        .await
+        .unwrap_err();
+    assert_eq!(fields(err), ["name"]);
+    // Names that only contain it are fine.
+    store
+        .upsert_environment(spec("models-team", &[]), common::admin(&store).await)
+        .await
+        .unwrap();
+}

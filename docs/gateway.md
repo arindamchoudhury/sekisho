@@ -25,7 +25,9 @@ curl -s https://gateway.example.com/env/data-team/anthropic/v1/messages \
 The credential must be in `Authorization: Bearer`. agentgateway removes
 `Authorization`, `x-api-key`, `api-key` and `x-goog-api-key` before the
 provider, so a Sekisho token never reaches a provider, and a provider key a
-tool sends is never used.
+tool sends is never used. It also removes Sekisho's own `x-sekisho-env` and
+`x-sekisho-model` headers, so a client can't choose an environment or a
+model with them, and they never reach a provider.
 
 The `sekisho` CLI, which will write each coding tool's settings, isn't
 built yet. A tool set up by hand must send its token as
@@ -60,14 +62,20 @@ translated by agentgateway:
 | Gemini | Gemini models only |
 
 So a Codex user who needs Claude needs it on Bedrock, or uses another
-tool. An environment can offer the same kind of model from several
+tool. One exception on Bedrock: a Claude model Bedrock serves only through
+its newer Mantle endpoint (in agentgateway v1.7.0's catalog,
+`anthropic.claude-mythos-5`) takes only the Messages API there, so Codex
+gets agentgateway's own error for it rather than Sekisho's 400. An environment can offer the same kind of model from several
 providers.
 
 ## When the gateway says no
 
-Sekisho answers every refusal as JSON, with an `error` code and a
-`message` for people. It checks in this order, so nobody learns which
-models an environment has before their credential and access pass:
+Sekisho answers its refusals as JSON, with an `error` code and a `message`
+for people. It checks in this order, so nobody learns which models an
+environment has before their credential and access pass. One refusal
+comes after Sekisho's checks and is agentgateway's own: a query other
+than `?beta=true` or `?alt=sse` gets agentgateway's 403, not Sekisho's
+JSON.
 
 | Status | `error` | When |
 |---|---|---|

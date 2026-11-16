@@ -155,6 +155,7 @@ llm:
         - x-api-key
         - api-key
         - x-goog-api-key
+        - x-sekisho-model
         metadata:
           sekisho_env: request.path.split("/")[2]
   providers:

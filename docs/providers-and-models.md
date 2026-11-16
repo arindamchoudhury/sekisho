@@ -86,7 +86,10 @@ A Bedrock model's name is its Bedrock model ID, such as
 `anthropic.claude-sonnet-4-5-20250929-v1:0`, or an inference profile ID,
 such as `us.anthropic.claude-sonnet-4-5-20250929-v1:0`, which many newer
 models need. Claude is recognised by `anthropic.claude` anywhere in the
-name.
+name. A Claude model Bedrock serves only through its newer Mantle
+endpoint (`anthropic.claude-mythos-5` in agentgateway v1.7.0's catalog)
+takes only the Messages API, so Codex can't use it ([which API reaches
+which model](gateway.md#which-api-reaches-which-model)).
 
 ### Azure OpenAI and Microsoft Foundry
 

@@ -184,7 +184,9 @@ fn llm_policies(snapshot: &GatewaySnapshot, options: &RenderOptions) -> Value {
         },
         "transformations": { "request": {
             "set": { ENV_HEADER: ENV_FROM_PATH, ":path": PATH_REWRITE },
-            "remove": CLIENT_CREDENTIAL_HEADERS,
+            // The client's credentials, and a client's own copy of the model
+            // header, which the gateway sets only on the hook's request.
+            "remove": CLIENT_CREDENTIAL_HEADERS.iter().chain([&MODEL_HEADER]).collect::<Vec<_>>(),
             "metadata": { ENV_METADATA: ENV_FROM_PATH },
         } },
     })

@@ -242,8 +242,9 @@ Each environment gets its own routes on the gateway:
 | `/env/<name>/a2a/<agent>` | Each A2A agent |
 
 A model route takes only a POST to a model endpoint, for a model the
-environment lists, through a client API that reaches it; everything else
-gets a JSON refusal from Sekisho before any provider is called. [The
+environment lists, through a client API that reaches it; anything else is
+refused before any provider is called, with Sekisho's JSON (or, for a
+query the routes don't take, agentgateway's 403). [The
 gateway](docs/gateway.md) lists the endpoints, which API reaches which
 model, and every refusal.
 

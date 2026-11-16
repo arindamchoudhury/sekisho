@@ -489,9 +489,11 @@ async fn spoofed_headers_cannot_cross_environments() {
     wait_charged(&budget_a, cost(1, 2, 1)).await;
     let r = the_request_since(before).await;
     assert_bearer(&r, "/v1/chat/completions", CHAT_HOST_KEY);
-    // The environment header the gateway sets is removed before the provider.
-    // A client's own x-sekisho-model passes on like any other header it sends.
-    assert!(r["headers"].get("x-sekisho-env").is_none(), "{r}");
+    // Neither the environment header the gateway sets nor the client's own
+    // copies of Sekisho's headers reach the provider.
+    for name in ["x-sekisho-env", "x-sekisho-model"] {
+        assert!(r["headers"].get(name).is_none(), "{name}: {r}");
+    }
     sleep(Duration::from_secs(2)).await;
     assert_eq!(micro_usd(&spent(&budget_b).await), 0);
 }

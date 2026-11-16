@@ -1651,6 +1651,14 @@ async fn changing_the_catalog_key_keeps_every_model_priced() {
             "{}",
             errors[0].message
         );
+        // It names what an admin can do: a model's prices are set only when
+        // it is added.
+        assert!(
+            errors[0].message.contains("keep the catalog key")
+                && errors[0].message.contains("add them again with prices"),
+            "{}",
+            errors[0].message
+        );
     }
     store
         .update_provider(&sb, &together.name, change(Some("togetherai")))

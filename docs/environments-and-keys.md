@@ -24,7 +24,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
 | Field | Meaning |
 |---|---|
 | `api_version` | Optional; `sekisho/v1alpha1` if given |
-| `name` | Optional; must match the name in the path. 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit. It is also the route prefix |
+| `name` | Optional; must match the name in the path. 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit, but not `models`, which the gateway would misread in a Gemini path. It is also the route prefix |
 | `description`, `notice` | Text for people. The notice is meant to be shown to whoever uses the environment |
 | `access_groups` | Who may use it: Sekisho groups by name, or identity providers' groups as `<connector>/<group>`, such as `github/acme:platform`. No groups means no one may use it |
 | `models` | The [models](providers-and-models.md#models) its routes serve, in order, from any providers. Each must exist, and none twice |
@@ -35,8 +35,9 @@ fetched environment can be sent back as it is: those fields are ignored.
 `GET /api/v1/environments` lists every environment, and
 `GET /api/v1/environments/{name}` reads one.
 
-A change reaches the gateway in about a second, without ending requests
-already running.
+A change usually reaches the gateway within a second, and within a few
+seconds after a burst of changes ([Running Sekisho](running.md#the-gateway-agent)),
+without ending requests already running.
 
 `DELETE /api/v1/environments/{name}` deletes the environment with its
 keys, its budgets and its keys' budgets.

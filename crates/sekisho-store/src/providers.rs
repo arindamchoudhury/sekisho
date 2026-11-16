@@ -971,7 +971,8 @@ fn models_follow(
                 "catalog_key",
                 format!(
                     "{} would have no prices: agentgateway's catalog has none for them {under}; \
-                     give them prices first",
+                     keep the catalog key, or remove them from their environments, delete \
+                     them and add them again with prices",
                     unpriced.join(", ")
                 ),
             ));

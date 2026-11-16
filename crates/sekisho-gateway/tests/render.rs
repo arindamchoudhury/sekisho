@@ -451,9 +451,19 @@ fn only_two_queries_pass_the_rule() {
 #[test]
 fn client_credentials_are_removed_before_the_provider() {
     let doc = rendered(&fixtures::every_kind());
+    // And a client's own `x-sekisho-model`: the gateway sets it only on the
+    // hook's request, so any copy that would reach the provider is the
+    // client's. (`x-sekisho-env` is set here and removed by each model
+    // entry, after the router matched on it.)
     assert_eq!(
         policies(&doc)["transformations"]["request"]["remove"],
-        json!(["authorization", "x-api-key", "api-key", "x-goog-api-key"])
+        json!([
+            "authorization",
+            "x-api-key",
+            "api-key",
+            "x-goog-api-key",
+            "x-sekisho-model"
+        ])
     );
 }
 
