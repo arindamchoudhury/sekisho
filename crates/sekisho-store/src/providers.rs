@@ -13,7 +13,7 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::address::{check_destination, host_and_port};
+use crate::address::{BaseUrl, check_destination, parse_base_url};
 use crate::error::{FieldError, bad_column, check, is_foreign_key_violation, is_unique_violation};
 use crate::notify::{ChangeKind, notify};
 use crate::{Result, Store, StoreError};
@@ -372,23 +372,16 @@ async fn validate_base_url(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
         }
         return;
     };
-    if !is_http_url(url) {
-        errors.push(FieldError::new(
-            "base_url",
-            "use an http:// or https:// URL with a host",
-        ));
-        return;
-    }
-    // agentgateway v1.7.0 refuses such a base URL when it loads the file,
-    // which would hold back every environment's config. Never quoted: user
-    // info is a credential.
-    if has_user_info_query_or_fragment(url) {
-        errors.push(FieldError::new(
-            "base_url",
-            "use a URL without user name, password, query or fragment",
-        ));
-        return;
-    }
+    // Read as agentgateway v1.7.0 reads it: one it refuses holds back every
+    // environment's config, and the address checks below must see the host
+    // it connects to. Never quoted: user info is a credential.
+    let url = match parse_base_url(url) {
+        Ok(url) => url,
+        Err(error) => {
+            errors.push(FieldError::new("base_url", error.message()));
+            return;
+        }
+    };
     // Only a build for the end-to-end tests lets cloud credentials reach the
     // mock model.
     if s.credential.is_cloud() && !cfg!(feature = "e2e") {
@@ -399,7 +392,7 @@ async fn validate_base_url(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
             // error is already reported.
             _ => ("", &[]),
         };
-        if !hosts.is_empty() && !is_cloud_host(url, hosts) {
+        if !hosts.is_empty() && !is_cloud_host(&url, hosts) {
             errors.push(FieldError::new(
                 "base_url",
                 format!(
@@ -411,7 +404,7 @@ async fn validate_base_url(errors: &mut Vec<FieldError>, s: &Settings<'_>) {
             return;
         }
     }
-    if let Err(message) = check_destination(url, s.allow_private_network).await {
+    if let Err(message) = check_destination(&url, s.allow_private_network).await {
         errors.push(FieldError::new("base_url", message));
     }
 }
@@ -471,16 +464,6 @@ fn validate_credential(errors: &mut Vec<FieldError>, credential: &ProviderCreden
     }
 }
 
-/// User info (an `@` before the path), a query or a fragment.
-fn has_user_info_query_or_fragment(url: &str) -> bool {
-    if url.contains(['?', '#']) {
-        return true;
-    }
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let authority = rest.split('/').next().unwrap_or_default();
-    authority.contains('@')
-}
-
 /// `^[a-z0-9][a-z0-9._-]{0,63}$`, as agentgateway's catalog names hosts.
 fn is_catalog_key(key: &str) -> bool {
     key.len() <= 64
@@ -493,27 +476,16 @@ fn is_catalog_key(key: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
 }
 
-fn is_http_url(url: &str) -> bool {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"));
-    rest.is_some_and(|r| !r.is_empty() && !r.starts_with('/'))
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// `https://` on a host ending in one of `suffixes`, ignoring case. The host
-/// is split as the gateway renderer splits it.
-fn is_cloud_host(url: &str, suffixes: &[&str]) -> bool {
-    let Some((host, _)) = url
-        .starts_with("https://")
-        .then(|| host_and_port(url))
-        .flatten()
-    else {
+/// `https://` on a host name ending in one of `suffixes`. The host is the
+/// one agentgateway connects to, already lowercased by the parser.
+fn is_cloud_host(url: &BaseUrl, suffixes: &[&str]) -> bool {
+    let url::Host::Domain(host) = &url.host else {
         return false;
     };
-    let host = host.to_ascii_lowercase();
-    host.bytes()
-        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'.')
+    url.tls
+        && host
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'.')
         && suffixes.iter().any(|suffix| {
             host.strip_suffix(suffix)
                 .is_some_and(|label| !label.is_empty() && !label.ends_with('.'))
@@ -1053,6 +1025,9 @@ mod tests {
 
     #[test]
     fn cloud_hosts_are_matched_by_suffix() {
+        let is_cloud_host = |url: &str, hosts: &[&str]| {
+            parse_base_url(url).is_ok_and(|url| super::is_cloud_host(&url, hosts))
+        };
         assert!(is_cloud_host(
             "https://bedrock-runtime.us-east-1.amazonaws.com",
             &AWS_HOSTS

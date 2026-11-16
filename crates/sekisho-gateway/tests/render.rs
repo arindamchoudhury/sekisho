@@ -1213,3 +1213,53 @@ fn inline_catalog_carries_cache_rates() {
         json!({ "input": "1.25", "output": "10", "cacheRead": "0.625", "cacheWrite": "1.25" })
     );
 }
+
+/// A provider saved before plan 1d whose base URL agentgateway can't read,
+/// or that hides a cloud metadata address, is left out with its model
+/// entries: agentgateway would refuse the whole file, and stop every
+/// environment's config from updating. Others render as agentgateway reads
+/// them.
+#[test]
+fn a_base_url_agentgateway_cannot_read_is_left_out() {
+    let mut snapshot = fixtures::basic();
+    for (name, url) in [
+        ("typo", "http://10.0.0.256:11434/v1"),
+        ("hidden", "http://169.254.169.254BACKSLASHx.com/v1"),
+        ("cased", "http://Ollama.LAN:11434/v1/"),
+    ] {
+        let url = url.replace("BACKSLASH", "\\");
+        snapshot.providers.push(fixtures::provider(
+            name,
+            ProviderKind::OpenAiCompatible,
+            Some(&url),
+        ));
+        snapshot
+            .models
+            .push(fixtures::entry("data-team", &format!("{name}-model"), name));
+    }
+    let y = render(&snapshot, &with_bare_route());
+    assert_eq!(validate(&y), Ok(()));
+    let doc = parse(&y);
+    let names: Vec<&str> = providers(&doc)
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["anthropic", "cased", "mock"], "{y}");
+    let ids: Vec<&str> = model_entries(&doc)
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids.iter()
+            .any(|id| id.contains("typo") || id.contains("hidden")),
+        "{ids:?}"
+    );
+    assert!(ids.contains(&"data-team/cased-model"), "{ids:?}");
+    assert_eq!(
+        provider_named(&doc, "cased")["params"]["baseUrl"],
+        "http://ollama.lan:11434/v1"
+    );
+    for leaked in ["10.0.0.256", "169.254.169.254"] {
+        assert!(!y.contains(leaked), "{leaked} in {y}");
+    }
+}

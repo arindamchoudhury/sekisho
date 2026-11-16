@@ -15,6 +15,7 @@ use sekisho_core::formats::{AzureResourceType, HostApi, ProviderKind};
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::ModelName;
 use sekisho_core::pricing::Measure;
+use sekisho_store::address::read_saved_base_url;
 use sekisho_store::{ProviderCredential, ProviderOptions};
 use serde_json::{Map, Value, json};
 
@@ -77,9 +78,37 @@ const CLIENT_CREDENTIAL_HEADERS: [&str; 4] =
 /// model entries by environment name (each environment's models in its own
 /// order), catalog entries by key and model.
 pub fn render(snapshot: &GatewaySnapshot, options: &RenderOptions) -> String {
-    let mut providers: Vec<&ProviderEntry> = snapshot.providers.iter().collect();
+    // agentgateway refuses the whole file if one base URL doesn't parse, so
+    // a provider saved with one it can't read is left out, with its models:
+    // the rest of the config keeps loading.
+    let unreadable: Vec<&str> = snapshot
+        .providers
+        .iter()
+        .filter(|p| {
+            p.base_url
+                .as_deref()
+                .is_some_and(|u| Upstream::parse(u).is_none())
+        })
+        .map(|p| {
+            tracing::warn!(
+                provider = p.name.as_str(),
+                "agentgateway can't read this provider's base URL; its models are left out \
+                 of the gateway config until it is fixed"
+            );
+            p.name.as_str()
+        })
+        .collect();
+    let mut providers: Vec<&ProviderEntry> = snapshot
+        .providers
+        .iter()
+        .filter(|p| !unreadable.contains(&p.name.as_str()))
+        .collect();
     providers.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-    let mut models: Vec<&ModelEntry> = snapshot.models.iter().collect();
+    let mut models: Vec<&ModelEntry> = snapshot
+        .models
+        .iter()
+        .filter(|m| !unreadable.contains(&m.provider.as_str()))
+        .collect();
     // Stable, so each environment keeps its own order.
     models.sort_by(|a, b| a.env.as_str().cmp(b.env.as_str()));
 
@@ -223,7 +252,11 @@ fn provider_block(p: &ProviderEntry) -> Value {
     if let Some(url) = &p.base_url {
         params.insert(
             "baseUrl".into(),
-            json!(Upstream::parse(url).base_url(p.kind)),
+            json!(
+                Upstream::parse(url)
+                    .expect("unreadable providers are left out")
+                    .base_url(p.kind)
+            ),
         );
     }
     match (p.kind, &p.options) {
@@ -400,7 +433,7 @@ fn bare_backend(p: &ProviderEntry, models: &[&ModelName]) -> Value {
     ai.insert("provider".into(), provider);
     let mut policies = Map::new();
     if let Some(url) = &p.base_url {
-        let upstream = Upstream::parse(url);
+        let upstream = Upstream::parse(url).expect("unreadable providers are left out");
         ai.insert("hostOverride".into(), json!(upstream.host_port));
         // With a host override and no prefix, agentgateway v1.7.0 sends a
         // built-in kind the client's own path, which could be any of the
@@ -455,9 +488,9 @@ fn cel_string(s: &str) -> String {
     serde_json::to_string(s).expect("a string always serialises")
 }
 
-/// A provider base URL's parts: its scheme, host and port, and path. User
-/// info, a query and a fragment are dropped, since agentgateway v1.7.0
-/// refuses a `baseUrl` with any of them when it loads the file.
+/// A provider base URL's parts as agentgateway v1.7.0 reads them: scheme,
+/// host and port, and path. Built with the store's own parser
+/// ([`read_saved_base_url`]), so what is rendered is what was checked.
 struct Upstream {
     host_port: String,
     path_prefix: Option<String>,
@@ -465,31 +498,16 @@ struct Upstream {
 }
 
 impl Upstream {
-    /// `base_url` was checked to be `http://` or `https://` with a host when
-    /// the provider was saved.
-    fn parse(url: &str) -> Self {
-        let (tls, rest) = match url.strip_prefix("https://") {
-            Some(rest) => (true, rest),
-            None => (false, url.strip_prefix("http://").unwrap_or(url)),
-        };
-        let rest = rest.split(['?', '#']).next().unwrap_or_default();
-        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-        let authority = authority.rsplit('@').next().unwrap_or(authority);
-        let has_port = match authority.rfind(']') {
-            Some(end) => authority[end..].contains(':'), // [::1] or [::1]:8000
-            None => authority.contains(':'),
-        };
-        let host_port = if has_port {
-            authority.to_owned()
-        } else {
-            format!("{authority}:{}", if tls { 443 } else { 80 })
-        };
-        let path = path.trim_end_matches('/');
-        Self {
-            host_port,
-            path_prefix: (!path.is_empty()).then(|| path.to_owned()),
-            tls,
-        }
+    /// `None` for a URL agentgateway can't read, saved before the store
+    /// read URLs as agentgateway does. User info, a query and a fragment,
+    /// which it refuses, are dropped.
+    fn parse(url: &str) -> Option<Self> {
+        let url = read_saved_base_url(url).ok()?;
+        Some(Self {
+            host_port: url.host_port(),
+            path_prefix: (!url.path.is_empty()).then_some(url.path),
+            tls: url.tls,
+        })
     }
 
     /// `scheme://host:port[path]`, built from the parsed parts only. A

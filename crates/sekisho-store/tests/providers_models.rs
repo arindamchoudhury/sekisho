@@ -2126,3 +2126,65 @@ async fn model_pricing_names_the_cache_defaults_and_catalog_key() {
     assert_eq!(qwen.catalog_key, None);
     assert_eq!(qwen.kind, ProviderKind::OpenAiCompatible);
 }
+
+/// agentgateway reads every `baseUrl` with the `url` crate when it loads the
+/// file, and refuses the whole file if one doesn't parse, which would stop
+/// every environment's config from updating. Sekisho reads it the same way,
+/// so such a URL is refused when it is saved.
+#[tokio::test]
+async fn base_urls_agentgateway_cannot_read_are_refused() {
+    let (store, sb) = common::store().await;
+    for (i, url) in [
+        "http://10.0.0.256:11434/v1",
+        "http://foo|bar:8000/v1",
+        "http://xn--a.com/v1",
+        "http://ollama:11434:11434/v1",
+        "http://ollama:99999/v1",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let new = NewProvider {
+            base_url: Some(url.into()),
+            ..mock_provider(&format!("p{i}"), "k")
+        };
+        assert_eq!(refused(&store, &sb, new).await, ["base_url"], "{url}");
+    }
+    for (i, url) in [
+        "http://[::1]:11434/v1",
+        "http://Ollama.LAN:11434/v1/",
+        "http://10.0.0.5:11434",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let new = NewProvider {
+            base_url: Some(url.into()),
+            ..mock_provider(&format!("ok{i}"), "k")
+        };
+        store.create_provider(&sb, new).await.unwrap();
+    }
+}
+
+/// agentgateway, like a browser, ends a host at a backslash and decodes a
+/// percent-encoded host, so these all go to the cloud metadata address,
+/// which is never allowed, private network or not.
+#[tokio::test]
+async fn a_metadata_address_cannot_hide_in_a_base_url() {
+    let (store, sb) = common::store().await;
+    for (i, url) in [
+        r"http://169.254.169.254\x.com/v1",
+        r"http://mock\@169.254.169.254/v1",
+        "http://%31%36%39.254.169.254/v1",
+        "http://0xa9.254.169.254/v1",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let new = NewProvider {
+            base_url: Some(url.into()),
+            ..mock_provider(&format!("p{i}"), "k")
+        };
+        assert_eq!(refused(&store, &sb, new).await, ["base_url"], "{url}");
+    }
+}

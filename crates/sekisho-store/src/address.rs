@@ -11,38 +11,103 @@ use std::time::Duration;
 /// A lookup that takes longer counts as one that doesn't resolve.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The host and port a base URL sends requests to, split the way the gateway
-/// renderer splits it (`Upstream::parse` in `sekisho-gateway`): no query or
-/// fragment, the authority up to the first `/`, the host after the last `@`.
-/// `None` unless the URL is `http://` or `https://` with a host and, if
-/// given, a numeric port.
-pub(crate) fn host_and_port(url: &str) -> Option<(&str, u16)> {
-    let (rest, default_port) = match url.strip_prefix("https://") {
-        Some(rest) => (rest, 443),
-        None => (url.strip_prefix("http://")?, 80),
-    };
-    let rest = rest.split(['?', '#']).next().unwrap_or_default();
-    let authority = rest.split('/').next().unwrap_or_default();
-    let authority = authority.rsplit('@').next().unwrap_or_default();
-    let (host, port) = match authority.strip_prefix('[') {
-        Some(bracketed) => {
-            let (host, after) = bracketed.split_once(']')?;
-            (host, after)
+/// A provider base URL as agentgateway v1.7.0 reads it: `url::Url::parse`,
+/// then its host, port and path (`apply_base_url` in `types/local.rs`).
+/// agentgateway refuses the whole config file if one `baseUrl` doesn't
+/// parse, so the store checks with the same parser, the address check uses
+/// the host agentgateway will connect to, and the renderer writes the URL
+/// from these parts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BaseUrl {
+    pub tls: bool,
+    /// Lowercased, punycoded, percent-decoded; an IPv4 address in any form
+    /// agentgateway accepts (`0xa9.254.169.254`) is read as one.
+    pub host: url::Host<String>,
+    pub port: u16,
+    /// Without a trailing `/`; empty for none.
+    pub path: String,
+}
+
+impl BaseUrl {
+    /// `host:port`, an IPv6 host in brackets.
+    pub fn host_port(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// Why a base URL was refused. The messages never quote the URL: user info
+/// is a credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseUrlError {
+    /// Not `http://` or `https://` with a host.
+    NotHttp,
+    /// User info, a query or a fragment, which agentgateway refuses.
+    Extras,
+    /// Doesn't parse (a bad IP address, host or port), or holds a
+    /// backslash, whitespace or a control character, which the parser
+    /// silently reads differently from how an admin does.
+    Unreadable,
+}
+
+impl BaseUrlError {
+    pub fn message(self) -> &'static str {
+        match self {
+            BaseUrlError::NotHttp => "use an http:// or https:// URL with a host",
+            BaseUrlError::Extras => "use a URL without user name, password, query or fragment",
+            BaseUrlError::Unreadable => {
+                "agentgateway can't read this URL: check the host and the port, and use / not \\"
+            }
         }
-        // The port keeps its `:`, as after a bracketed host. Any other colon
-        // is refused: agentgateway can't read such a host override and
-        // would refuse the whole config.
-        None => match authority.split_once(':') {
-            Some((_, port)) if port.contains(':') => return None,
-            Some((host, _)) => authority.split_at(host.len()),
-            None => (authority, ""),
-        },
+    }
+}
+
+/// A base URL as a provider is saved with it: everything agentgateway
+/// refuses is an error.
+pub fn parse_base_url(raw: &str) -> Result<BaseUrl, BaseUrlError> {
+    read_base_url(raw, false)
+}
+
+/// A base URL saved before the store refused user info, a query or a
+/// fragment: those are dropped, as the renderer always did, and anything
+/// agentgateway can't read is still an error.
+pub fn read_saved_base_url(raw: &str) -> Result<BaseUrl, BaseUrlError> {
+    read_base_url(raw, true)
+}
+
+fn read_base_url(raw: &str, drop_extras: bool) -> Result<BaseUrl, BaseUrlError> {
+    if raw
+        .chars()
+        .any(|c| c == '\\' || c.is_whitespace() || c.is_control())
+    {
+        return Err(BaseUrlError::Unreadable);
+    }
+    let tls = if raw.starts_with("https://") {
+        true
+    } else if raw.starts_with("http://") {
+        false
+    } else {
+        return Err(BaseUrlError::NotHttp);
     };
-    let port = match port {
-        "" => default_port,
-        _ => port.strip_prefix(':')?.parse().ok()?,
-    };
-    (!host.is_empty()).then_some((host, port))
+    let url = url::Url::parse(raw).map_err(|e| match e {
+        url::ParseError::EmptyHost => BaseUrlError::NotHttp,
+        _ => BaseUrlError::Unreadable,
+    })?;
+    if !drop_extras
+        && (!url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some())
+    {
+        return Err(BaseUrlError::Extras);
+    }
+    let host = url.host().ok_or(BaseUrlError::NotHttp)?.to_owned();
+    let port = url.port_or_known_default().ok_or(BaseUrlError::NotHttp)?;
+    Ok(BaseUrl {
+        tls,
+        host,
+        port,
+        path: url.path().trim_end_matches('/').to_owned(),
+    })
 }
 
 /// Checks every address `url`'s host resolves to:
@@ -53,14 +118,15 @@ pub(crate) fn host_and_port(url: &str) -> Option<(&str, u16)> {
 ///   only on the gateway's network.
 ///
 /// Errors name an address but never the URL or its host.
-pub async fn check_destination(url: &str, allow_private: bool) -> Result<(), String> {
-    let (host, port) =
-        host_and_port(url).ok_or("use an http:// or https:// URL with a host and a valid port")?;
-    let literal = host.strip_suffix('.').unwrap_or(host).parse::<IpAddr>();
-    let addresses: Vec<IpAddr> = match literal {
-        Ok(ip) => vec![ip],
-        Err(_) => match tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((host, port)))
-            .await
+pub async fn check_destination(url: &BaseUrl, allow_private: bool) -> Result<(), String> {
+    let addresses: Vec<IpAddr> = match &url.host {
+        url::Host::Ipv4(ip) => vec![IpAddr::V4(*ip)],
+        url::Host::Ipv6(ip) => vec![IpAddr::V6(*ip)],
+        url::Host::Domain(host) => match tokio::time::timeout(
+            LOOKUP_TIMEOUT,
+            tokio::net::lookup_host((host.as_str(), url.port)),
+        )
+        .await
         {
             Ok(Ok(found)) => found.map(|a| a.ip()).collect(),
             Ok(Err(_)) | Err(_) => Vec::new(),
@@ -176,34 +242,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hosts_are_split_like_the_renderer() {
-        for (url, want) in [
-            ("http://mock:8000/v1", Some(("mock", 8000))),
-            ("https://example.com", Some(("example.com", 443))),
-            ("http://example.com/", Some(("example.com", 80))),
-            ("http://[::1]:8000", Some(("::1", 8000))),
-            ("http://[::1]", Some(("::1", 80))),
-            ("http://u:p@10.1.2.3:9/x", Some(("10.1.2.3", 9))),
-            ("http://a@b@c/x", Some(("c", 80))),
-            (
-                "http://203.0.113.10?@169.254.169.254",
-                Some(("203.0.113.10", 80)),
-            ),
-            ("http://h#@169.254.169.254", Some(("h", 80))),
-            ("http://h:abc", None),
-            // agentgateway can't read a host override with a second colon,
-            // and refuses the whole config.
-            ("http://ollama:11434:11434/v1", None),
-            ("http://a:b:80", None),
-            ("http://h:", None),
-            ("http://[::1", None),
-            ("http://[::1]x", None),
-            ("http://", None),
-            ("http:///x", None),
-            ("ftp://h", None),
+    fn base_urls_are_read_as_agentgateway_reads_them() {
+        let ok = |url: &str| parse_base_url(url).map(|b| (b.host_port(), b.path, b.tls));
+        let read = |host_port: &str, path: &str, tls: bool| {
+            Ok((host_port.to_owned(), path.to_owned(), tls))
+        };
+        assert_eq!(ok("http://mock:8000/v1"), read("mock:8000", "/v1", false));
+        assert_eq!(ok("https://example.com"), read("example.com:443", "", true));
+        assert_eq!(ok("http://example.com/"), read("example.com:80", "", false));
+        assert_eq!(ok("http://[::1]:8000"), read("[::1]:8000", "", false));
+        assert_eq!(
+            ok("http://Ollama.LAN:11434/v1/"),
+            read("ollama.lan:11434", "/v1", false)
+        );
+        // The forms that hide an address: decoded as agentgateway decodes them.
+        assert_eq!(
+            ok("http://0xa9.254.169.254/v1"),
+            read("169.254.169.254:80", "/v1", false)
+        );
+        assert_eq!(
+            ok("http://%31%36%39.254.169.254/v1"),
+            read("169.254.169.254:80", "/v1", false)
+        );
+        for (url, error) in [
+            ("http://u:p@10.1.2.3:9/x", BaseUrlError::Extras),
+            ("http://203.0.113.10?@169.254.169.254", BaseUrlError::Extras),
+            ("http://h#@169.254.169.254", BaseUrlError::Extras),
+            ("http://h/v1?", BaseUrlError::Extras),
+            (r"http://169.254.169.254\x.com/v1", BaseUrlError::Unreadable),
+            ("http://h x/v1", BaseUrlError::Unreadable),
+            ("http://10.0.0.256/v1", BaseUrlError::Unreadable),
+            ("http://foo|bar:8000/v1", BaseUrlError::Unreadable),
+            ("http://xn--a.com/v1", BaseUrlError::Unreadable),
+            ("http://h:abc", BaseUrlError::Unreadable),
+            // agentgateway can't read a second colon either.
+            ("http://ollama:11434:11434/v1", BaseUrlError::Unreadable),
+            ("http://h:99999", BaseUrlError::Unreadable),
+            ("http://[::1", BaseUrlError::Unreadable),
+            ("http://", BaseUrlError::NotHttp),
+            ("ftp://h", BaseUrlError::NotHttp),
+            ("mock:8000", BaseUrlError::NotHttp),
         ] {
-            assert_eq!(host_and_port(url), want, "{url}");
+            assert_eq!(parse_base_url(url), Err(error), "{url}");
         }
+        // Rows saved before the store refused the extras: dropped when read.
+        let saved = read_saved_base_url("https://u:p@h.example/v1?x=1#f").unwrap();
+        assert_eq!(
+            (saved.host_port(), saved.path),
+            ("h.example:443".into(), "/v1".into())
+        );
+        assert_eq!(
+            read_saved_base_url("http://10.0.0.256/v1"),
+            Err(BaseUrlError::Unreadable)
+        );
     }
 
     #[test]

@@ -8,11 +8,14 @@ tested, most of it end to end against agentgateway v1.7.0 and Dex v2.46.1.
 The end-to-end tests send every request through agentgateway to a mock
 provider that speaks each API (Anthropic Messages, Chat Completions,
 Responses, Gemini, Bedrock Converse and Azure's paths), and check what
-reached it and what was charged. Not yet proven against the real services:
-
-- the open-weight hosts and the host presets;
-- Azure with an Entra service principal or the cloud identity, and Claude
-  on Foundry, with real accounts.
+reached it and what was charged. **None of them calls a real provider
+yet**, so nothing is proven against the real services: not Anthropic,
+OpenAI or Gemini, not Bedrock (its AWS signing and cloud identity are
+checked only as the mock receives them), not Azure (a key, an Entra
+service principal, the cloud identity or Claude on Foundry), and not the
+open-weight hosts or the host presets. Where a page says how a provider
+answers, it comes from agentgateway's source and the providers' own
+documentation.
 
 | Page | What it covers |
 |---|---|

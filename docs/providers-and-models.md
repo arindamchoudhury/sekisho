@@ -52,11 +52,19 @@ it is required, written as the host documents it, such as
 
 - It must be `http://` or `https://` with a host, and no user name,
   password, query or fragment.
-- Sekisho resolves the host when the provider is saved. Loopback and
-  private network addresses, and hosts that don't resolve from Sekisho
-  (they may resolve on the gateway's network), need
-  `"allow_private_network": true`. Link-local and cloud metadata addresses
-  are never allowed.
+- Sekisho reads it exactly as agentgateway will, and refuses one
+  agentgateway couldn't read: an invalid IP address (`10.0.0.256`), host
+  or port, a backslash, or a space. agentgateway would otherwise refuse
+  its whole config file, and no environment's changes would reach it. A
+  provider saved by an earlier version with such a URL is left out of the
+  gateway's config, with its models, and Sekisho logs a warning naming it,
+  until its `base_url` is fixed (`PATCH`, with its credential).
+- Sekisho resolves the host when the provider is saved, as agentgateway
+  reads it: lowercased, percent-decoded, and an IP address in any form
+  (`0xa9.254.169.254` is `169.254.169.254`). Loopback and private network
+  addresses, and hosts that don't resolve from Sekisho (they may resolve
+  on the gateway's network), need `"allow_private_network": true`.
+  Link-local and cloud metadata addresses are never allowed.
 - With AWS access keys or the cloud identity, a Bedrock provider's
   `base_url` must be an `https://` host ending in `.amazonaws.com` or
   `.api.aws`, and with an Entra service principal or the cloud identity an
