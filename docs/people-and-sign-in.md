@@ -17,8 +17,10 @@ curl -s -d client_id=sekisho-cli https://sekisho.example.com/oauth/device_author
 ```
 
 Open `verification_uri_complete` from the answer, check that the code
-matches, press *Continue* and sign in. Then, polling no faster than every
-5 seconds and within 10 minutes, fetch the tokens with the answer's
+matches, press *Continue* and sign in. The code looks like `BCDF-GHJK`:
+eight consonants, typed in any case, with or without the dash. Then,
+polling no faster than every 5 seconds (each `slow_down` answer adds 5
+more) and within 10 minutes, fetch the tokens with the answer's
 `device_code`:
 
 ```bash
@@ -50,16 +52,42 @@ curl -s -d client_id=sekisho-cli -d grant_type=refresh_token \
 `/oauth/revoke` (RFC 7009) ends a session, given its refresh token or an
 access token.
 
-Each refresh asks the identity provider again, through Dex, and Sekisho
-also checks everyone once a day. Dex v2.46.1 reports a provider's refusal
-as a failure of its own, which Sekisho treats as Dex being unavailable
-rather than ending sessions, so **remove someone who leaves by
+Each refresh asks the identity provider again, through Dex. Keys never
+refresh, so once a day Sekisho also asks again for each person who owns an
+active environment key. Dex v2.46.1 reports a provider's refusal as a
+failure of its own, which Sekisho treats as Dex being unavailable rather
+than ending sessions, so **remove someone who leaves by
 [offboarding](#offboarding) them in Sekisho**.
 
-Session tokens are signed with a key Sekisho rotates itself.
-`POST /api/v1/signing-keys/rotate` rotates it now: the new key is
-published at once and signs a minute later, and tokens signed with the old
-one keep working until they expire.
+While Dex can't be reached, signing in and refreshing answer 503 and
+change nothing; they never succeed unchecked.
+
+On the gateway, a session that ends (logout, revocation, disabling,
+offboarding) cuts that person's running streams about a second later. An
+access token that merely expires during a stream doesn't cut it.
+
+### Checking a session token
+
+An access token is a JWT signed with EdDSA (Ed25519), with a `kid` in its
+header and these claims:
+
+| Claim | Value |
+|---|---|
+| `iss` | `SEKISHO_PUBLIC_URL` |
+| `aud` | `sekisho` |
+| `sub` | the person's user ID |
+| `sid` | the session's ID |
+| `client_id` | the client that signed in, such as `sekisho-cli` |
+| `iat`, `exp` | issued at, and an hour later; Sekisho allows no leeway |
+
+The public keys are at `/oauth/jwks`. A valid signature isn't the whole
+check: Sekisho also refuses a token whose session has ended or whose person
+is disabled, which only Sekisho knows.
+
+Sekisho rotates the signing key every 30 days by itself: the new key is
+published a minute before it signs, and a retired key stays published for
+65 minutes, past the last token it signed. `POST
+/api/v1/signing-keys/rotate` rotates it now, the same way.
 
 ## The first admin
 
@@ -83,7 +111,9 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 ```
 
 The answer is the new person with a `link`: `setup_url`, where they set
-their password, and its `expires_at`, 7 days on. Send them the link.
+their password, and its `expires_at`, 7 days on. Send them the link. It
+works once, and a newer link for the same person (from a reset) replaces
+it.
 
 A password needs at least 15 characters and at most 72 bytes (letters
 outside plain ASCII take two to four), and must be hard to guess: zxcvbn's
@@ -121,7 +151,10 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
 
 An identity provider's groups are named `<connector>/<group>` in Sekisho,
 such as `github/acme:platform`, so they can never be mistaken for a Sekisho
-group or another provider's group of the same name.
+group or another provider's group of the same name. Sekisho asks Dex for
+the scopes `openid email profile groups offline_access federated:id`, but a
+person's groups arrive only if the connector sends them, which some need
+set in their `config` (Dex's documentation for each type says how).
 
 ## People
 

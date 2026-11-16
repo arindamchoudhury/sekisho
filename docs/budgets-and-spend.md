@@ -44,13 +44,28 @@ against:
 
 1. When the provider reports how many tokens it used and the model has
    [its own prices](providers-and-models.md#models), Sekisho prices the
-   provider's counts: input, cache reads, cache writes and output.
+   provider's counts: input, cache reads, cache writes and output. The
+   prices are the model's as the environment lists it, even when the
+   provider reports a dated name such as `claude-sonnet-4-5-20250929`.
 2. When the provider reports and the model has no prices of its own, the
    cost agentgateway's model catalog gives.
 3. When a stream ends before the provider reports (the tool hung up, or a
-   revoked key cut it), an estimate: the prompt, plus the answer text the
-   tool received, at the model's prices or else the catalog's.
-4. When the provider answered with an error and reported nothing, nothing.
+   revoked key cut it), an estimate, at the model's prices or else at
+   agentgateway's catalog prices:
+   - input: the provider's count if it sent one, else agentgateway's own
+     count of the prompt;
+   - output: the answer text the tool received, counted the way
+     agentgateway counts (OpenAI's `o200k_base` tokens, times 1.3 for
+     Claude models, or 1.6 from Claude 4.7).
 
-A request made with a session token counts against its person's budgets,
-like one made with their key.
+   Sekisho waits 5 seconds after a stream ends for agentgateway's report
+   before it estimates, so a late report still wins. A request that seems
+   to hang is estimated only after an hour without a change, so a long
+   answer is never cut short.
+4. When the provider answered with an error and reported nothing, nothing;
+   nor when the request failed before any answer reached the tool.
+
+A request nothing can price (no prices of its own, and none in the
+catalog) is charged nothing and logged as a warning. A request made with a
+session token counts against its person's budgets, like one made with
+their key.

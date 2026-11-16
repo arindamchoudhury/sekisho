@@ -28,7 +28,7 @@ A provider takes exactly one credential, in one of these shapes:
 | API key | `api_key` |
 | AWS access keys | `aws_access_key_id` and `aws_secret_access_key`, with an optional `aws_session_token` |
 | Entra service principal | `azure_tenant_id` (the tenant's ID or a domain such as `contoso.onmicrosoft.com`), `azure_client_id` and `azure_client_secret` |
-| The gateway's own cloud identity | `"cloud_identity": true`: agentgateway uses the AWS or Azure identity of the machine or pod it runs on |
+| The gateway's own cloud identity | `"cloud_identity": true`: agentgateway uses the AWS or Azure identity it finds where it runs ([below](#the-gateways-cloud-identity)); Sekisho stores no secret |
 
 Names are 1–63 lowercase letters, digits or hyphens, starting and ending
 with a letter or digit, and unique.
@@ -74,6 +74,11 @@ it is required, written as the host documents it, such as
 Every Bedrock model the account can call works, Claude included, through
 the Anthropic Messages, Chat Completions and Responses APIs
 ([which API reaches which model](gateway.md#which-api-reaches-which-model)).
+A Bedrock model's name is its Bedrock model ID, such as
+`anthropic.claude-sonnet-4-5-20250929-v1:0`, or an inference profile ID,
+such as `us.anthropic.claude-sonnet-4-5-20250929-v1:0`, which many newer
+models need. Claude is recognised by `anthropic.claude` anywhere in the
+name.
 
 ### Azure OpenAI and Microsoft Foundry
 
@@ -85,11 +90,31 @@ the Anthropic Messages, Chat Completions and Responses APIs
 - `https://<resource>.services.ai.azure.com/api/projects/<project>` (a
   Foundry project).
 
-A model whose name starts with `claude` (in any case) is Claude, which Azure
-serves only on Foundry and only with Entra sign-in. So such a model needs a
+An Azure model's name is its **deployment name**, the name you gave the
+deployment in Azure, not the model's own name (`gpt-5-prod`, say, for a
+deployment of `gpt-5`). A deployment name that starts with `claude` (in
+any case) is Claude, which Azure serves only on Foundry and only with
+Entra sign-in, so name Claude deployments that way. So such a model needs a
 Foundry endpoint and an Entra service principal or the cloud identity; an
 Azure OpenAI endpoint or an API key is refused when the model is added, or
 when the provider's endpoint or credential changes later.
+
+### The gateway's cloud identity
+
+With `"cloud_identity": true`, Sekisho stores no secret: agentgateway signs
+in as itself, so give it the identity where it runs.
+
+- **Bedrock:** the AWS SDK's usual credential chain: `AWS_*` environment
+  variables, a profile, an EKS service account's role (IRSA or Pod
+  Identity), or an ECS task or EC2 instance role. The role needs Bedrock's
+  invoke permissions for the models.
+- **Azure:** workload identity on Kubernetes, or a managed identity on an
+  Azure VM; on a developer's machine, developer tools such as the Azure
+  CLI's sign-in. The identity needs a role that may call the models, such
+  as *Cognitive Services User*, or *Foundry User* on Foundry. An Entra
+  service principal needs the same role.
+
+Every provider with the cloud identity uses the same one: agentgateway's.
 
 ### OpenAI-compatible hosts
 

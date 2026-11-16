@@ -11,7 +11,7 @@ route and a mock model), so copy its shape, not its secrets.
 | Part | Version | Notes |
 |---|---|---|
 | PostgreSQL | 18 | Sekisho's only state. Run `sekisho migrate` before `serve`, and after each upgrade |
-| [Dex](https://github.com/dexidp/dex) | v2.46.1 | Its gRPC API must be on, and `enablePasswordDB: true` for local accounts. Use PostgreSQL storage: with Dex's in-memory storage, a local account's refresh hangs. Sekisho registers its own client with Dex, so Dex's config needs none |
+| [Dex](https://github.com/dexidp/dex) | v2.46.1 | Run it with `DEX_API_CONNECTORS_CRUD=true`, or Sekisho can't manage identity providers. Its gRPC API must be on, and `enablePasswordDB: true` for local accounts. Use PostgreSQL storage: with Dex's in-memory storage, a local account's refresh hangs. Sekisho registers its own client with Dex (`sekisho`), so Dex's config needs none |
 | [agentgateway](https://github.com/agentgateway/agentgateway) | v1.7.0 | Unmodified. Run it with `-f <config file>` and `SESSION_KEY` set, beside a gateway agent that writes the file |
 
 ## Commands
@@ -53,8 +53,21 @@ but never quoting a secret.
 Expose only the API listener to people. The hook listeners are for
 agentgateway alone.
 
+Sekisho talks to Dex in plain HTTP and gRPC for now, so keep both on a
+private network: Dex's gRPC API manages passwords and connectors, and must
+never be published. Browsers reach Dex only at `SEKISHO_DEX_ISSUER`.
+
 At start, `serve` registers itself with Dex in the background. Until that
 succeeds, signing in answers 503, and it keeps trying.
+
+## Logs
+
+Sekisho logs to standard output at `info` level; there is no setting for
+the level yet. Logs name people by user ID and never contain secrets:
+provider credentials, tokens, passwords, setup links and connector
+settings are left out. A request Sekisho estimated is logged at `info`
+with who paid (person and key), the model, the token counts and the
+amount, and a request nothing could price at `warn`.
 
 ## The gateway agent
 

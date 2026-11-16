@@ -91,3 +91,16 @@ or the provider, as agentgateway relays it.
 
 If Sekisho's hooks can't be reached, agentgateway refuses requests, unless
 an operator chose otherwise ([`SEKISHO_HOOKS_FAIL_OPEN`](running.md#settings)).
+
+## While a request runs
+
+Sekisho checks a request when it starts, and keeps watching its stream: a
+key that is revoked, suspended or expires, a key whose owner loses access,
+or a session that ends cuts the stream about a second later. The tool keeps
+its `200` and what it already got, and gets no more. An access token that
+merely expires mid-stream doesn't cut it, and neither does a budget used
+up: budgets refuse the next request.
+
+Sekisho's hooks add about 1.3 ms to each request, and about 2.5–3 ms
+together with agentgateway's prompt counting, which spend needs (medians
+measured in Docker Desktop).
