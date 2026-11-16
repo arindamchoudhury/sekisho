@@ -20,7 +20,9 @@ Global Constraints, Review Focus, test-first tasks and self-review.
    - the design sections that the plans index (`.private/superpowers/plans/README.md`)
      lists for this plan;
    - plan 1's Global Constraints and Interfaces blocks;
-   - the related research in `.private/research/`.
+   - the related research in `.private/research/`;
+   - the pages in `docs/` that this plan's features touch, so each task
+     can say what it adds or changes there.
 2. Check upstream facts live:
    - **agentgateway:** config shapes, protos and CEL fields at the pinned tag.
      **REQUIRED SUB-SKILL:** `working-with-agentgateway`.
@@ -52,10 +54,25 @@ Global Constraints, Review Focus, test-first tasks and self-review.
 - Save it to `.private/superpowers/plans/YYYY-MM-DD-plan-<n>-<slug>.md`. It is
   internal: never `git add` it.
 - Copy into Global Constraints the design values that apply: fail closed,
-  micro-USD, one provider per API format, the pins, and "a Sekisho token never
-  reaches a provider".
+  micro-USD, the pins, and "a Sekisho token never reaches a provider".
+- **Docs in every task.** `docs/` documents what works today, and each
+  change updates it in the same commit (`.claude/CLAUDE.md` rule 2). So:
+  - a task that changes what people, admins, operators or clients can do
+    or see (API routes and fields, gateway answers, settings, commands,
+    limits) lists the `docs/` pages in its **Files**, has a step before
+    its commit that says what to add or change on each, and puts them in
+    its commit's paths;
+  - the step writes from the code as built, not from the plan, and
+    corrects anything the change made wrong elsewhere in `docs/`;
+  - a task that changes nothing anyone sees says "Docs: none" and why;
+  - a new page is linked from `docs/README.md`, and a new API route from
+    `docs/api.md`'s routes table;
+  - Global Constraints' bookkeeping list includes "update `docs/` in the
+    same task".
 - End with an acceptance task that proves the design sections this plan owns,
-  against a real agentgateway where traffic is involved.
+  against a real agentgateway where traffic is involved. It also updates
+  `docs/README.md`'s list of what isn't yet proven end to end, and the
+  README's status paragraph.
 - Give commit steps explicit paths. Never include a private note (any path in
   `.git/info/exclude`).
 
@@ -81,3 +98,5 @@ Global Constraints, Review Focus, test-first tasks and self-review.
   note with the index.
 - Changing a decision inside a plan without also updating the design and
   section 14.
+- Leaving docs to the plan's last task, or to the README alone: plan 1d's
+  Task 5 changed every refusal clients see and shipped with no docs.
