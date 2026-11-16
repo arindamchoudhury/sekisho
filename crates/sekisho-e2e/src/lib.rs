@@ -323,7 +323,9 @@ pub async fn wait_route_at(env: &str, token: &str, format: &str) {
         );
         sleep(Duration::from_millis(100)).await;
     }
-    // agentgateway reloads the file about 25 ms after a write.
+    // agentgateway reloads a small file about 25 ms after a write. A config
+    // of about 1,000 environments takes about half a second per load, so
+    // `tests/scale.rs` waits for a served request instead.
     sleep(Duration::from_millis(500)).await;
 }
 

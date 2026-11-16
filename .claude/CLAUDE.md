@@ -9,10 +9,11 @@ and aims for all of ACH's features over time.
 
 **Status:** release 1 design approved. Plan 1 (the governed gateway core:
 store, admin API, agentgateway config and gateway agent, hooks, e2e tests),
-plan 1b (Bedrock and Azure providers), plan 1c (spend accuracy) and plan 2
+plan 1b (Bedrock and Azure providers), plan 1c (spend accuracy), plan 2
 (sign-in through Dex, session tokens through the gateway, people, groups,
-local accounts and offboarding) are built and merged; plan 1d and plans 3–8
-are next, each written just before it starts.
+local accounts and offboarding) and plan 1d (open-weight hosts, providers
+chosen by model, one `llm:` block, Sekisho's model checks) are built and
+merged; plans 3–8 are next, each written just before it starts.
 
 ## Maintainers' private notes (not in Git)
 

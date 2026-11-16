@@ -249,6 +249,7 @@ async fn gateway_agent(server_url: Url, config_path: PathBuf) -> anyhow::Result<
         gateway_token,
         config_path,
         retry: Duration::from_secs(1),
+        rewrite_after: sekisho_gateway::agent::REWRITE_AFTER,
     };
     tokio::select! {
         result = run_agent(config) => result?,

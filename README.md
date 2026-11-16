@@ -24,9 +24,14 @@ and what they carried.
 > that end early; and running streams cut about a second after a key is
 > revoked. Providers can be Anthropic, OpenAI, Gemini, Amazon Bedrock, Azure
 > (Azure OpenAI, or Claude on Foundry) or any OpenAI-compatible endpoint,
-> with an API key, AWS access keys, an Entra service principal or the
-> gateway's own cloud identity. The web UI, the CLI, MCP servers and catalogs
-> come next. Everything below describes what release 1 will do; the
+> such as an open-weight host (Scaleway, Groq, DeepSeek, an Ollama server;
+> twelve hosts come as presets), with an API key, AWS access keys, an Entra
+> service principal or the gateway's own cloud identity. An environment can
+> mix models from any providers, and every coding tool reaches each of them
+> through its own API, passed through or translated; Sekisho refuses a model
+> the environment doesn't list, or one the tool's API can't reach. Tested
+> with 3,000 environments. The web UI, the CLI, MCP servers and catalogs come
+> next. Everything below describes what release 1 will do; the
 > [documentation](docs/README.md) describes what works today.
 
 ## What release 1 will do

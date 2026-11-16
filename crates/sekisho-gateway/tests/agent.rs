@@ -80,7 +80,14 @@ fn agent(server_url: Url, config_path: &Path, token: &str) -> AgentConfig {
         gateway_token: token.into(),
         config_path: config_path.to_path_buf(),
         retry: Duration::from_millis(50),
+        // Long, so only the tests of the re-write see one.
+        rewrite_after: Duration::from_secs(60),
     }
+}
+
+/// When the file was last written.
+fn written(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path).unwrap().modified().unwrap()
 }
 
 fn read(path: &Path) -> Option<String> {
@@ -253,4 +260,58 @@ fn write_atomic_makes_the_file_private() {
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+/// agentgateway v1.7.0 stops watching its config file when the file is
+/// replaced, reloads, and only then watches again, so a write that lands
+/// during a reload is never loaded. Writing the latest config once more
+/// after a quiet spell makes agentgateway end on it.
+#[tokio::test]
+async fn rewrites_the_last_config_once_after_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_path(&dir);
+    let (_fake, url) = fake_server(vec![Scripted::Config(1, V1)]).await;
+    let config = AgentConfig {
+        rewrite_after: Duration::from_millis(300),
+        ..agent(url, &path, TOKEN)
+    };
+    tokio::spawn(run_agent(config));
+    eventually(Duration::from_secs(2), "v1 on disk", || {
+        read(&path).as_deref() == Some(V1)
+    })
+    .await;
+    let first = written(&path);
+    eventually(Duration::from_secs(2), "a re-write", || {
+        written(&path) != first
+    })
+    .await;
+    assert_eq!(read(&path).as_deref(), Some(V1));
+    // Once: no more writes while nothing changes.
+    let second = written(&path);
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(written(&path), second, "written again");
+}
+
+/// A newer version restarts the quiet spell: the re-write is of the latest
+/// config, never of one it replaced.
+#[tokio::test]
+async fn the_rewrite_is_of_the_latest_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_path(&dir);
+    let (_fake, url) = fake_server(vec![Scripted::Config(1, V1), Scripted::Config(2, V2)]).await;
+    let config = AgentConfig {
+        rewrite_after: Duration::from_millis(300),
+        ..agent(url, &path, TOKEN)
+    };
+    tokio::spawn(run_agent(config));
+    eventually(Duration::from_secs(2), "v2 on disk", || {
+        read(&path).as_deref() == Some(V2)
+    })
+    .await;
+    let first = written(&path);
+    eventually(Duration::from_secs(2), "a re-write", || {
+        written(&path) != first
+    })
+    .await;
+    assert_eq!(read(&path).as_deref(), Some(V2));
 }

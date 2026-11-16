@@ -13,6 +13,17 @@ use std::time::Duration;
 pub use reqwest::Url;
 use serde::Deserialize;
 
+/// The quiet spell after which the agent writes the current config once
+/// more. agentgateway v1.7.0 stops watching its config file when the file
+/// is replaced, reloads, and only then watches again (`util.rs`
+/// `watch_files_with_options`, `state_manager.rs` `watch_config_file`), so
+/// a write that lands during a reload is never loaded, and the gateway
+/// keeps an older config until the next write. A reload takes about 25 ms
+/// for a small config and about 0.6 s at 1,500 environments; agentgateway
+/// waits 250 ms for a file to settle first. 2 s covers both, and keeps a
+/// change live within the design's 5 s.
+pub const REWRITE_AFTER: Duration = Duration::from_secs(2);
+
 /// How long one poll may take; the server answers within 30 s.
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 const ENDPOINT: &str = "/internal/gateway/config";
@@ -28,6 +39,9 @@ pub struct AgentConfig {
     /// two polls, so a server that answers "unchanged" at once can't make
     /// the agent spin.
     pub retry: Duration,
+    /// How long after a write, with no newer version, the agent writes the
+    /// same config once more ([`REWRITE_AFTER`] in production).
+    pub rewrite_after: Duration,
 }
 
 /// Leaves out the token.
@@ -37,6 +51,7 @@ impl fmt::Debug for AgentConfig {
             .field("server_url", &self.server_url.as_str())
             .field("config_path", &self.config_path)
             .field("retry", &self.retry)
+            .field("rewrite_after", &self.rewrite_after)
             .finish_non_exhaustive()
     }
 }
@@ -92,9 +107,27 @@ pub async fn run_agent(config: AgentConfig) -> Result<(), AgentError> {
 
     // The newest version applied or skipped. 0 fetches the latest on start.
     let mut after = 0;
+    // The config last written, and when to write it once more.
+    let mut rewrite: Option<(tokio::time::Instant, i64, String)> = None;
     loop {
         let polled = tokio::time::Instant::now();
-        match poll(&client, &endpoint, &config.gateway_token, after).await {
+        let request = poll(&client, &endpoint, &config.gateway_token, after);
+        tokio::pin!(request);
+        // The long poll keeps running while the re-write is due.
+        let answer = loop {
+            let due = rewrite.as_ref().map(|(at, _, _)| *at);
+            tokio::select! {
+                answer = &mut request => break answer,
+                () = async { tokio::time::sleep_until(due.unwrap()).await }, if due.is_some() => {
+                    let (_, version, yaml) = rewrite.take().expect("due");
+                    match write_atomic(&config.config_path, &yaml) {
+                        Ok(()) => tracing::debug!(version, "gateway config written again"),
+                        Err(error) => tracing::warn!(%error, "writing the gateway config again failed"),
+                    }
+                }
+            }
+        };
+        match answer {
             // A long poll returns after a while; an instant answer waits.
             Ok(Poll::Unchanged) => tokio::time::sleep_until(polled + config.retry).await,
             Ok(Poll::Newer(published)) => {
@@ -111,6 +144,11 @@ pub async fn run_agent(config: AgentConfig) -> Result<(), AgentError> {
                     Ok(()) => {
                         after = published.version;
                         tracing::info!(version = after, "gateway config applied");
+                        rewrite = Some((
+                            tokio::time::Instant::now() + config.rewrite_after,
+                            published.version,
+                            published.yaml,
+                        ));
                     }
                     Err(error) => {
                         tracing::error!(%error, "writing the gateway config failed; retrying");

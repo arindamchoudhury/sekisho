@@ -32,7 +32,20 @@ clone (`git clone --depth 1 --branch v1.7.0`) is enough.
     `crates/sekisho-core/src/catalog.rs`;
   - check `crates/sekisho-hooks/src/tokens.rs` (the Claude factors and
     `claude_version`) against the tag's `crates/llm/src/tokenizer.rs`;
-  - re-validate every config and re-run the e2e tests of plans 1, 1b and 1c.
+  - check `sekisho_core::formats`: `reaches` (which client API reaches
+    which provider kind) against `CHAT_TRANSLATIONS` and
+    `supported_chat_formats` in `crates/agentgateway/src/llm/mod.rs`, and
+    `is_claude` against `is_anthropic_model` in `crates/llm/src/bedrock.rs`
+    and `crates/llm/src/azure.rs`;
+  - check `sekisho_core::presets` against `ProviderPreset` in
+    `crates/llm/src/custom.rs`;
+  - check whether the config file watch still misses a replacement during
+    a reload (`watch_files_with_options` in `util.rs`,
+    `watch_config_file` in `state_manager.rs`); once it doesn't, the
+    gateway agent's re-write after 2 s (D162, `agent::REWRITE_AFTER`) can
+    go;
+  - re-validate every config and re-run every e2e suite (`e2e`, `hosts`,
+    `people`, then `scale` last on a fresh stack).
 
 ## Validate a config
 
@@ -44,7 +57,13 @@ field on purpose to prove the check bites.
 
 | Area | Behaviour |
 |---|---|
-| Config file | Reloads about 25 ms after a write. A reload never ends running streams, even when it removes the stream's own route |
+| Config file | Reloads about 25 ms after a write for a small config; at 1,500 environments (a 1.5 MB file) a load takes about 0.6 s, and the file watch waits 250 ms for writes to settle. A reload never ends running streams, even when it removes the stream's own route |
+| Config file watch | When the file is replaced (an atomic write and rename), the watch stops, the config reloads, and only then is the file watched again (`util.rs` `watch_files_with_options`, `state_manager.rs` `watch_config_file`; still so on `main` at `18f83707`). A replacement during the reload is never loaded: the gateway keeps the older config until the next write. Common after a burst of changes to a large config. The gateway agent writes the latest config once more after 2 s with no newer version (D162) |
+| One `llm:` block | Serves every environment's model routes at `pathPrefix: /env`: `llm.providers` once each, with the credential in `defaults.auth`; `llm.models` one entry per environment and model, `matches` on the `x-sekisho-env` header the transformation sets from the path, and `requestHeaders.remove` of it. Policies on the block apply to every entry. A model the router has no entry for (another environment's, or unknown) gets the router's OpenAI-shaped 404; Sekisho's `extAuthz` answers first, since the router resolves only at the backend call, after the route policies |
+| `extAuthz` and the model | `llm.requestModel` is already set when `extAuthz` runs (from the body, or the path for Gemini), so `addRequestHeaders` can send it to the hook. `extAuthz` runs before the route's `authorization` rule, and receives the client's method, path and query |
+| Provider `baseUrl` | Refused when the whole file loads if it has user info, a query or a fragment (`apply_base_url`), which holds back every environment's config |
+| Gemini key | On the native endpoints, a key that starts with `AIza` or `AQ.` moves from `Authorization: Bearer` to `x-goog-api-key`; any other value stays a bearer token (an OAuth token). Gemini's OpenAI-compatible endpoint always gets a bearer token |
+| Cache tokens | `llm.inputTokens` counts every input token, cache reads included, whichever API the provider reports in (Chat Completions, Messages, Responses; passed through or translated), so Sekisho subtracts the cache counts for the uncached part. Cache writes weren't tested |
 | `extAuthz` (HTTP) | Receives the original path. Its denial bodies reach the client. Runs per request only, so it does not stop a running stream. `protocol.http.addRequestHeaders` adds headers to the hook request from the config, overwriting any client copy; `protocol.http.metadata` exposes the hook's answer to later policies as `extauthz.*` |
 | `ext_proc` (`fullDuplexStreamed`) | The processor must echo each chunk as a `streamed_response`. An `ImmediateResponse` mid-stream ends the stream: the client keeps its 200, gets no `[DONE]`, and the upstream connection closes |
 | `ext_proc` metadata and order | `dynamic_metadata` in the answer to the request headers is `extproc.<key>` in CEL, so later policies (rate-limit descriptors) can read it. Route-level `ext_proc` runs before the LLM descriptors are built. It sees the answer already translated into the client's format (an Anthropic stream for a Bedrock backend on the Anthropic route). After the client hangs up, agentgateway keeps reading the provider, so the processor still sees the rest of the answer |

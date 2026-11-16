@@ -79,8 +79,22 @@ sekisho gateway-agent --server http://sekisho:8080/ --config-path /config/config
 ```
 
 It waits on `GET /internal/gateway/config` for each new version, which
-Sekisho publishes about a second after an admin's change, and writes the
-file; agentgateway reloads it without ending running requests. On Windows
+Sekisho publishes as soon as an admin's change is saved, and writes the
+file; agentgateway reloads it without ending running requests. A change is
+usually live at the gateway within a second.
+
+Two seconds after its last write, with no newer version, the agent writes
+the same config once more. agentgateway v1.7.0 can miss a file that is
+replaced while it is still loading the previous one, and would then serve
+the older config until the next change; the second write makes it end on
+the latest. So after a burst of changes, such as a script editing many
+environments, the last one can take a few seconds longer to go live.
+
+Measured with the end-to-end stack in Docker Desktop: up to 3,000
+environments of five models each, with no added latency per request; a
+change was live within 1.4 s, or within 3.6 s after a burst of 300 changes,
+against a design target of 5 s. agentgateway's reload takes longer as the
+config grows: about 25 ms for a few environments, about 0.6 s at 1,500. On Windows
 with Docker Desktop, share the file through a Docker volume, not a folder
 from Windows: changes to a Windows folder don't reach agentgateway, so it
 never reloads.
