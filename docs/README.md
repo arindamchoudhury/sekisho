@@ -5,13 +5,12 @@ built. The [README](../README.md) describes the whole of release 1, much of
 which doesn't exist yet: the web UI, the `sekisho` CLI for developers, MCP
 servers, A2A agents and catalogs. What these pages describe is built and
 tested, most of it end to end against agentgateway v1.7.0 and Dex v2.46.1.
-Not yet proven end to end:
+The end-to-end tests send every request through agentgateway to a mock
+provider that speaks each API (Anthropic Messages, Chat Completions,
+Responses, Gemini, Bedrock Converse and Azure's paths), and check what
+reached it and what was charged. Not yet proven against the real services:
 
-- the Responses and Gemini routes, and Sekisho's refusal of a model an
-  environment doesn't list or a client API can't reach (tested against
-  Sekisho's hooks, not yet through agentgateway);
-- OpenAI-compatible hosts' Messages and Responses APIs, and the host
-  presets, against the real hosts;
+- the open-weight hosts and the host presets;
 - Azure with an Entra service principal or the cloud identity, and Claude
   on Foundry, with real accounts.
 

@@ -16,8 +16,32 @@
 //! `n` deltas with an `overloaded_error` event, as a provider that fails
 //! mid-answer does.
 //!
-//! Azure's `v1` path, `POST /openai/v1/chat/completions`, answers like
-//! `/v1/chat/completions`.
+//! `POST /anthropic/v1/messages` (a host serving Messages under its own
+//! path) answers like `/v1/messages`, and `POST /v1/messages/count_tokens`
+//! answers `{"input_tokens": 1000}`.
+//!
+//! `POST /v1/responses` answers like OpenAI's Responses API, with the same
+//! chunks, interval and usage: one JSON body, or with `"stream": true`
+//! `response.created`, one `response.output_text.delta` per chunk, then
+//! `response.completed` with the usage.
+//!
+//! Gemini: `POST /v1beta/models/{model}:{action}` answers
+//! `generateContent` (one JSON body), `streamGenerateContent` (server-sent
+//! events with `alt=sse`, `usageMetadata` in each chunk and `finishReason`
+//! on the last) and `countTokens` (`{"totalTokens": 1000}`). Gemini's
+//! OpenAI-compatible endpoint, `POST /v1beta/openai/chat/completions`,
+//! answers like `/v1/chat/completions`.
+//!
+//! `x-mock-cached: n` makes `n` of the 1000 prompt tokens cache reads, in
+//! each format's own convention: Chat Completions
+//! `prompt_tokens_details.cached_tokens` within `prompt_tokens`; Messages
+//! `cache_read_input_tokens` beside `input_tokens = 1000 - n`; Responses
+//! `input_tokens_details.cached_tokens` within `input_tokens`; Gemini
+//! `cachedContentTokenCount` within `promptTokenCount`.
+//!
+//! Azure's `v1` paths, `POST /openai/v1/chat/completions` and
+//! `POST /openai/v1/responses`, answer like `/v1/chat/completions` and
+//! `/v1/responses`.
 //!
 //! Bedrock's Converse API: `POST /model/{model}/converse` answers one JSON
 //! body, and `POST /model/{model}/converse-stream` streams AWS event-stream
@@ -60,7 +84,13 @@ async fn main() {
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
         .route("/v1/messages", post(messages))
+        .route("/v1/messages/count_tokens", post(count_tokens))
+        .route("/anthropic/v1/messages", post(messages))
+        .route("/v1/responses", post(responses))
+        .route("/v1beta/models/{call}", post(gemini))
+        .route("/v1beta/openai/chat/completions", post(completions))
         .route("/openai/v1/chat/completions", post(completions))
+        .route("/openai/v1/responses", post(responses))
         .route("/model/{model}/converse", post(converse))
         .route("/model/{model}/converse-stream", post(converse_stream))
         .route("/_requests", get(requests))
@@ -124,8 +154,191 @@ async fn unrouted() -> Json<Value> {
     Json(json!({ "mock": "unrouted" }))
 }
 
+/// The prompt's tokens that are cache reads (`x-mock-cached`), at most all
+/// 1000.
+fn cached(headers: &HeaderMap) -> u64 {
+    header_number(headers, "x-mock-cached", 0).min(PROMPT)
+}
+
+/// The prompt's tokens in every answer.
+const PROMPT: u64 = 1000;
+
+/// A server-sent event stream fed by a task.
+fn sse(rx: mpsc::Receiver<Result<Bytes, Infallible>>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
+}
+
+async fn count_tokens() -> Json<Value> {
+    Json(json!({ "input_tokens": PROMPT }))
+}
+
+/// Responses' usage for the prompt, `cached` of it read from the cache, and
+/// one output token per chunk.
+fn responses_usage(cached: u64, chunks: u64) -> Value {
+    json!({
+        "input_tokens": PROMPT,
+        "input_tokens_details": { "cached_tokens": cached },
+        "output_tokens": chunks,
+        "output_tokens_details": { "reasoning_tokens": 0 },
+        "total_tokens": PROMPT + chunks,
+    })
+}
+
+/// A Responses API `response` object.
+fn response_object(model: &str, status: &str, text: Option<&str>, usage: Value) -> Value {
+    let output = match text {
+        Some(text) => json!([{
+            "type": "message", "id": "msg_mock", "status": "completed", "role": "assistant",
+            "content": [{ "type": "output_text", "text": text, "annotations": [] }],
+        }]),
+        None => json!([]),
+    };
+    json!({
+        "id": "resp_mock", "object": "response", "created_at": 0, "status": status,
+        "model": model, "output": output, "usage": usage,
+        "error": null, "incomplete_details": null,
+    })
+}
+
+async fn responses(headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let cached = cached(&headers);
+    let model = body["model"].as_str().unwrap_or("mock-model").to_owned();
+    if body["stream"].as_bool() != Some(true) {
+        let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+        let usage = responses_usage(cached, chunks);
+        return Json(response_object(&model, "completed", Some(&text), usage)).into_response();
+    }
+
+    let interval = Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+    tokio::spawn(async move {
+        let mut sequence = 0u64;
+        let mut event = |name: &str, mut value: Value| {
+            value["type"] = json!(name);
+            value["sequence_number"] = json!(sequence);
+            sequence += 1;
+            Ok(Bytes::from(format!("event: {name}\ndata: {value}\n\n")))
+        };
+        let created = response_object(&model, "in_progress", None, Value::Null);
+        if tx
+            .send(event("response.created", json!({ "response": created })))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut text = String::new();
+        for i in 0..chunks {
+            tokio::time::sleep(interval).await;
+            let delta = format!("t{i} ");
+            text.push_str(&delta);
+            let value = json!({
+                "item_id": "msg_mock", "output_index": 0, "content_index": 0,
+                "delta": delta, "logprobs": [],
+            });
+            if tx
+                .send(event("response.output_text.delta", value))
+                .await
+                .is_err()
+            {
+                return; // the client went away
+            }
+        }
+        let usage = responses_usage(cached, chunks);
+        let done = response_object(&model, "completed", Some(&text), usage);
+        let _ = tx
+            .send(event("response.completed", json!({ "response": done })))
+            .await;
+    });
+    sse(rx)
+}
+
+/// Gemini's usage for the prompt, `cached` of it from the cache, and
+/// `output` answer tokens.
+fn gemini_usage(cached: u64, output: u64) -> Value {
+    let mut usage = json!({
+        "promptTokenCount": PROMPT,
+        "candidatesTokenCount": output,
+        "totalTokenCount": PROMPT + output,
+    });
+    if cached > 0 {
+        usage["cachedContentTokenCount"] = json!(cached);
+    }
+    usage
+}
+
+/// One Gemini answer chunk: `text`, and `finishReason` when `last`.
+fn gemini_chunk(model: &str, text: &str, last: bool, usage: Value) -> Value {
+    let mut candidate = json!({
+        "content": { "role": "model", "parts": [{ "text": text }] },
+        "index": 0,
+    });
+    if last {
+        candidate["finishReason"] = json!("STOP");
+    }
+    json!({ "candidates": [candidate], "usageMetadata": usage, "modelVersion": model })
+}
+
+/// `{model}:{action}`: `generateContent`, `streamGenerateContent` or
+/// `countTokens`.
+async fn gemini(
+    axum::extract::Path(call): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((model, action)) = call.split_once(':') else {
+        return unrouted().await.into_response();
+    };
+    let model = model.to_owned();
+    let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let cached = cached(&headers);
+    match action {
+        "countTokens" => Json(json!({ "totalTokens": PROMPT })).into_response(),
+        "generateContent" => {
+            let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
+            Json(gemini_chunk(
+                &model,
+                &text,
+                true,
+                gemini_usage(cached, chunks),
+            ))
+            .into_response()
+        }
+        "streamGenerateContent" => {
+            let interval =
+                Duration::from_millis(header_number(&headers, "x-mock-interval-ms", 1000));
+            let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(4);
+            tokio::spawn(async move {
+                for i in 0..chunks {
+                    tokio::time::sleep(interval).await;
+                    let last = i + 1 == chunks;
+                    let chunk =
+                        gemini_chunk(&model, &format!("t{i} "), last, gemini_usage(cached, i + 1));
+                    if tx
+                        .send(Ok(Bytes::from(format!("data: {chunk}\r\n\r\n"))))
+                        .await
+                        .is_err()
+                    {
+                        return; // the client went away
+                    }
+                }
+            });
+            sse(rx)
+        }
+        _ => unrouted().await.into_response(),
+    }
+}
+
 async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let chunks = header_number(&headers, "x-mock-chunks", 20);
+    let cached = cached(&headers);
     let model = body["model"].as_str().unwrap_or("mock-model").to_owned();
     if body["stream"].as_bool() != Some(true) {
         let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
@@ -137,7 +350,10 @@ async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Response {
             "content": [{ "type": "text", "text": text }],
             "stop_reason": "end_turn",
             "stop_sequence": null,
-            "usage": { "input_tokens": 1000, "output_tokens": chunks },
+            "usage": {
+                "input_tokens": PROMPT - cached, "cache_read_input_tokens": cached,
+                "output_tokens": chunks,
+            },
         }))
         .into_response();
     }
@@ -156,7 +372,10 @@ async fn messages(headers: HeaderMap, Json(body): Json<Value>) -> Response {
             "message": {
                 "id": "msg_mock", "type": "message", "role": "assistant", "model": model,
                 "content": [], "stop_reason": null, "stop_sequence": null,
-                "usage": { "input_tokens": 1000, "output_tokens": 1 },
+                "usage": {
+                    "input_tokens": PROMPT - cached, "cache_read_input_tokens": cached,
+                    "output_tokens": 1,
+                },
             },
         });
         let block = json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } });
@@ -219,11 +438,15 @@ async fn completions(headers: HeaderMap, Json(body): Json<Value>) -> Response {
         .or(body["model"].as_str())
         .unwrap_or("mock-model")
         .to_owned();
-    let usage = json!({
-        "prompt_tokens": 1000,
+    let mut usage = json!({
+        "prompt_tokens": PROMPT,
         "completion_tokens": chunks,
-        "total_tokens": 1000 + chunks,
+        "total_tokens": PROMPT + chunks,
     });
+    let cached = cached(&headers);
+    if cached > 0 {
+        usage["prompt_tokens_details"] = json!({ "cached_tokens": cached });
+    }
     if body["stream"].as_bool() != Some(true) {
         let text: String = (0..chunks).map(|i| format!("t{i} ")).collect();
         return Json(json!({

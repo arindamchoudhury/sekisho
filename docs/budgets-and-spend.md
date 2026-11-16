@@ -65,7 +65,9 @@ against:
 4. When the provider answered with an error and reported nothing, nothing;
    nor when the request failed before any answer reached the tool.
 
-A request nothing can price (no prices of its own, and none in the
-catalog) is charged nothing and logged as a warning. A request made with a
+Counting tokens (Anthropic's `count_tokens`, Gemini's `countTokens`) is
+never charged, whether the provider counts or agentgateway does for a
+provider that can't. A request nothing can price (no prices of its own,
+and none in the catalog) is charged nothing and logged as a warning. A request made with a
 session token counts against its person's budgets, like one made with
 their key.

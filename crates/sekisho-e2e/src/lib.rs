@@ -381,3 +381,197 @@ pub fn median(mut values: Vec<Duration>) -> Duration {
     values.sort();
     values[values.len() / 2]
 }
+
+// Requests as each coding tool sends them, what reached the mock, and what
+// was charged: shared by `tests/e2e.rs` and `tests/hosts.rs`.
+
+/// A fresh environment for `models` with a $1 budget and a key, live on its
+/// `format` route: (env, key id, token, budget id). Names start with `via-`
+/// so they sort after `data-team`: the bare route of plan 1's latency test
+/// serves the provider of the first model entry of an OpenAI kind, by
+/// environment name.
+pub async fn cloud_env(
+    prefix: &str,
+    models: &[&str],
+    format: &str,
+) -> (String, String, String, String) {
+    let env = unique(&format!("via-{prefix}"));
+    put_env_models(&env, models).await;
+    let budget = env_budget(&env, "1").await;
+    let (id, token) = new_key(&env).await;
+    wait_route_at(&env, &token, format).await;
+    (env, id, token, budget)
+}
+
+/// An Anthropic Messages request as Claude Code sends it: the Sekisho token
+/// as both `Authorization` and `x-api-key`.
+pub fn messages_request(
+    env: &str,
+    token: &str,
+    model: &str,
+    chunks: u32,
+    interval_ms: u32,
+    stream: bool,
+) -> reqwest::RequestBuilder {
+    http()
+        .post(format!("{GATEWAY}/env/{env}/anthropic/v1/messages"))
+        .bearer_auth(token)
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .header("x-mock-chunks", chunks.to_string())
+        .header("x-mock-interval-ms", interval_ms.to_string())
+        .json(&json!({
+            "model": model, "max_tokens": 64, "stream": stream,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+}
+
+/// An OpenAI Responses request as Codex sends it.
+pub fn responses_request(
+    env: &str,
+    token: &str,
+    model: &str,
+    chunks: u32,
+    interval_ms: u32,
+    stream: bool,
+) -> reqwest::RequestBuilder {
+    http()
+        .post(format!("{GATEWAY}/env/{env}/openai/v1/responses"))
+        .bearer_auth(token)
+        .header("x-mock-chunks", chunks.to_string())
+        .header("x-mock-interval-ms", interval_ms.to_string())
+        .json(&json!({ "model": model, "input": "hi", "stream": stream }))
+}
+
+/// The requests the mock received since `before`, each checked to carry no
+/// Sekisho token in any header or in its path.
+pub async fn requests_since(before: usize) -> Vec<Value> {
+    let seen = mock_requests().await;
+    let new = seen[before..].to_vec();
+    for r in &new {
+        assert!(!r["path"].as_str().unwrap().contains("sek_"), "{r}");
+        let headers = r["headers"].as_object().unwrap();
+        assert!(
+            headers
+                .values()
+                .all(|v| !v.as_str().unwrap().contains("sek_")),
+            "{r}"
+        );
+    }
+    new
+}
+
+/// The one request the mock received since `before`, checked to carry no
+/// Sekisho token and no client credential header.
+pub async fn the_request_since(before: usize) -> Value {
+    let new = requests_since(before).await;
+    assert_eq!(new.len(), 1, "{new:?}");
+    let r = new[0].clone();
+    for client_header in ["x-api-key", "api-key"] {
+        assert!(
+            r["headers"].get(client_header).is_none(),
+            "{client_header}: {r}"
+        );
+    }
+    r
+}
+
+pub fn header<'a>(r: &'a Value, name: &str) -> &'a str {
+    r["headers"][name].as_str().unwrap_or_default()
+}
+
+/// `usd` as a budget's status shows it ("0.000249"), in micro-USD.
+pub fn micro_usd(usd: &str) -> i64 {
+    let (whole, fraction) = usd.split_once('.').unwrap_or((usd, ""));
+    let fraction = format!("{fraction:0<6}");
+    let whole: i64 = whole
+        .parse()
+        .unwrap_or_else(|_| panic!("not an amount: {usd}"));
+    whole * 1_000_000 + fraction[..6].parse::<i64>().unwrap()
+}
+
+/// The answer text of each complete server-sent event in `sse`, in the
+/// OpenAI chat, Anthropic Messages or OpenAI Responses format.
+pub fn deltas(sse: &str) -> Vec<String> {
+    let complete = &sse[..sse.rfind('\n').map_or(0, |end| end + 1)];
+    complete
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<Value>(data.trim_start()).ok())
+        .filter_map(|event| {
+            event["choices"][0]["delta"]["content"]
+                .as_str()
+                .or(event["delta"]["text"].as_str())
+                .or((event["type"] == "response.output_text.delta")
+                    .then(|| event["delta"].as_str())
+                    .flatten())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Streams `request` until `keep` answer deltas have arrived, then hangs up
+/// as a client does on Esc. Returns the deltas read.
+pub async fn read_then_hang_up(request: reqwest::RequestBuilder, keep: usize) -> Vec<String> {
+    let mut resp = request.send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut text = String::new();
+    while let Some(bytes) = resp.chunk().await.unwrap() {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        let read = deltas(&text);
+        if read.len() >= keep {
+            return read; // dropping the response closes the connection
+        }
+    }
+    panic!("the stream ended before {keep} deltas: {text}");
+}
+
+/// Reads a whole streamed answer and returns its text.
+pub async fn read_stream(request: reqwest::RequestBuilder) -> String {
+    let resp = request.send().await.unwrap();
+    let status = resp.status();
+    let text = resp.text().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{text}");
+    text
+}
+
+/// Waits up to 10 s for `budget` to be charged, then a second more for any
+/// second charge, and returns its spend in micro-USD.
+pub async fn charged(budget: &str) -> i64 {
+    let start = Instant::now();
+    loop {
+        if micro_usd(&spent(budget).await) > 0 {
+            sleep(Duration::from_secs(1)).await;
+            return micro_usd(&spent(budget).await);
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "nothing charged within 10 s"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Waits up to 10 s for `budget`'s spend to reach exactly `micro` micro-USD.
+pub async fn wait_charged(budget: &str, micro: i64) {
+    let start = Instant::now();
+    loop {
+        let now = micro_usd(&spent(budget).await);
+        if now == micro {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "charged {now} micro-USD, expected {micro}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub fn assert_between(spent: i64, low: i64, high: i64) {
+    println!("charged {spent} micro-USD; expected {low}..={high}");
+    assert!(
+        (low..=high).contains(&spent),
+        "charged {spent} micro-USD, expected {low}..={high}"
+    );
+}

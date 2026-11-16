@@ -16,7 +16,7 @@ their own session tokens or environment keys.
 |---|---|---|---|
 | `anthropic` | Anthropic's API | `api_key` | `base_url` optional |
 | `openai` | OpenAI's API | `api_key` | `base_url` optional |
-| `gemini` | Google's Gemini API | `api_key` | `base_url` optional |
+| `gemini` | Google's Gemini API | `api_key`: a Gemini API key (`AIza…` or `AQ.…`), which agentgateway sends to Gemini's own endpoints in `x-goog-api-key`; a value of any other shape goes as a bearer token | `base_url` optional |
 | `bedrock` | Amazon Bedrock (through its Converse API) | `api_key` (a Bedrock API key), AWS access keys, or `cloud_identity` | `region` required, such as `us-east-1`; `base_url` optional |
 | `azure` | Azure OpenAI, or Microsoft Foundry | `api_key`, an Entra service principal, or `cloud_identity` | `endpoint` required |
 | `openai_compatible` | Any other host that speaks OpenAI's API, such as Scaleway, Groq or a vLLM or Ollama server | `api_key` | `base_url` and `apis` required; `catalog_key` optional |
