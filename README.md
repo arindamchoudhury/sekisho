@@ -26,7 +26,8 @@ and what they carried.
 > (Azure OpenAI, or Claude on Foundry) or any OpenAI-compatible endpoint,
 > with an API key, AWS access keys, an Entra service principal or the
 > gateway's own cloud identity. The web UI, the CLI, MCP servers and catalogs
-> come next. Everything below describes what release 1 will do.
+> come next. Everything below describes what release 1 will do; the
+> [documentation](docs/README.md) describes what works today.
 
 ## What release 1 will do
 
@@ -182,6 +183,8 @@ accounts and for GitHub, GitLab, Google, Microsoft, LDAP and OIDC sign-ins.
 Dex v2.46.1 reports a provider's refusal as a failure of its own, which
 Sekisho treats as Dex being unavailable rather than ending sessions, so
 remove someone who leaves by offboarding them in Sekisho.
+[People and sign-in](docs/people-and-sign-in.md) has the rest: tokens, the
+first admin, local accounts, identity providers and offboarding.
 
 ## How it works
 
@@ -233,41 +236,11 @@ Each environment gets its own routes on the gateway:
 | `/env/<name>/mcp` | The environment's MCP servers, combined |
 | `/env/<name>/a2a/<agent>` | Each A2A agent |
 
-### Model requests
-
-A model route takes a POST to one of these endpoints, with no query but
-`?beta=true` or `?alt=sse`:
-
-- `/env/<name>/anthropic/v1/messages`, and `…/messages/count_tokens`;
-- `/env/<name>/openai/v1/chat/completions` and `/env/<name>/openai/v1/responses`;
-- `/env/<name>/gemini/v1beta/models/<model>:generateContent`, also
-  `streamGenerateContent` and `countTokens`, and under `v1` or `v1alpha`.
-
-An environment lists models from any of its providers, and a request
-reaches only those. Each client API reaches some providers' models,
-passed through or translated by agentgateway:
-
-| Client API | Reaches |
-|---|---|
-| Anthropic Messages, OpenAI Chat Completions | every model |
-| OpenAI Responses (Codex) | every model except Claude on the Anthropic provider and Claude on Azure Foundry, which agentgateway can't translate to |
-| Gemini | Gemini models only |
-
-### When the gateway says no
-
-Sekisho answers every refusal as JSON, with an `error` code and a
-`message` for people. It checks in this order, so nobody learns which
-models an environment has before their credential and access pass:
-
-| Status | `error` | When |
-|---|---|---|
-| 401 | `unauthorized` | No `Authorization: Bearer` credential, or a session token that isn't valid (`reason`: `invalid_token`, `token_expired`, `session_ended`) |
-| 403 | `forbidden` | The key or person may not use this environment (`reason`: `unknown_key`, `wrong_environment`, `revoked`, `expired`, `suspended`, `invalid` when the key's owner lost access, `no_access` for a session) |
-| 404 | `not_found` | Not a POST to a model endpoint |
-| 404 | `model_not_found` | The environment lists no model by that name, or the request names none. The answer is the same whether or not Sekisho has the model in another environment |
-| 400 | `api_not_served` | The client's API can't reach the model; the message names the APIs that can |
-| 429 | `budget_exhausted` | A budget the request counts against is used up; `budget` and `resets_at` say which and until when |
-| 503 | `unavailable` | Sekisho couldn't check the request; try again |
+A model route takes only a POST to a model endpoint, for a model the
+environment lists, through a client API that reaches it; everything else
+gets a JSON refusal from Sekisho before any provider is called. [The
+gateway](docs/gateway.md) lists the endpoints, which API reaches which
+model, and every refusal.
 
 ## Running it
 

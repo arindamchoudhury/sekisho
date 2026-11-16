@@ -96,7 +96,10 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   done
   echo "  tracked: $(git ls-files | tr '\n' ' ')"
   echo "  git add -A would add: $(git ls-files --others --exclude-standard | tr '\n' ' ')"
-  echo "  README links to private files: $(grep -c -E '\]\((\./)?(\.private/|CLAUDE\.local|docs/superpowers/)' README.md)"
+  # The public docs: the README and docs/ (never docs/superpowers/).
+  public_docs="README.md $(find docs -name '*.md' -not -path 'docs/superpowers/*' 2>/dev/null | sort | tr '\n' ' ')"
+  links="$(cat $public_docs | grep -c -E '\]\((\./|\.\./)*(\.private/|CLAUDE\.local|docs/superpowers/|superpowers/)')"
+  echo "  public docs linking private files: $links (README.md and docs/)"
 else
   echo "  not a Git repository"
 fi

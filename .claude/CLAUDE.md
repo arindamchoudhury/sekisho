@@ -41,7 +41,10 @@ truth. Where a maintainer has them:
    `git add`. Before committing, check `git status --short --ignored`.
 2. **Tracked files:** `README.md`; `LICENSE` (the official Apache-2.0 text,
    SHA-256 `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`);
-   `.claude/` (this file and the project skills); later the code.
+   `.claude/` (this file and the project skills); `docs/`, the public
+   documentation of what works today (never `docs/superpowers/`); the code.
+   Each change updates the pages it affects in `docs/`, in the same
+   commit; the README describes the whole release and links there.
 3. **`.claude/` is public**, shared with everyone who clones the repo. Keep
    secrets, personal details and notes about one person's machine out of it.
    Put those in `CLAUDE.local.md` at the repo root, which Claude Code loads

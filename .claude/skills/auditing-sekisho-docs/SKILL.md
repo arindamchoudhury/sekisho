@@ -54,7 +54,7 @@ problems were found by reading, not by the script.
 - Reporting "all good" from the script alone.
 - Fixing a decision in its section but not in section 14, or the other way
   round.
-- Linking a private note from `README.md`.
+- Linking a private note from `README.md` or `docs/`.
 - Committing a private note: any path in `.git/info/exclude`.
 - Putting personal or machine-specific details in `.claude/`, which is public.
   They belong in `CLAUDE.local.md`.
