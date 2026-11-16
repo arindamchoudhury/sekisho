@@ -21,7 +21,9 @@ use serde::Deserialize;
 /// keeps an older config until the next write. A reload takes about 25 ms
 /// for a small config and about 0.6 s at 1,500 environments; agentgateway
 /// waits 250 ms for a file to settle first. 2 s covers both, and keeps a
-/// change live within the design's 5 s.
+/// change live within the design's 5 s. Reported upstream as
+/// <https://github.com/agentgateway/agentgateway/issues/4427>: drop this
+/// once a pinned release watches the file before it reloads.
 pub const REWRITE_AFTER: Duration = Duration::from_secs(2);
 
 /// How long one poll may take; the server answers within 30 s.

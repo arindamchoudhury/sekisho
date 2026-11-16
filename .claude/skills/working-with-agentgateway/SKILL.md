@@ -41,9 +41,10 @@ clone (`git clone --depth 1 --branch v1.7.0`) is enough.
     `crates/llm/src/custom.rs`;
   - check whether the config file watch still misses a replacement during
     a reload (`watch_files_with_options` in `util.rs`,
-    `watch_config_file` in `state_manager.rs`); once it doesn't, the
-    gateway agent's re-write after 2 s (D162, `agent::REWRITE_AFTER`) can
-    go;
+    `watch_config_file` in `state_manager.rs`; reported as
+    [agentgateway/agentgateway#4427](https://github.com/agentgateway/agentgateway/issues/4427));
+    once a release fixes it, the gateway agent's re-write after 2 s
+    (D162, `agent::REWRITE_AFTER`) can go;
   - re-validate every config and re-run every e2e suite (`e2e`, `hosts`,
     `people`, then `scale` last on a fresh stack).
 
@@ -58,7 +59,7 @@ field on purpose to prove the check bites.
 | Area | Behaviour |
 |---|---|
 | Config file | Reloads about 25 ms after a write for a small config; at 1,500 environments (a 1.5 MB file) a load takes about 0.6 s, and the file watch waits 250 ms for writes to settle. A reload never ends running streams, even when it removes the stream's own route |
-| Config file watch | When the file is replaced (an atomic write and rename), the watch stops, the config reloads, and only then is the file watched again (`util.rs` `watch_files_with_options`, `state_manager.rs` `watch_config_file`; still so on `main` at `18f83707`). A replacement during the reload is never loaded: the gateway keeps the older config until the next write. Common after a burst of changes to a large config. The gateway agent writes the latest config once more after 2 s with no newer version (D162) |
+| Config file watch | When the file is replaced (an atomic write and rename), the watch stops, the config reloads, and only then is the file watched again (`util.rs` `watch_files_with_options`, `state_manager.rs` `watch_config_file`; still so on `main` at `18f83707`). A replacement during the reload is never loaded: the gateway keeps the older config until the next write. Common after a burst of changes to a large config. Reported as agentgateway/agentgateway#4427. The gateway agent writes the latest config once more after 2 s with no newer version (D162) |
 | One `llm:` block | Serves every environment's model routes at `pathPrefix: /env`: `llm.providers` once each, with the credential in `defaults.auth`; `llm.models` one entry per environment and model, `matches` on the `x-sekisho-env` header the transformation sets from the path, and `requestHeaders.remove` of it. Policies on the block apply to every entry. A model the router has no entry for (another environment's, or unknown) gets the router's OpenAI-shaped 404; Sekisho's `extAuthz` answers first, since the router resolves only at the backend call, after the route policies |
 | `extAuthz` and the model | `llm.requestModel` is already set when `extAuthz` runs (from the body, or the path for Gemini), so `addRequestHeaders` can send it to the hook. `extAuthz` runs before the route's `authorization` rule, and receives the client's method, path and query |
 | Provider `baseUrl` | Refused when the whole file loads if it has user info, a query or a fragment (`apply_base_url`), which holds back every environment's config |

@@ -87,7 +87,8 @@ Two seconds after its last write, with no newer version, the agent writes
 the same config once more. agentgateway v1.7.0 can miss a file that is
 replaced while it is still loading the previous one, and would then serve
 the older config until the next change; the second write makes it end on
-the latest. So after a burst of changes, such as a script editing many
+the latest ([agentgateway/agentgateway#4427](https://github.com/agentgateway/agentgateway/issues/4427)).
+So after a burst of changes, such as a script editing many
 environments, the last one can take a few seconds longer to go live.
 
 Measured with the end-to-end stack in Docker Desktop: up to 3,000
