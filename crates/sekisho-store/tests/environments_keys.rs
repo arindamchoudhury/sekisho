@@ -9,8 +9,8 @@ use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_store::{
-    ChangeKind, EnvironmentSpec, FieldError, NewModel, NewProvider, ProviderOptions, Store,
-    StoreError,
+    ChangeKind, EnvModel, EnvironmentSpec, FieldError, NewModel, NewProvider, ProviderOptions,
+    Store, StoreError,
 };
 use time::OffsetDateTime;
 use tokio_stream::StreamExt;
@@ -672,5 +672,91 @@ async fn auth_snapshot_has_every_key_and_environment() {
             .keys
             .iter()
             .any(|(k, _)| k.id == gone.id && k.revoked_at.is_some())
+    );
+}
+
+#[tokio::test]
+async fn the_auth_snapshot_lists_each_environments_models() {
+    let (store, sb) = common::store().await;
+    provider_with_models(
+        &store,
+        &sb,
+        "openai",
+        ProviderKind::OpenAi,
+        &["gpt-5", "gpt-5-mini"],
+    )
+    .await;
+    provider_with_models(
+        &store,
+        &sb,
+        "anthropic",
+        ProviderKind::Anthropic,
+        &["claude-sonnet-4-5"],
+    )
+    .await;
+    provider_with_models(
+        &store,
+        &sb,
+        "gemini",
+        ProviderKind::Gemini,
+        &["gemini-2.5-pro"],
+    )
+    .await;
+    let admin = common::admin(&store).await;
+    for (name, models) in [
+        (
+            "data-team",
+            &["gpt-5-mini", "claude-sonnet-4-5", "gemini-2.5-pro"][..],
+        ),
+        ("empty", &[][..]),
+        ("ml-team", &["gpt-5", "gpt-5-mini"][..]),
+    ] {
+        store
+            .upsert_environment(spec(name, models), admin)
+            .await
+            .unwrap();
+    }
+    let snapshot = store
+        .auth_snapshot(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let models: Vec<(String, Vec<(String, ProviderKind)>)> = snapshot
+        .environments
+        .iter()
+        .map(|e| {
+            let models = e
+                .models
+                .iter()
+                .map(|m: &EnvModel| (m.name.as_str().to_owned(), m.kind))
+                .collect();
+            (e.name.as_str().to_owned(), models)
+        })
+        .collect();
+    let owned = |pairs: &[(&str, ProviderKind)]| {
+        pairs
+            .iter()
+            .map(|(n, k)| ((*n).to_owned(), *k))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        models,
+        vec![
+            (
+                "data-team".to_owned(),
+                owned(&[
+                    ("gpt-5-mini", ProviderKind::OpenAi),
+                    ("claude-sonnet-4-5", ProviderKind::Anthropic),
+                    ("gemini-2.5-pro", ProviderKind::Gemini),
+                ])
+            ),
+            ("empty".to_owned(), Vec::new()),
+            (
+                "ml-team".to_owned(),
+                owned(&[
+                    ("gpt-5", ProviderKind::OpenAi),
+                    ("gpt-5-mini", ProviderKind::OpenAi)
+                ])
+            ),
+        ]
     );
 }

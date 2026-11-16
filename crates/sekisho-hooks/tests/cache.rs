@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::{EnvKeyId, hash_secret, parse_token};
-use sekisho_core::names::EnvName;
+use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_hooks::cache::{AuthCache, CachedKey};
-use sekisho_store::{EnvironmentSpec, Store};
+use sekisho_store::{EnvironmentSpec, NewModel, NewProvider, Store};
 use time::OffsetDateTime;
 use tokio::time::{Instant, sleep};
 
@@ -298,4 +300,74 @@ async fn the_cache_holds_people_environments_and_published_keys() {
         Some(published[0].clone())
     );
     assert_eq!(cache.public_key("0000000000000000"), None);
+}
+
+#[tokio::test]
+async fn the_cache_holds_each_environments_models() {
+    let (store, sb) = sekisho_testkit::store().await;
+    for (provider, kind, models) in [
+        ("openai", ProviderKind::OpenAi, &["gpt-5"][..]),
+        (
+            "anthropic",
+            ProviderKind::Anthropic,
+            &["claude-sonnet-4-5"][..],
+        ),
+    ] {
+        store
+            .create_provider(
+                &sb,
+                NewProvider::keyed(ProviderName::parse(provider).unwrap(), kind, None, "k"),
+            )
+            .await
+            .unwrap();
+        for model in models {
+            store
+                .create_model(NewModel {
+                    name: ModelName::parse(model).unwrap(),
+                    provider: ProviderName::parse(provider).unwrap(),
+                    input_price: None,
+                    output_price: None,
+                    cache_read_price: None,
+                    cache_write_price: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+    let admin = sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await;
+    let spec = |models: &[&str]| EnvironmentSpec {
+        name: EnvName::parse("data-team").unwrap(),
+        description: String::new(),
+        notice: String::new(),
+        access_groups: vec!["github/eng".into()],
+        models: models
+            .iter()
+            .map(|m| ModelName::parse(m).unwrap())
+            .collect(),
+        owner: None,
+    };
+    store
+        .upsert_environment(spec(&["gpt-5"]), admin)
+        .await
+        .unwrap();
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    cache.spawn_refresh(store.clone());
+    let data = EnvName::parse("data-team").unwrap();
+    let models = |cache: &AuthCache| cache.environment(&data).unwrap().models;
+    assert_eq!(
+        models(&cache),
+        HashMap::from([("gpt-5".to_owned(), ProviderKind::OpenAi)])
+    );
+    // Let the refresh task subscribe, so the change below reaches it by
+    // notification.
+    sleep(Duration::from_millis(500)).await;
+    store
+        .upsert_environment(spec(&["claude-sonnet-4-5"]), admin)
+        .await
+        .unwrap();
+    let want = HashMap::from([("claude-sonnet-4-5".to_owned(), ProviderKind::Anthropic)]);
+    eventually(Duration::from_secs(1), "the new models", || {
+        models(&cache) == want
+    })
+    .await;
 }

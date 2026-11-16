@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use sekisho_core::access::{Access, can_use};
+use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::{EnvKeyId, KeyState, effective_state, generate_key, with_access};
-use sekisho_core::names::EnvName;
+use sekisho_core::names::{EnvName, ModelName};
 use sekisho_core::session_token::PublicKey;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
@@ -53,6 +54,17 @@ pub struct EnvAccess {
     pub name: EnvName,
     pub access_groups: Vec<String>,
     pub owner: Option<Uuid>,
+    /// The models the environment lists, in its order.
+    pub models: Vec<EnvModel>,
+}
+
+/// A model an environment lists, with its provider's kind, for checking
+/// which client APIs reach it. A model's name and provider never change, so
+/// [`ChangeKind::Environments`] covers every change to these lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvModel {
+    pub name: ModelName,
+    pub kind: ProviderKind,
 }
 
 /// Everything the hooks' auth cache holds, read at one point in time.
@@ -286,6 +298,15 @@ impl Store {
             sqlx::query_as("select name, access_groups, owner_id from environments order by name")
                 .fetch_all(&mut *tx)
                 .await?;
+        let env_models: Vec<(String, String, String)> = sqlx::query_as(
+            "select e.name, m.name, p.kind from environment_models em \
+             join environments e on e.id = em.environment_id \
+             join models m on m.id = em.model_id \
+             join providers p on p.id = m.provider_id \
+             order by e.name, em.position",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
         let users = user_accesses(&mut tx, None).await?;
         let ended_sessions: Vec<Uuid> =
             sqlx::query_scalar("select id from sessions where ended_at >= $1 order by id")
@@ -296,10 +317,20 @@ impl Store {
         tx.commit().await?;
         let access: HashMap<Uuid, Access> =
             users.iter().map(|u| (u.id, u.access.clone())).collect();
+        let mut models: HashMap<String, Vec<EnvModel>> = HashMap::new();
+        for (env, name, kind) in env_models {
+            let model = EnvModel {
+                name: ModelName::parse(&name).map_err(|_| bad_column("model name", &name))?,
+                kind: ProviderKind::parse(&kind)
+                    .ok_or_else(|| bad_column("provider kind", &kind))?,
+            };
+            models.entry(env).or_default().push(model);
+        }
         let environments = environments
             .into_iter()
             .map(|(name, access_groups, owner)| {
                 Ok(EnvAccess {
+                    models: models.remove(&name).unwrap_or_default(),
                     name: EnvName::parse(&name)
                         .map_err(|_| bad_column("environment name", &name))?,
                     access_groups,

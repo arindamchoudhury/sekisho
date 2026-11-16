@@ -29,7 +29,7 @@ pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use dex_tokens::{DexTokenLock, IDP_CHECK_EVERY};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
-pub use keys::{AuthSnapshot, EnvAccess, EnvKey};
+pub use keys::{AuthSnapshot, EnvAccess, EnvKey, EnvModel};
 pub use models::{Model, ModelPricing, NewModel};
 pub use notify::ChangeKind;
 pub use oauth_state::{

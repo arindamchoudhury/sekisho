@@ -2,15 +2,19 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use sekisho_core::formats::{AzureEndpoint, ProviderKind};
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::money::MicroUsd;
-use sekisho_core::names::EnvName;
+use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::secret_box::SecretBox;
 use sekisho_core::session_token::{AUDIENCE, SessionClaims, SigningKey, issue};
 use sekisho_core::window::{BudgetWindow, WindowKind};
-use sekisho_hooks::authz::{HooksState, router};
+use sekisho_hooks::authz::{HooksState, ROUTE_MODEL_HEADER, router};
 use sekisho_hooks::cache::AuthCache;
-use sekisho_store::{BudgetScope, EnvironmentSpec, NewBudget, Store};
+use sekisho_store::{
+    BudgetScope, EnvironmentSpec, NewBudget, NewModel, NewProvider, ProviderCredential,
+    ProviderOptions, Store,
+};
 use sekisho_testkit::TestStore;
 use sekisho_testkit::people::{person, session_token_at};
 use serde_json::Value;
@@ -19,7 +23,6 @@ use time::format_description::well_known::Rfc3339;
 use tokio::time::{Instant, sleep};
 use uuid::Uuid;
 
-/// The hook's clock. Keys may expire exactly now.
 /// The hook's clock: a day after the real now (whole seconds), so a key can
 /// be created to expire exactly at it. Fixed for the whole test run.
 static NOW: LazyLock<OffsetDateTime> = LazyLock::new(|| {
@@ -27,7 +30,17 @@ static NOW: LazyLock<OffsetDateTime> = LazyLock::new(|| {
         .replace_nanosecond(0)
         .unwrap()
 });
+/// A Chat Completions call in data-team, which lists [`MODEL`].
 const PATH: &str = "/env/data-team/openai/v1/chat/completions";
+/// The model every call names unless it says otherwise: an OpenAI model
+/// data-team lists.
+const MODEL: &str = "gpt-5";
+/// Claude on the Anthropic provider, in data-team.
+const CLAUDE: &str = "claude-sonnet-4-5";
+/// A Gemini model, in data-team.
+const GEMINI: &str = "gemini-2.5-pro";
+/// Claude on Azure Foundry, in data-team.
+const FOUNDRY_CLAUDE: &str = "claude-sonnet";
 const ISSUER: &str = "https://sekisho.test";
 
 struct Hook {
@@ -50,16 +63,21 @@ struct Hook {
 struct Reply {
     status: u16,
     json: Value,
+    /// The body as sent.
+    text: String,
     headers: HeaderMap,
 }
 
-async fn env(store: &Store, name: &str) -> EnvName {
+async fn env(store: &Store, name: &str, models: &[&str]) -> EnvName {
     let spec = EnvironmentSpec {
         name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
-        models: Vec::new(),
+        models: models
+            .iter()
+            .map(|m| ModelName::parse(m).unwrap())
+            .collect(),
         owner: None,
     };
     store
@@ -73,6 +91,55 @@ async fn env(store: &Store, name: &str) -> EnvName {
         .name
 }
 
+/// Providers of four kinds and their models: `openai` (gpt-5, ml-model),
+/// `anthropic` (claude-sonnet-4-5), `gemini` (gemini-2.5-pro) and an Azure
+/// Foundry project with a service principal, `foundry` (claude-sonnet).
+async fn providers(store: &Store, secret_box: &SecretBox) {
+    let keyed =
+        |name: &str, kind| NewProvider::keyed(ProviderName::parse(name).unwrap(), kind, None, "k");
+    let foundry = NewProvider {
+        options: ProviderOptions::Azure {
+            endpoint: AzureEndpoint::parse(
+                "https://my-foundry.services.ai.azure.com/api/projects/team",
+            )
+            .unwrap(),
+        },
+        credential: ProviderCredential::AzureClientSecret {
+            tenant_id: "11111111-2222-3333-4444-555555555555".into(),
+            client_id: "66666666-7777-8888-9999-000000000000".into(),
+            client_secret: "s".into(),
+        },
+        // The tests make no DNS lookups.
+        allow_private_network: true,
+        ..keyed("foundry", ProviderKind::Azure)
+    };
+    for (provider, models) in [
+        (
+            keyed("openai", ProviderKind::OpenAi),
+            &["gpt-5", "ml-model"][..],
+        ),
+        (keyed("anthropic", ProviderKind::Anthropic), &[CLAUDE][..]),
+        (keyed("gemini", ProviderKind::Gemini), &[GEMINI][..]),
+        (foundry, &[FOUNDRY_CLAUDE][..]),
+    ] {
+        let name = provider.name.clone();
+        store.create_provider(secret_box, provider).await.unwrap();
+        for model in models {
+            store
+                .create_model(NewModel {
+                    name: ModelName::parse(model).unwrap(),
+                    provider: name.clone(),
+                    input_price: None,
+                    output_price: None,
+                    cache_read_price: None,
+                    cache_write_price: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+}
+
 /// The hook, its cache reloaded on change notifications as in `serve`.
 async fn hook() -> Hook {
     let app = hook_without_refresh().await;
@@ -83,8 +150,14 @@ async fn hook() -> Hook {
 /// The hook with a cache that changes only when the test reloads it.
 async fn hook_without_refresh() -> Hook {
     let (store, secret_box) = sekisho_testkit::store().await;
-    let data = env(&store, "data-team").await;
-    let ml = env(&store, "ml-team").await;
+    providers(&store, &secret_box).await;
+    let data = env(
+        &store,
+        "data-team",
+        &[MODEL, CLAUDE, GEMINI, FOUNDRY_CLAUDE],
+    )
+    .await;
+    let ml = env(&store, "ml-team", &["ml-model"]).await;
     let (key, token) = store
         .create_key(
             &data,
@@ -141,23 +214,52 @@ fn route_env(path: &str) -> Option<&str> {
     path.strip_prefix("/env/")?.split('/').next()
 }
 
-/// Calls the hook as agentgateway's route for the path does: the client's
-/// method and path, an empty body, the Authorization header, and the
-/// route's `x-sekisho-env`.
+/// Calls the hook as agentgateway's `llm:` block does for the path: the
+/// client's method and path, an empty body, the Authorization header, the
+/// path's `x-sekisho-env` and [`MODEL`] as `x-sekisho-model`.
 async fn call_with(app: &Hook, method: &str, path: &str, authorization: &[HeaderValue]) -> Reply {
+    call_model(app, method, path, Some(MODEL), authorization).await
+}
+
+/// [`call_with`] naming `model`, or no model.
+async fn call_model(
+    app: &Hook,
+    method: &str,
+    path: &str,
+    model: Option<&str>,
+    authorization: &[HeaderValue],
+) -> Reply {
     let env: Vec<HeaderValue> = route_env(path)
         .map(|e| HeaderValue::from_str(e).unwrap())
         .into_iter()
         .collect();
-    call_route(app, method, path, &env, authorization).await
+    let model: Vec<HeaderValue> = model
+        .map(|m| HeaderValue::from_str(m).unwrap())
+        .into_iter()
+        .collect();
+    send(app, method, path, &env, &model, authorization).await
 }
 
-/// Calls the hook with explicit `x-sekisho-env` values.
+/// Calls the hook with explicit `x-sekisho-env` values and [`MODEL`].
 async fn call_route(
     app: &Hook,
     method: &str,
     path: &str,
     env: &[HeaderValue],
+    authorization: &[HeaderValue],
+) -> Reply {
+    let model = [HeaderValue::from_static(MODEL)];
+    send(app, method, path, env, &model, authorization).await
+}
+
+/// Calls the hook with explicit `x-sekisho-env` and `x-sekisho-model`
+/// values.
+async fn send(
+    app: &Hook,
+    method: &str,
+    path: &str,
+    env: &[HeaderValue],
+    model: &[HeaderValue],
     authorization: &[HeaderValue],
 ) -> Reply {
     let mut headers = HeaderMap::new();
@@ -166,6 +268,9 @@ async fn call_route(
     }
     for value in env {
         headers.append("x-sekisho-env", value.clone());
+    }
+    for value in model {
+        headers.append(ROUTE_MODEL_HEADER, value.clone());
     }
     let resp = app
         .http
@@ -180,6 +285,7 @@ async fn call_route(
     Reply {
         status,
         json: serde_json::from_str(&text).unwrap_or(Value::Null),
+        text,
         headers,
     }
 }
@@ -216,18 +322,15 @@ async fn authz_allows_active_key() {
     let alice = sekisho_testkit::people::person(&app.store, "alice@example.com", &["eng"]).await;
     assert_eq!(r.headers["x-sekisho-person"], alice.to_string().as_str());
     assert_eq!(r.headers["x-sekisho-env"], "data-team");
-    // Any method and any path under the environment, and a lowercase scheme.
-    for (method, path) in [
-        ("GET", "/env/data-team/openai/v1/models"),
-        ("POST", "/env/data-team"),
-        ("PUT", "/env/data-team/x?y=1"),
+    // A lowercase scheme, and the two queries the gateway lets through.
+    for path in [
+        PATH,
+        "/env/data-team/anthropic/v1/messages?beta=true",
+        "/env/data-team/openai/v1/responses",
     ] {
         let value = HeaderValue::from_str(&format!("bearer {}", app.token)).unwrap();
-        assert_eq!(
-            call_with(&app, method, path, &[value]).await.status,
-            200,
-            "{method} {path}"
-        );
+        let r = call_with(&app, "POST", path, &[value]).await;
+        assert_eq!(r.status, 200, "{path}: {}", r.json);
     }
 }
 
@@ -478,12 +581,22 @@ async fn environment_comes_from_the_route_not_the_path() {
     let r = call_route(
         &app,
         "POST",
+        "/env/ml-team/openai/v1/chat/completions",
+        &data,
+        &key,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.json);
+    // reqwest resolves the dot segments before sending.
+    let r = call_route(
+        &app,
+        "POST",
         "/env/ml-team/../data-team/openai/v1/chat/completions",
         &data,
         &key,
     )
     .await;
-    assert_eq!(r.status, 200);
+    assert_eq!(r.status, 200, "{}", r.json);
     // ml-team's route with a path that claims data-team.
     let r = call_route(&app, "POST", PATH, &ml, &key).await;
     assert_eq!(
@@ -733,4 +846,222 @@ async fn person_budgets_refuse_a_session() {
         "{}",
         r.json
     );
+}
+
+/// A POST through the key's route of data-team, naming `model`.
+async fn post(app: &Hook, path: &str, model: Option<&str>) -> Reply {
+    let key = [HeaderValue::from_str(&bearer(&app.token)).unwrap()];
+    call_model(app, "POST", path, model, &key).await
+}
+
+/// The refusal's error, and that it carries no `reason`: the e2e helper
+/// `wait_route_at` reads a `reason` as the hook not knowing the key yet.
+fn error(r: &Reply) -> &str {
+    assert!(r.json.get("reason").is_none(), "{}", r.json);
+    r.json["error"].as_str().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_model_the_environment_lists_is_allowed() {
+    let app = hook().await;
+    for (path, model) in [
+        (PATH, MODEL),
+        ("/env/data-team/openai/v1/responses", MODEL),
+        ("/env/data-team/anthropic/v1/messages", CLAUDE),
+        ("/env/data-team/anthropic/v1/messages/count_tokens", CLAUDE),
+        ("/env/data-team/anthropic/v1/messages", MODEL),
+        ("/env/data-team/openai/v1/chat/completions", CLAUDE),
+        ("/env/data-team/anthropic/v1/messages", FOUNDRY_CLAUDE),
+        (
+            "/env/data-team/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+            GEMINI,
+        ),
+        (
+            "/env/data-team/gemini/v1/models/gemini-2.5-pro:countTokens",
+            GEMINI,
+        ),
+        ("/env/data-team/openai/v1/responses", GEMINI),
+    ] {
+        let r = post(&app, path, Some(model)).await;
+        assert_eq!(r.status, 200, "{model} at {path}: {}", r.json);
+    }
+    let (token, _) = session(&app, app.alice).await;
+    let session = [HeaderValue::from_str(&bearer(&token)).unwrap()];
+    let r = call_model(&app, "POST", PATH, Some(MODEL), &session).await;
+    assert_eq!(r.status, 200, "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_model_outside_the_environment_is_not_found() {
+    let app = hook().await;
+    // ml-team's model, and a name Sekisho has nowhere.
+    let elsewhere = post(&app, PATH, Some("ml-model")).await;
+    let nowhere = post(&app, PATH, Some("ml-modex")).await;
+    for r in [&elsewhere, &nowhere] {
+        assert_eq!((r.status, error(r)), (404, "model_not_found"), "{}", r.json);
+    }
+    assert_eq!(
+        elsewhere.json["message"],
+        "this environment has no model named ml-model"
+    );
+    // Byte for byte the same answer, but for the name.
+    assert_eq!(elsewhere.text.replace("ml-model", "ml-modex"), nowhere.text);
+    assert_eq!(
+        elsewhere.headers.get("content-type"),
+        nowhere.headers.get("content-type")
+    );
+    // Names are exact.
+    let r = post(&app, PATH, Some("GPT-5")).await;
+    assert_eq!((r.status, error(&r)), (404, "model_not_found"));
+    // No model, an empty one, or two: refused the same way.
+    let key = [HeaderValue::from_str(&bearer(&app.token)).unwrap()];
+    let env = [HeaderValue::from_static("data-team")];
+    for model in [
+        &[][..],
+        &[HeaderValue::from_static("")][..],
+        &[
+            HeaderValue::from_static(MODEL),
+            HeaderValue::from_static(MODEL),
+        ][..],
+        &[
+            HeaderValue::from_static(MODEL),
+            HeaderValue::from_static("ml-model"),
+        ][..],
+    ] {
+        let r = send(&app, "POST", PATH, &env, model, &key).await;
+        assert_eq!(
+            (r.status, error(&r)),
+            (404, "model_not_found"),
+            "{model:?}: {}",
+            r.json
+        );
+    }
+    // A session too.
+    let (token, _) = session(&app, app.alice).await;
+    let session = [HeaderValue::from_str(&bearer(&token)).unwrap()];
+    let r = call_model(&app, "POST", PATH, Some("ml-model"), &session).await;
+    assert_eq!(r.status, 404);
+    assert_eq!(r.text, elsewhere.text);
+}
+
+#[tokio::test]
+async fn responses_cannot_reach_claude_on_anthropic_or_foundry() {
+    let app = hook().await;
+    const RESPONSES: &str = "/env/data-team/openai/v1/responses";
+    for model in [CLAUDE, FOUNDRY_CLAUDE] {
+        let r = post(&app, RESPONSES, Some(model)).await;
+        assert_eq!((r.status, error(&r)), (400, "api_not_served"), "{model}");
+        assert_eq!(
+            r.json["message"],
+            format!(
+                "{model} can't be reached through the Responses API; \
+                 use the Anthropic Messages API or the Chat Completions API"
+            )
+        );
+        let r = post(&app, PATH, Some(model)).await;
+        assert_eq!(r.status, 200, "{model} by Chat Completions: {}", r.json);
+    }
+    // OpenAI's own models are.
+    assert_eq!(post(&app, RESPONSES, Some(MODEL)).await.status, 200);
+}
+
+#[tokio::test]
+async fn the_gemini_api_reaches_only_gemini_models() {
+    let app = hook().await;
+    let gemini =
+        |model: &str| format!("/env/data-team/gemini/v1beta/models/{model}:generateContent");
+    let r = post(&app, &gemini(MODEL), Some(MODEL)).await;
+    assert_eq!((r.status, error(&r)), (400, "api_not_served"));
+    assert_eq!(
+        r.json["message"],
+        "gpt-5 can't be reached through the Gemini API; use the Anthropic Messages API, \
+         the Chat Completions API or the Responses API"
+    );
+    let r = post(&app, &gemini(CLAUDE), Some(CLAUDE)).await;
+    assert_eq!(
+        (r.status, &r.json["message"]),
+        (
+            400,
+            &Value::from(
+                "claude-sonnet-4-5 can't be reached through the Gemini API; \
+                 use the Anthropic Messages API or the Chat Completions API"
+            )
+        )
+    );
+    let r = post(&app, &gemini(GEMINI), Some(GEMINI)).await;
+    assert_eq!(r.status, 200, "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_path_that_is_no_model_endpoint_is_refused() {
+    let app = hook().await;
+    let key = [HeaderValue::from_str(&bearer(&app.token)).unwrap()];
+    for (method, path) in [
+        ("POST", "/env/data-team/openai/v1/models"),
+        ("GET", "/env/data-team/openai/v1/models"),
+        ("POST", "/env/data-team/openai/v1/files"),
+        ("POST", "/env/data-team/openai/v1/chat/completions/x"),
+        ("POST", "/env/data-team/anthropic/v1/messages/batches"),
+        (
+            "POST",
+            "/env/data-team/gemini/v1beta/models/gemini-2.5-pro:embedContent",
+        ),
+        ("POST", "/env/data-team/openai/v1/chat%2Fcompletions"),
+        ("POST", "/env/data-team"),
+        // A model endpoint, but not by POST.
+        ("GET", PATH),
+        ("PUT", "/env/data-team/anthropic/v1/messages"),
+        ("DELETE", PATH),
+    ] {
+        let r = call_with(&app, method, path, &key).await;
+        assert_eq!(
+            (r.status, error(&r)),
+            (404, "not_found"),
+            "{method} {path}: {}",
+            r.json
+        );
+        assert_eq!(r.json["message"], "not a model endpoint");
+    }
+    // Without a credential, the caller learns nothing of the path.
+    let r = call_with(&app, "GET", "/env/data-team/openai/v1/models", &[]).await;
+    assert_eq!(r.status, 401);
+}
+
+#[tokio::test]
+async fn the_model_check_comes_after_access() {
+    let app = hook().await;
+    let unlisted = "ml-model";
+    // No credential, or a key for ml-team on data-team's route.
+    let r = call_model(&app, "POST", PATH, Some(unlisted), &[]).await;
+    assert_eq!(r.status, 401);
+    let other = [HeaderValue::from_str(&bearer(&app.other_env_token)).unwrap()];
+    for path in [PATH, "/env/data-team/openai/v1/models"] {
+        let r = call_model(&app, "POST", path, Some(unlisted), &other).await;
+        assert_eq!(
+            (r.status, reason(&r)),
+            (403, "wrong_environment"),
+            "{path}: {}",
+            r.json
+        );
+    }
+    // A session without access to data-team.
+    let carol = person(&app.store, "carol@example.com", &["ops"]).await;
+    let (token, _) = session(&app, carol).await;
+    let session = [HeaderValue::from_str(&bearer(&token)).unwrap()];
+    let r = call_model(&app, "POST", PATH, Some(unlisted), &session).await;
+    assert_eq!((r.status, reason(&r)), (403, "no_access"), "{}", r.json);
+}
+
+#[tokio::test]
+async fn a_used_up_budget_still_refuses_a_listed_model() {
+    let app = hook().await;
+    let data = EnvName::parse("data-team").unwrap();
+    budget(&app.store, "team", BudgetScope::Environment(data), "0").await;
+    let r = post(&app, PATH, Some(MODEL)).await;
+    assert_eq!((r.status, &r.json["budget"]), (429, &Value::from("team")));
+    // The model is checked first.
+    let r = post(&app, PATH, Some("ml-model")).await;
+    assert_eq!((r.status, error(&r)), (404, "model_not_found"));
+    let r = post(&app, "/env/data-team/openai/v1/responses", Some(CLAUDE)).await;
+    assert_eq!((r.status, error(&r)), (400, "api_not_served"));
 }

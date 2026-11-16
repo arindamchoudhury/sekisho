@@ -327,8 +327,14 @@ async fn unlisted_model_never_reaches_the_provider() {
     .send()
     .await
     .unwrap();
-    // agentgateway's model router: no entry for this environment and model.
+    // Sekisho's extAuthz answers before agentgateway's model router.
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "model_not_found", "{body}");
+    assert_eq!(
+        body["message"],
+        "this environment has no model named gpt-not-listed"
+    );
     assert_eq!(
         mock_requests().await.len(),
         before,
@@ -359,7 +365,8 @@ async fn only_model_calls_reach_the_provider() {
             &chat_body(MODEL),
         )
         .await;
-        println!("{method} {path} -> {status}");
+        // Sekisho's extAuthz: not a POST to a model endpoint.
+        assert_eq!(status, 404, "{method} {path}");
     }
     for r in &mock_requests().await[before..] {
         assert_eq!(
@@ -398,8 +405,12 @@ async fn encoded_paths_cannot_cross_environments() {
         200,
         "b's own key works"
     );
+    // b's route: a's key is for another environment.
+    let path = format!("/env/{b}/openai/v1/chat/completions");
+    assert_eq!(raw_status("POST", &path, &token_a, &body).await, 403);
+    // a's route (the environment is the path's first segment), but no model
+    // endpoint: Sekisho's 404.
     for path in [
-        format!("/env/{b}/openai/v1/chat/completions"),
         format!("/env/{a}/openai/%2e%2e/%2e%2e/{b}/openai/v1/chat/completions"),
         format!("/env/{a}/openai/%2E%2E/%2E%2E/{b}/openai/v1/chat/completions"),
         format!("/env/{a}/openai/..%2f..%2f{b}/openai/v1/chat/completions"),
@@ -407,8 +418,7 @@ async fn encoded_paths_cannot_cross_environments() {
         format!("/env/{a}/openai//../../{b}/openai/v1/chat/completions"),
     ] {
         let status = raw_status("POST", &path, &token_a, &body).await;
-        println!("{path} -> {status}");
-        assert_ne!(status, 200, "{path}");
+        assert_eq!(status, 404, "{path}");
     }
 }
 

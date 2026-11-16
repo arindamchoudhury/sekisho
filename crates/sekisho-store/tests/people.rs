@@ -911,6 +911,7 @@ async fn auth_snapshot_lists_people() {
             name: env("data-team"),
             access_groups: vec!["data".into()],
             owner: Some(ada.id),
+            models: Vec::new(),
         }]
     );
     assert_eq!(snap.keys.len(), 1);

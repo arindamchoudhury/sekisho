@@ -1,4 +1,4 @@
-//! Keys, environments, people, recently ended sessions and Sekisho's
+//! Keys, environments and their models, people, recently ended sessions and Sekisho's
 //! published signing keys in memory, for checking requests without a
 //! database round trip. Every replica keeps its own copy and refreshes it on
 //! change notifications from any replica.
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
 use sekisho_core::access::Access;
+use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use sekisho_core::session_token::PublicKey;
@@ -50,6 +51,9 @@ pub struct CachedEnvironment {
     pub name: EnvName,
     pub access_groups: Vec<String>,
     pub owner: Option<Uuid>,
+    /// The models the environment lists, by name, with their provider's
+    /// kind.
+    pub models: HashMap<String, ProviderKind>,
 }
 
 #[derive(Default)]
@@ -149,6 +153,11 @@ impl AuthCache {
                         name: e.name.clone(),
                         access_groups: e.access_groups,
                         owner: e.owner,
+                        models: e
+                            .models
+                            .into_iter()
+                            .map(|m| (m.name.as_str().to_owned(), m.kind))
+                            .collect(),
                     };
                     (e.name, cached)
                 })
