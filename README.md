@@ -233,6 +233,42 @@ Each environment gets its own routes on the gateway:
 | `/env/<name>/mcp` | The environment's MCP servers, combined |
 | `/env/<name>/a2a/<agent>` | Each A2A agent |
 
+### Model requests
+
+A model route takes a POST to one of these endpoints, with no query but
+`?beta=true` or `?alt=sse`:
+
+- `/env/<name>/anthropic/v1/messages`, and `…/messages/count_tokens`;
+- `/env/<name>/openai/v1/chat/completions` and `/env/<name>/openai/v1/responses`;
+- `/env/<name>/gemini/v1beta/models/<model>:generateContent`, also
+  `streamGenerateContent` and `countTokens`, and under `v1` or `v1alpha`.
+
+An environment lists models from any of its providers, and a request
+reaches only those. Each client API reaches some providers' models,
+passed through or translated by agentgateway:
+
+| Client API | Reaches |
+|---|---|
+| Anthropic Messages, OpenAI Chat Completions | every model |
+| OpenAI Responses (Codex) | every model except Claude on the Anthropic provider and Claude on Azure Foundry, which agentgateway can't translate to |
+| Gemini | Gemini models only |
+
+### When the gateway says no
+
+Sekisho answers every refusal as JSON, with an `error` code and a
+`message` for people. It checks in this order, so nobody learns which
+models an environment has before their credential and access pass:
+
+| Status | `error` | When |
+|---|---|---|
+| 401 | `unauthorized` | No `Authorization: Bearer` credential, or a session token that isn't valid (`reason`: `invalid_token`, `token_expired`, `session_ended`) |
+| 403 | `forbidden` | The key or person may not use this environment (`reason`: `unknown_key`, `wrong_environment`, `revoked`, `expired`, `suspended`, `invalid` when the key's owner lost access, `no_access` for a session) |
+| 404 | `not_found` | Not a POST to a model endpoint |
+| 404 | `model_not_found` | The environment lists no model by that name, or the request names none. The answer is the same whether or not Sekisho has the model in another environment |
+| 400 | `api_not_served` | The client's API can't reach the model; the message names the APIs that can |
+| 429 | `budget_exhausted` | A budget the request counts against is used up; `budget` and `resets_at` say which and until when |
+| 503 | `unavailable` | Sekisho couldn't check the request; try again |
+
 ## Running it
 
 - **To try it:** one Docker Compose file starts Sekisho, the gateway agent with
