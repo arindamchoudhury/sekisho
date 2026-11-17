@@ -1,0 +1,15 @@
+[package]
+name = "sekisho-catalog"
+description = "Sekisho's catalog rules: entry and source names, references, labels, exact package versions, image references, hidden characters and source settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sekisho-core = { workspace = true }
+semver = { workspace = true }
+serde_yaml_ng = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }

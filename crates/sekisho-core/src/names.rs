@@ -1,5 +1,5 @@
-//! Validated names for environments, providers, models, groups and
-//! sign-in connectors.
+//! Validated names for environments, providers, models, groups, sign-in
+//! connectors, catalog sources and catalog entries.
 
 use std::fmt;
 
@@ -34,6 +34,29 @@ const CONNECTOR_RULE: &str = "use 1-63 lowercase letters, digits or hyphens, sta
 /// A slug other than `local`.
 fn is_connector_id(s: &str) -> bool {
     is_slug(s) && s != DEX_LOCAL
+}
+
+/// The name Git mode's source takes; no other source may.
+const GIT_MODE_SOURCE: &str = "environments";
+const SOURCE_RULE: &str = "use 1-63 lowercase letters, digits or hyphens, starting and ending with a letter or digit; environments is reserved for Git mode's source";
+
+/// A slug other than `environments`.
+fn is_source_name(s: &str) -> bool {
+    is_slug(s) && s != GIT_MODE_SOURCE
+}
+
+const ENTRY_RULE: &str = "use 1-64 lowercase letters, digits or single hyphens, starting and ending with a letter or digit";
+
+/// `^[a-z0-9]+(-[a-z0-9]+)*$`, 1–64 characters: the Agent Skills name rule.
+fn is_entry_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..=64).contains(&b.len())
+        && b.split(|c| *c == b'-').all(|part| {
+            !part.is_empty()
+                && part
+                    .iter()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`
@@ -95,6 +118,23 @@ name_type!(
     /// The ID of an identity provider's connector at Dex, such as `github`.
     ConnectorId, "connector", is_connector_id, CONNECTOR_RULE
 );
+name_type!(
+    /// A catalog source's name, unique across the install. `environments`
+    /// is Git mode's alone ([`SourceName::git_mode`]).
+    SourceName, "source", is_source_name, SOURCE_RULE
+);
+name_type!(
+    /// A catalog entry's name: a skill, plugin, prompt, MCP server or A2A
+    /// agent, unique within its source and kind.
+    EntryName, "entry", is_entry_name, ENTRY_RULE
+);
+
+impl SourceName {
+    /// The source that holds the environments of Git mode.
+    pub fn git_mode() -> Self {
+        Self(GIT_MODE_SOURCE.to_owned())
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -2959,6 +2959,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sekisho-catalog"
+version = "0.1.0"
+dependencies = [
+ "sekisho-core",
+ "semver",
+ "serde_yaml_ng",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "sekisho-core"
 version = "0.1.0"
 dependencies = [

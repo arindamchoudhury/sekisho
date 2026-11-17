@@ -11,6 +11,7 @@ repository = "https://github.com/arindamchoudhury/sekisho"
 
 [workspace.dependencies]
 sekisho-auth = { path = "crates/sekisho-auth" }
+sekisho-catalog = { path = "crates/sekisho-catalog" }
 sekisho-core = { path = "crates/sekisho-core" }
 sekisho-gateway = { path = "crates/sekisho-gateway" }
 sekisho-hooks = { path = "crates/sekisho-hooks" }
@@ -26,6 +27,7 @@ bcrypt = "0.19.3"
 clap = { version = "4.6.7", features = ["derive"] }
 crc = "3.4.0"
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
+glob = "0.3.4"
 jsonschema = { version = "0.60.1", default-features = false }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 prost = "0.14.4"
@@ -33,6 +35,7 @@ prost-types = "0.14.4"
 protox = "0.10.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false }
+semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_yaml_ng = "0.10.0"
