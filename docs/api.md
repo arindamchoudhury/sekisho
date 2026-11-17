@@ -87,13 +87,13 @@ Every error is JSON with an `error` code and a `message` for people:
 | `GET /api/v1/connectors`, `PUT`, `DELETE /api/v1/connectors/{id}` | Identity providers' connectors | [Identity providers](people-and-sign-in.md#identity-providers) |
 | `POST /api/v1/signing-keys/rotate` | Rotate the key that signs session tokens | [Tokens](people-and-sign-in.md#tokens) |
 | `GET`, `POST /api/v1/catalog-sources` | List or add catalog sources; adding starts a sync | [Sources](catalogs.md#sources) |
-| `GET`, `PATCH`, `DELETE /api/v1/catalog-sources/{name}` | Read, change or delete a source | [Sources](catalogs.md#sources) |
+| `GET`, `PATCH`, `DELETE /api/v1/catalog-sources/{name}` | Read, change or delete a source (409 `in_use` while another source's toolkit lists its entries) | [Sources](catalogs.md#sources) |
 | `POST /api/v1/catalog-sources/{name}/sync` | Sync a source now (202) | [Syncs](catalogs.md#syncs) |
 | `GET /api/v1/catalog-sources/{name}/syncs/latest` | What the latest sync found and refused | [Syncs](catalogs.md#syncs) |
 | `POST /api/v1/catalog-sources/{name}/apply` | Apply the latest sync | [Apply](catalogs.md#apply) |
 | `POST /api/v1/catalog-sources/import-obot` | Add Obot catalog repositories as sources | [Importing Obot catalogs](catalogs.md#importing-obot-catalogs) |
-| `GET /api/v1/catalog/{kind}` | The catalog entries of a kind | [Entries](catalogs.md#entries) |
-| `GET`, `PATCH /api/v1/catalog/{kind}/{source}/{name}` | An entry with its revisions; change its owner | [Entries](catalogs.md#entries), [Owners](catalogs.md#owners) |
+| `GET /api/v1/catalog/{kind}` | The catalog entries of a kind (`mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts`, `toolkits`), each with the `toolkits` that list it | [Entries](catalogs.md#entries) |
+| `GET`, `PATCH /api/v1/catalog/{kind}/{source}/{name}` | An entry with its revisions (a toolkit's with their `members`); change its owner | [Entries](catalogs.md#entries), [Toolkits](catalogs.md#toolkits), [Owners](catalogs.md#owners) |
 | `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of an entry's applied revision | [Entries](catalogs.md#entries) |
 | `POST`, `DELETE /api/v1/catalog/{kind}/{source}/{name}/quarantine` | Quarantine an entry, or lift that | [Quarantine](catalogs.md#quarantine) |
 | `GET /api/v1/registry-credentials`, `PUT`, `DELETE /api/v1/registry-credentials/{host}` | Container registries' credentials | [Registry credentials](catalogs.md#registry-credentials) |

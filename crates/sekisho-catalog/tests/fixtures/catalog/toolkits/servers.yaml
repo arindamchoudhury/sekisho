@@ -1,0 +1,9 @@
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: aws-cost-explorer
+  remote:
+    url: https://mcp.example.com/aws
+- apiVersion: sekisho/v1alpha1
+  kind: A2AAgent
+  name: cost-analyst
+  url: https://agents.example.com/cost

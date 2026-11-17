@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::environment::EnvironmentDoc;
 use crate::launch::Launch;
-use crate::names::{EntryKind, EntryName};
+use crate::names::{EntryKind, EntryName, EntryRef};
 use crate::pins::{ImageRef, NpmPackage, PythonPackage};
 use crate::tree::TreeFile;
 
@@ -20,6 +20,49 @@ pub enum EntrySpec {
     Skill(SkillSpec),
     Plugin(PluginSpec),
     Prompt(PromptSpec),
+    Toolkit(ToolkitSpec),
+}
+
+/// A toolkit: other catalog entries, never models or toolkits (D182,
+/// D185). References are kept as written; the store binds them to entries
+/// when a sync records the revision, outside its digest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolkitSpec {
+    pub description: String,
+    pub mcp_servers: Vec<ToolkitServer>,
+    pub a2a_agents: Vec<EntryRef>,
+    pub skills: Vec<EntryRef>,
+    pub plugins: Vec<EntryRef>,
+    pub prompts: Vec<EntryRef>,
+}
+
+impl ToolkitSpec {
+    /// Every reference with the kind it names, in the order written: MCP
+    /// servers, A2A agents, skills, plugins, prompts.
+    pub fn references(&self) -> Vec<(EntryKind, &EntryRef)> {
+        let mut out: Vec<(EntryKind, &EntryRef)> = self
+            .mcp_servers
+            .iter()
+            .map(|s| (EntryKind::McpServer, &s.server))
+            .collect();
+        for (kind, refs) in [
+            (EntryKind::A2aAgent, &self.a2a_agents),
+            (EntryKind::Skill, &self.skills),
+            (EntryKind::Plugin, &self.plugins),
+            (EntryKind::Prompt, &self.prompts),
+        ] {
+            out.extend(refs.iter().map(|r| (kind, r)));
+        }
+        out
+    }
+}
+
+/// An MCP server a toolkit lists, with the tools it allows; `None` allows
+/// them all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolkitServer {
+    pub server: EntryRef,
+    pub tools: Option<Vec<String>>,
 }
 
 /// An Agent Skill's frontmatter, as Obot reads it.

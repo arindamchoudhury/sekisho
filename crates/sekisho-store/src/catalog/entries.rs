@@ -2,7 +2,7 @@
 //! owners and quarantine.
 
 use sekisho_catalog::model::EntrySpec;
-use sekisho_catalog::names::{EntryKind, EntryRef, SourceName};
+use sekisho_catalog::names::{EntryKind, EntryRef};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
@@ -119,6 +119,7 @@ impl Store {
             pending,
             removed_at: row.try_get("removed_at")?,
             quarantine,
+            toolkits: self.toolkits_listing(row.try_get("id")?).await?,
         })
     }
 
@@ -174,25 +175,8 @@ impl Store {
         kind: EntryKind,
         reference: &EntryRef,
     ) -> std::result::Result<Uuid, ResolveError> {
-        let rows: Vec<(Uuid, String)> = sqlx::query_as(
-            "select e.id, s.name from catalog_entries e join catalog_sources s on s.id = e.source_id \
-             where e.kind = $1 and e.name = $2 and ($3::text is null or s.name = $3) \
-             order by s.name",
-        )
-        .bind(kind.as_str())
-        .bind(reference.name.as_str())
-        .bind(reference.source.as_ref().map(SourceName::as_str))
-        .fetch_all(&self.pool)
-        .await?;
-        match rows.as_slice() {
-            [] => Err(ResolveError::NotFound),
-            [(id, _)] => Ok(*id),
-            many => Err(ResolveError::Ambiguous(
-                many.iter()
-                    .map(|(_, s)| source_name(s))
-                    .collect::<Result<Vec<_>>>()?,
-            )),
-        }
+        let mut conn = self.pool.acquire().await?;
+        super::toolkits::resolve_in(&mut conn, kind, reference).await
     }
 
     /// A file of the entry's applied revision.

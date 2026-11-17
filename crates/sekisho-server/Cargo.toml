@@ -42,7 +42,7 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde", "formatting", "parsing"] }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
 tower-service = { workspace = true }

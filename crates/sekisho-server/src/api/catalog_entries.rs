@@ -1,5 +1,6 @@
 //! Catalog entries, for admins: listing them by kind, reading one with its
-//! revisions and files, changing its owner, and quarantining it.
+//! revisions and files (a toolkit's with its members), changing its owner,
+//! and quarantining it.
 
 use axum::Extension;
 use axum::Json;
@@ -8,7 +9,9 @@ use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use sekisho_catalog::model::EntrySpec;
 use sekisho_catalog::names::{EntryKind, EntryName, SourceName};
-use sekisho_store::{Entry, EntryKey, FileMeta, Quarantine, QuarantineRecord, Revision};
+use sekisho_store::{
+    Entry, EntryKey, FileMeta, Quarantine, QuarantineRecord, Revision, ToolkitMember,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -99,6 +102,34 @@ impl From<FileMeta> for FileBody {
     }
 }
 
+/// An entry a toolkit revision lists, as bound at sync.
+#[derive(Serialize)]
+pub struct MemberBody {
+    kind: EntryKind,
+    /// As the toolkit writes it: `name` or `name@source`.
+    reference: String,
+    source: SourceName,
+    name: EntryName,
+    /// An MCP server's allowed tools; `null` allows them all.
+    tools: Option<Vec<String>>,
+    quarantined: bool,
+    removed: bool,
+}
+
+impl From<ToolkitMember> for MemberBody {
+    fn from(m: ToolkitMember) -> Self {
+        Self {
+            kind: m.kind,
+            reference: m.written,
+            source: m.key.source,
+            name: m.key.name,
+            tools: m.tools,
+            quarantined: m.quarantined,
+            removed: m.removed,
+        }
+    }
+}
+
 /// A revision with what it holds.
 #[derive(Serialize)]
 pub struct RevisionBody {
@@ -106,16 +137,41 @@ pub struct RevisionBody {
     summary: RevisionSummaryBody,
     spec: EntrySpec,
     files: Vec<FileBody>,
+    /// A toolkit's entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    members: Option<Vec<MemberBody>>,
 }
 
-impl From<Revision> for RevisionBody {
-    fn from(r: Revision) -> Self {
-        Self {
+impl RevisionBody {
+    async fn new(state: &AppState, r: Revision) -> Result<Self, ApiError> {
+        let members = match r.spec {
+            EntrySpec::Toolkit(_) => Some(
+                state
+                    .store()
+                    .toolkit_members(r.id)
+                    .await?
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            ),
+            _ => None,
+        };
+        Ok(Self {
             summary: (&r).into(),
             spec: r.spec,
             files: r.files.into_iter().map(Into::into).collect(),
-        }
+            members,
+        })
     }
+}
+
+/// The toolkits whose applied revision lists an entry, as
+/// `<source>/<name>`.
+fn toolkit_names(toolkits: &[EntryKey]) -> Vec<String> {
+    toolkits
+        .iter()
+        .map(|k| format!("{}/{}", k.source, k.name))
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -133,6 +189,8 @@ pub struct EntrySummaryBody {
     #[serde(with = "time::serde::rfc3339::option")]
     removed_at: Option<OffsetDateTime>,
     quarantine: Option<QuarantineBody>,
+    /// The toolkits whose applied revision lists it, as `<source>/<name>`.
+    toolkits: Vec<String>,
 }
 
 impl From<Entry> for EntrySummaryBody {
@@ -147,6 +205,7 @@ impl From<Entry> for EntrySummaryBody {
             pending: e.pending.as_ref().map(Into::into),
             removed_at: e.removed_at,
             quarantine: e.quarantine.map(Into::into),
+            toolkits: toolkit_names(&e.toolkits),
         }
     }
 }
@@ -165,6 +224,7 @@ pub struct EntryBody {
     quarantine: Option<QuarantineBody>,
     /// Every period in quarantine, oldest first.
     quarantine_history: Vec<QuarantineRecordBody>,
+    toolkits: Vec<String>,
 }
 
 fn kind_segment(kind: &str) -> Result<EntryKind, ApiError> {
@@ -189,11 +249,18 @@ async fn entry_body(state: &AppState, key: &EntryKey) -> Result<EntryBody, ApiEr
         name: e.key.name,
         path: e.path,
         owner: e.owner,
-        applied: e.applied.map(Into::into),
-        pending: e.pending.map(Into::into),
+        applied: match e.applied {
+            Some(r) => Some(RevisionBody::new(state, r).await?),
+            None => None,
+        },
+        pending: match e.pending {
+            Some(r) => Some(RevisionBody::new(state, r).await?),
+            None => None,
+        },
         removed_at: e.removed_at,
         quarantine: e.quarantine.map(Into::into),
         quarantine_history: history.into_iter().map(Into::into).collect(),
+        toolkits: toolkit_names(&e.toolkits),
     })
 }
 

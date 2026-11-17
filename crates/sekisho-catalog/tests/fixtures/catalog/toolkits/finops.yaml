@@ -1,0 +1,12 @@
+apiVersion: sekisho/v1alpha1
+kind: Toolkit
+name: finops
+description: Cloud cost questions and reports.
+mcp_servers:
+  - aws-cost-explorer
+  - server: github
+    tools: [search_issues, get_issue]
+a2a_agents: [cost-analyst]
+skills: [finops-report@team-skills]
+plugins: [focus-export]
+prompts: [monthly-review]

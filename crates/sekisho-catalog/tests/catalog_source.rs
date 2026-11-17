@@ -8,8 +8,9 @@ use sekisho_catalog::card::{CARD_LIMIT, check_card};
 use sekisho_catalog::check::{CheckError, CheckOptions, check_source, check_source_with};
 use sekisho_catalog::model::{
     A2aAgentSpec, CheckedEntry, ConfigTarget, EntrySpec, McpRuntime, McpServerSpec, SourceCheck,
+    ToolkitServer, ToolkitSpec,
 };
-use sekisho_catalog::names::{EntryKind, EntryName, SourceKind};
+use sekisho_catalog::names::{EntryKind, EntryName, EntryRef, SourceKind};
 use sekisho_catalog::tree::{Limits, TreeError, TreeFile, read_entry_files};
 
 fn fixture(name: &str) -> PathBuf {
@@ -661,4 +662,191 @@ fn the_digest_follows_spec_and_files() {
     ] {
         assert_ne!(digest, changed.digest(), "{changed:?}");
     }
+}
+
+fn reference(s: &str) -> EntryRef {
+    EntryRef::parse(s).unwrap()
+}
+
+fn toolkit_item(name: &str, body: &str) -> String {
+    format!(
+        "apiVersion: sekisho/v1alpha1
+kind: Toolkit
+name: {name}
+{body}"
+    )
+}
+
+#[test]
+fn toolkits_list_entries_of_every_kind() {
+    let c = check("toolkits");
+    assert!(c.refused.is_empty(), "{:#?}", c.refused);
+    assert_eq!(names(&c), ["aws-cost-explorer", "cost-analyst", "finops"]);
+    let finops = entry(&c, "finops");
+    assert_eq!(finops.kind, EntryKind::Toolkit);
+    assert_eq!(finops.path, "finops.yaml");
+    assert!(finops.files.is_empty());
+    assert_eq!(
+        finops.spec,
+        EntrySpec::Toolkit(ToolkitSpec {
+            description: "Cloud cost questions and reports.".into(),
+            mcp_servers: vec![
+                ToolkitServer {
+                    server: reference("aws-cost-explorer"),
+                    tools: None,
+                },
+                ToolkitServer {
+                    server: reference("github"),
+                    tools: Some(vec!["search_issues".into(), "get_issue".into()]),
+                },
+            ],
+            a2a_agents: vec![reference("cost-analyst")],
+            skills: vec![reference("finops-report@team-skills")],
+            plugins: vec![reference("focus-export")],
+            prompts: vec![reference("monthly-review")],
+        })
+    );
+    // The spec is stored as JSON and read back unchanged.
+    let json = serde_json::to_value(&finops.spec).unwrap();
+    assert_eq!(json["kind"], "toolkit");
+    assert_eq!(
+        json["skills"],
+        serde_json::json!(["finops-report@team-skills"])
+    );
+    assert_eq!(
+        json["mcp_servers"][1],
+        serde_json::json!({"server": "github", "tools": ["search_issues", "get_issue"]})
+    );
+    let back: EntrySpec = serde_json::from_value(json).unwrap();
+    assert_eq!(&back, &finops.spec);
+}
+
+#[test]
+fn toolkits_cannot_hold_models_or_toolkits() {
+    let dir = temp_source(&[
+        (
+            "models.yaml",
+            &toolkit_item(
+                "with-models",
+                "skills: [pdf]
+models: [claude-sonnet]
+",
+            ),
+        ),
+        (
+            "nested.yaml",
+            &toolkit_item(
+                "with-toolkits",
+                "skills: [pdf]
+toolkits: [finops]
+",
+            ),
+        ),
+        (
+            "other.yaml",
+            &toolkit_item(
+                "with-colour",
+                "skills: [pdf]
+colour: red
+",
+            ),
+        ),
+    ]);
+    let c = check_source(SourceKind::Catalog, dir.path()).unwrap();
+    assert!(c.entries.is_empty(), "{:#?}", c.entries);
+    let models = refusal(&c, "with-models");
+    assert!(models.contains("models"), "{models}");
+    assert!(models.contains("environments"), "{models}");
+    let nested = refusal(&c, "with-toolkits");
+    assert!(nested.contains("toolkits"), "{nested}");
+    assert!(nested.contains("can't hold toolkits"), "{nested}");
+    let other = refusal(&c, "with-colour");
+    assert!(other.contains("colour"), "{other}");
+    for r in &c.refused {
+        assert_eq!(r.kind, Some(EntryKind::Toolkit), "{r:?}");
+    }
+}
+
+#[test]
+fn empty_and_repeating_toolkits_are_refused() {
+    let items = [
+        toolkit_item(
+            "empty",
+            "description: Nothing.
+",
+        ),
+        toolkit_item(
+            "empty-lists",
+            "skills: []
+mcp_servers: []
+",
+        ),
+        toolkit_item(
+            "twice",
+            "skills: [pdf, pdf]
+",
+        ),
+        toolkit_item(
+            "servers-twice",
+            "mcp_servers: [github, {server: github, tools: [a]}]
+",
+        ),
+        toolkit_item(
+            "tools",
+            "mcp_servers:
+  - server: a
+    tools: []
+  - server: b
+    tools: [x, x]
+  - server: c
+    tools: [\"\"]
+",
+        ),
+        toolkit_item(
+            "bad-reference",
+            "skills: [Not_A_Name]
+",
+        ),
+        toolkit_item(
+            "bad-server",
+            "mcp_servers: [{server: a, scope: x}]
+",
+        ),
+        toolkit_item(
+            "fine",
+            "skills: [pdf, pdf@other]
+",
+        ),
+    ];
+    let files: Vec<(String, String)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, body)| (format!("kit{i}.yaml"), body.clone()))
+        .collect();
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_str()))
+        .collect();
+    let dir = temp_source(&files);
+    let c = check_source(SourceKind::Catalog, dir.path()).unwrap();
+    assert_eq!(names(&c), ["fine"], "{:#?}", c.refused);
+    assert!(refusal(&c, "empty").contains("at least one"));
+    assert!(refusal(&c, "empty-lists").contains("at least one"));
+    assert!(refusal(&c, "twice").contains("skills[1]: is listed twice"));
+    assert!(refusal(&c, "servers-twice").contains("mcp_servers[1]: is listed twice"));
+    let tools = refusal(&c, "tools");
+    assert!(
+        tools.contains("mcp_servers[0].tools: give at least one tool"),
+        "{tools}"
+    );
+    assert!(
+        tools.contains("mcp_servers[1].tools[1]: is listed twice"),
+        "{tools}"
+    );
+    assert!(
+        tools.contains("mcp_servers[2].tools[0]: a tool's name can't be empty"),
+        "{tools}"
+    );
+    assert!(refusal(&c, "bad-reference").contains("skills[0]"));
+    assert!(refusal(&c, "bad-server").contains("mcp_servers[0].scope"));
 }

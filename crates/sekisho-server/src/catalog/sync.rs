@@ -213,7 +213,7 @@ async fn look_outside(
                 .map_err(|e| format!("the agent's card: {e}"))?;
             agent.card = Some(card);
         }
-        EntrySpec::Skill(_) | EntrySpec::Prompt(_) => {}
+        EntrySpec::Skill(_) | EntrySpec::Prompt(_) | EntrySpec::Toolkit(_) => {}
     }
     Ok(())
 }

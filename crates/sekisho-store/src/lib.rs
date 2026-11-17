@@ -30,7 +30,7 @@ pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use catalog::{
     Applied, Entry, EntryKey, FileMeta, FoundEntry, NewSource, Quarantine, QuarantineRecord,
     ResolveError, Revision, Source, SourcePatch, SyncFound, SyncOutcome, SyncOutcomeKind,
-    SyncRecord, SyncReport, SyncSummary,
+    SyncRecord, SyncReport, SyncSummary, ToolkitMember,
 };
 pub use dex_tokens::{DexTokenLock, IDP_CHECK_EVERY};
 pub use environments::{Environment, EnvironmentSpec};

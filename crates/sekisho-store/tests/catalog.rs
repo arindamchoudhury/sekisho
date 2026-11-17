@@ -6,7 +6,10 @@ mod common;
 
 use base64::Engine;
 use common::{person, store};
-use sekisho_catalog::model::{CheckedEntry, EntrySpec, Refusal, SkillSpec};
+use sekisho_catalog::model::{
+    CheckedEntry, EntrySpec, McpRuntime, McpServerSpec, Refusal, SkillSpec, ToolkitServer,
+    ToolkitSpec,
+};
 use sekisho_catalog::names::{EntryKind, EntryName, EntryRef, SourceKind, SourceName};
 use sekisho_catalog::source::{Folder, GitRef, SourceUrl};
 use sekisho_catalog::tree::TreeFile;
@@ -931,4 +934,437 @@ async fn deleting_a_source_deletes_its_entries() {
         store.delete_source(&a).await,
         Err(StoreError::NotFound)
     ));
+}
+
+// ------------------------------------------------------------ toolkits (Task 7b)
+
+fn reference(s: &str) -> EntryRef {
+    EntryRef::parse(s).unwrap()
+}
+
+fn docs_server() -> CheckedEntry {
+    CheckedEntry {
+        kind: EntryKind::McpServer,
+        name: entry_name("docs"),
+        path: "servers.yaml".into(),
+        spec: EntrySpec::McpServer(McpServerSpec {
+            description: "Docs.".into(),
+            runtime: McpRuntime::Remote {
+                url: "https://mcp.example.com/docs".into(),
+            },
+            config: Vec::new(),
+            tool_preview: Vec::new(),
+            unsupported_tools: Vec::new(),
+            static_oauth: false,
+        }),
+        files: Vec::new(),
+    }
+}
+
+/// A toolkit listing these MCP servers (with their tools) and skills.
+fn toolkit(
+    name: &str,
+    description: &str,
+    servers: &[(&str, Option<&[&str]>)],
+    skills: &[&str],
+) -> CheckedEntry {
+    CheckedEntry {
+        kind: EntryKind::Toolkit,
+        name: entry_name(name),
+        path: format!("{name}.yaml"),
+        spec: EntrySpec::Toolkit(ToolkitSpec {
+            description: description.into(),
+            mcp_servers: servers
+                .iter()
+                .map(|(s, tools)| ToolkitServer {
+                    server: reference(s),
+                    tools: tools.map(|t| t.iter().map(|x| (*x).to_owned()).collect()),
+                })
+                .collect(),
+            a2a_agents: Vec::new(),
+            skills: skills.iter().map(|s| reference(s)).collect(),
+            plugins: Vec::new(),
+            prompts: Vec::new(),
+        }),
+        files: Vec::new(),
+    }
+}
+
+fn kit_key(source: &str, name: &str) -> EntryKey {
+    EntryKey {
+        kind: EntryKind::Toolkit,
+        source: source_name(source),
+        name: entry_name(name),
+    }
+}
+
+/// Adds `name` and records one sync of it with `entries`.
+async fn source_with(
+    store: &Store,
+    sb: &SecretBox,
+    name: &str,
+    actor: uuid::Uuid,
+    commit: &str,
+    entries: Vec<CheckedEntry>,
+) -> sekisho_store::SyncReport {
+    add(store, sb, name, actor).await;
+    sync(store, sb, name, commit, entries).await
+}
+
+async fn sync(
+    store: &Store,
+    sb: &SecretBox,
+    name: &str,
+    commit: &str,
+    entries: Vec<CheckedEntry>,
+) -> sekisho_store::SyncReport {
+    store
+        .record_sync(
+            sb,
+            &source_name(name),
+            ok_sync(commit, entries, Vec::new()),
+            next(),
+        )
+        .await
+        .unwrap()
+}
+
+/// `(kind, written, source/name, tools)` of a revision's members.
+async fn members(
+    store: &Store,
+    revision: uuid::Uuid,
+) -> Vec<(EntryKind, String, String, Option<Vec<String>>)> {
+    store
+        .toolkit_members(revision)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| {
+            (
+                m.kind,
+                m.written,
+                format!("{}/{}", m.key.source, m.key.name),
+                m.tools,
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn toolkit_members_are_bound_at_sync() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    let report = source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![
+            docs_server(),
+            toolkit(
+                "finops",
+                "Costs.",
+                &[("docs", Some(&["search", "read"]))],
+                &["pdf"],
+            ),
+        ],
+    )
+    .await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(names(&report.new), ["docs", "finops"]);
+
+    let kit = store.get_entry(&kit_key("kits", "finops")).await.unwrap();
+    let applied = kit.applied.unwrap();
+    assert_eq!(
+        members(&store, applied.id).await,
+        [
+            (
+                EntryKind::McpServer,
+                "docs".to_string(),
+                "kits/docs".to_string(),
+                Some(vec!["search".to_string(), "read".to_string()])
+            ),
+            (
+                EntryKind::Skill,
+                "pdf".to_string(),
+                "a/pdf".to_string(),
+                None
+            ),
+        ]
+    );
+    let pdf = store.get_entry(&key("a", "pdf")).await.unwrap();
+    assert_eq!(pdf.toolkits, [kit_key("kits", "finops")]);
+    assert!(kit.toolkits.is_empty());
+}
+
+#[tokio::test]
+async fn toolkit_references_stay_bound() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    let kit = || toolkit("kit", "One skill.", &[], &["pdf"]);
+    source_with(&store, &sb, "kits", admin, "k1", vec![kit()]).await;
+    // A second source with a pdf skill makes the bare name ambiguous.
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf b", &[])],
+    )
+    .await;
+
+    let report = sync(&store, &sb, "kits", "k2", vec![kit()]).await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(names(&report.unchanged), ["kit"]);
+    let entry = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
+    assert!(entry.pending.is_none());
+    let members = members(&store, entry.applied.unwrap().id).await;
+    assert_eq!(members[0].2, "a/pdf");
+}
+
+#[tokio::test]
+async fn a_toolkit_naming_no_entry_or_two_is_refused() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    let report = source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![toolkit("kit", "v1", &[("nope", None)], &["pdf@a"])],
+    )
+    .await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    let refusal = &report.refused[0];
+    assert_eq!(refusal.kind, Some(EntryKind::Toolkit));
+    assert_eq!(refusal.name.as_deref(), Some("kit"));
+    assert_eq!(refusal.path, "kit.yaml");
+    assert!(
+        refusal.reason.contains("no MCP server named nope"),
+        "{}",
+        refusal.reason
+    );
+    assert!(
+        refusal.reason.contains("no skill named pdf@a"),
+        "{}",
+        refusal.reason
+    );
+    assert!(matches!(
+        store.get_entry(&kit_key("kits", "kit")).await,
+        Err(StoreError::NotFound)
+    ));
+
+    // A version that binds, applied; then one naming a name two sources hold.
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    sync(
+        &store,
+        &sb,
+        "kits",
+        "k2",
+        vec![toolkit("kit", "v1", &[], &["pdf"])],
+    )
+    .await;
+    // The source's first sync, whose toolkit was refused, applied itself.
+    store
+        .apply_source(&source_name("kits"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let applied = store
+        .get_entry(&kit_key("kits", "kit"))
+        .await
+        .unwrap()
+        .applied
+        .unwrap();
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf b", &[])],
+    )
+    .await;
+    let report = sync(
+        &store,
+        &sb,
+        "kits",
+        "k3",
+        vec![toolkit("kit", "v2", &[], &["pdf"])],
+    )
+    .await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    assert_eq!(
+        report.refused[0].reason,
+        "skills[0]: pdf is in sources a, b: write pdf@a or pdf@b"
+    );
+    assert!(report.missing.is_empty(), "{:?}", report.missing);
+    let entry = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
+    assert_eq!(entry.applied.unwrap().id, applied.id);
+    assert!(entry.pending.is_none());
+
+    // Two references to one entry.
+    let report = sync(
+        &store,
+        &sb,
+        "kits",
+        "k4",
+        vec![toolkit("kit", "v3", &[], &["pdf@a", "pdf@b", "pdf@a"])],
+    )
+    .await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    assert!(
+        report.refused[0]
+            .reason
+            .contains("skills[2]: pdf@a names the same skill as skills[0]"),
+        "{}",
+        report.refused[0].reason
+    );
+}
+
+#[tokio::test]
+async fn a_toolkit_update_waits_for_apply() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![
+            skill("notes", "notes", &[]),
+            toolkit("kit", "v1", &[], &["pdf"]),
+        ],
+    )
+    .await;
+    let report = sync(
+        &store,
+        &sb,
+        "kits",
+        "k2",
+        vec![
+            skill("notes", "notes", &[]),
+            toolkit("kit", "v2", &[], &["pdf", "notes"]),
+        ],
+    )
+    .await;
+    assert_eq!(names(&report.updated), ["kit"]);
+    let entry = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
+    let (applied, pending) = (entry.applied.unwrap(), entry.pending.unwrap());
+    assert_eq!(members(&store, applied.id).await.len(), 1);
+    assert_eq!(members(&store, pending.id).await.len(), 2);
+    let notes = store.get_entry(&key("kits", "notes")).await.unwrap();
+    assert!(notes.toolkits.is_empty(), "only applied revisions count");
+
+    let done = store
+        .apply_source(&source_name("kits"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert_eq!(names(&done.updated), ["kit"]);
+    let entry = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
+    assert_eq!(entry.applied.unwrap().id, pending.id);
+    let notes = store.get_entry(&key("kits", "notes")).await.unwrap();
+    assert_eq!(notes.toolkits, [kit_key("kits", "kit")]);
+}
+
+#[tokio::test]
+async fn a_source_a_toolkit_uses_cannot_be_deleted() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![
+            skill("notes", "notes", &[]),
+            toolkit("kit", "v1", &[], &["pdf", "notes"]),
+        ],
+    )
+    .await;
+    match store.delete_source(&source_name("a")).await {
+        Err(StoreError::InUse(m)) => assert!(m.contains("toolkits/kits/kit"), "{m}"),
+        other => panic!("expected InUse, got {other:?}"),
+    }
+    // A pending revision counts too.
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("calc", "calc", &[])],
+    )
+    .await;
+    sync(
+        &store,
+        &sb,
+        "kits",
+        "k2",
+        vec![
+            skill("notes", "notes", &[]),
+            toolkit("kit", "v2", &[], &["pdf", "notes", "calc"]),
+        ],
+    )
+    .await;
+    assert!(matches!(
+        store.delete_source(&source_name("b")).await,
+        Err(StoreError::InUse(_))
+    ));
+    // The toolkit's own source can go, and then the others.
+    store.delete_source(&source_name("kits")).await.unwrap();
+    store.delete_source(&source_name("a")).await.unwrap();
+    store.delete_source(&source_name("b")).await.unwrap();
+    assert_eq!(
+        count(&store, "select count(*) from catalog_toolkit_members").await,
+        0
+    );
 }

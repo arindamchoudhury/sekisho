@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use base64::Engine;
-use sekisho_catalog::model::{ObotVmcp, Refusal, Warning};
+use sekisho_catalog::model::{EntrySpec, ObotVmcp, Refusal, Warning};
 use sekisho_catalog::names::{EntryKind, EntryName, SourceName};
 use sekisho_core::secret_box::SecretBox;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::sources::open_token;
+use super::toolkits;
 use super::{
     Applied, SyncOutcome, SyncOutcomeKind, SyncRecord, SyncReport, entry_kind, entry_name,
 };
@@ -150,12 +151,45 @@ impl Store {
 
         let mut report = StoredReport::default();
         let mut applied = false;
-        if let Some(found) = found {
+        if let Some(mut found) = found {
             let commit = commit.clone().unwrap_or_default();
             let mut seen = HashSet::new();
-            for entry in &found.entries {
+            // Toolkits last, so their references can name this sync's
+            // entries.
+            let (toolkits, others): (Vec<_>, Vec<_>) = found
+                .entries
+                .iter()
+                .partition(|e| e.kind == EntryKind::Toolkit);
+            for entry in others.into_iter().chain(toolkits) {
+                let mut bindings = None;
+                if let EntrySpec::Toolkit(spec) = &entry.spec
+                    && !toolkits::revision_exists(
+                        &mut tx,
+                        source_id,
+                        entry.name.as_str(),
+                        &entry.digest,
+                    )
+                    .await?
+                {
+                    match toolkits::bind(&mut tx, spec).await? {
+                        Ok(bound) => bindings = Some(bound),
+                        Err(reason) => {
+                            found.refused.push(Refusal {
+                                path: entry.path.clone(),
+                                kind: Some(entry.kind),
+                                name: Some(entry.name.to_string()),
+                                reason,
+                            });
+                            continue;
+                        }
+                    }
+                }
                 seen.insert((entry.kind, entry.name.to_string()));
-                let change = store_entry(&mut tx, source_id, sync_id, &commit, entry).await?;
+                let (change, revision) =
+                    store_entry(&mut tx, source_id, sync_id, &commit, entry).await?;
+                if let (Some(bindings), Some(revision)) = (bindings, revision) {
+                    toolkits::store_bindings(&mut tx, revision, &bindings).await?;
+                }
                 let into = match change {
                     Change::New => &mut report.new,
                     Change::Updated => &mut report.updated,
@@ -325,13 +359,14 @@ enum Change {
 
 /// Stores one found entry: its files once by SHA-256, the entry if it is
 /// new, a revision if its digest is, and the entry's latest revision.
+/// Answers the revision too when this call made it.
 async fn store_entry(
     conn: &mut PgConnection,
     source_id: Uuid,
     sync_id: Uuid,
     commit: &str,
     entry: &super::FoundEntry,
-) -> Result<Change> {
+) -> Result<(Change, Option<Uuid>)> {
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "insert into catalog_entries (source_id, kind, name, path, owner_id) \
          select $1, $2, $3, $4, added_by from catalog_sources where id = $1 \
@@ -364,6 +399,7 @@ async fn store_entry(
             .bind(&entry.digest)
             .fetch_optional(&mut *conn)
             .await?;
+    let made = existing.is_none();
     let revision_id = match existing {
         Some(id) => id,
         None => {
@@ -413,11 +449,12 @@ async fn store_entry(
     .bind(&entry.path)
     .execute(&mut *conn)
     .await?;
-    Ok(match (inserted, latest) {
+    let change = match (inserted, latest) {
         (Some(_), _) => Change::New,
         (None, Some(previous)) if previous == revision_id => Change::Unchanged,
         (None, _) => Change::Updated,
-    })
+    };
+    Ok((change, made.then_some(revision_id)))
 }
 
 /// Applies a successful sync: each entry it found uses its latest revision

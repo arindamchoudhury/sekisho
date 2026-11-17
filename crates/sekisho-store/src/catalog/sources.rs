@@ -233,6 +233,8 @@ impl Store {
     }
 
     /// Deletes a source with its syncs, entries and their revisions.
+    /// `InUse` while another source's toolkit lists one of its entries in
+    /// its applied or pending revision.
     pub async fn delete_source(&self, name: &SourceName) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let id: Uuid =
@@ -241,6 +243,11 @@ impl Store {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(StoreError::NotFound)?;
+        // A toolkit elsewhere that lists one of its entries keeps it (D186).
+        let users = super::toolkits::toolkits_using_source(&mut tx, id).await?;
+        if !users.is_empty() {
+            return Err(StoreError::InUse(users.join(", ")));
+        }
         // Revisions reference their entry and entries reference revisions:
         // the links go first.
         sqlx::query(

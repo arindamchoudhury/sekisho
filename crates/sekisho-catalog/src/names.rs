@@ -26,6 +26,20 @@ impl EntryRef {
     }
 }
 
+/// Written as its text, `name` or `name@source`.
+impl serde::Serialize for EntryRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EntryRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        EntryRef::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for EntryRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.source {
@@ -46,15 +60,18 @@ pub enum EntryKind {
     Skill,
     Plugin,
     Prompt,
+    /// A reusable set of other entries (D181), in `catalog` sources.
+    Toolkit,
 }
 
 impl EntryKind {
-    pub const ALL: [EntryKind; 5] = [
+    pub const ALL: [EntryKind; 6] = [
         EntryKind::McpServer,
         EntryKind::A2aAgent,
         EntryKind::Skill,
         EntryKind::Plugin,
         EntryKind::Prompt,
+        EntryKind::Toolkit,
     ];
 
     /// The kind as stored and as the API's `kind` field spells it.
@@ -65,6 +82,7 @@ impl EntryKind {
             EntryKind::Skill => "skill",
             EntryKind::Plugin => "plugin",
             EntryKind::Prompt => "prompt",
+            EntryKind::Toolkit => "toolkit",
         }
     }
 
@@ -80,6 +98,7 @@ impl EntryKind {
             EntryKind::Skill => "skills",
             EntryKind::Plugin => "plugins",
             EntryKind::Prompt => "prompts",
+            EntryKind::Toolkit => "toolkits",
         }
     }
 
@@ -92,8 +111,8 @@ impl EntryKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
-    /// Obot's MCP catalog format, and Sekisho's own for MCP servers and A2A
-    /// agents.
+    /// Obot's MCP catalog format, and Sekisho's own for MCP servers, A2A
+    /// agents and toolkits.
     Catalog,
     /// Agent Skills: folders with a `SKILL.md`.
     Skills,
@@ -130,7 +149,11 @@ impl SourceKind {
     /// The kinds of entry a source of this kind can hold.
     pub fn entry_kinds(self) -> &'static [EntryKind] {
         match self {
-            SourceKind::Catalog => &[EntryKind::McpServer, EntryKind::A2aAgent],
+            SourceKind::Catalog => &[
+                EntryKind::McpServer,
+                EntryKind::A2aAgent,
+                EntryKind::Toolkit,
+            ],
             SourceKind::Skills => &[EntryKind::Skill],
             SourceKind::Plugins => &[EntryKind::Plugin],
             SourceKind::Prompts => &[EntryKind::Prompt],

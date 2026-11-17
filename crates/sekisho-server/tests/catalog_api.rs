@@ -746,3 +746,125 @@ async fn registry_credentials_never_answer_the_password() {
         404
     );
 }
+
+/// A skills source `team` with `pdf`, then a catalog source `kits` with an
+/// MCP server `docs` and the toolkit `finops` listing both.
+async fn team_and_kits(app: &TestApp, git: &GitServer) {
+    synced_team(app, git, &[("pdf/SKILL.md", &skill_md("pdf", "v1"))]).await;
+    let catalog = "- apiVersion: sekisho/v1alpha1\n  kind: MCPServer\n  name: docs\n  remote:\n    url: https://mcp.example.com/docs\n- apiVersion: sekisho/v1alpha1\n  kind: Toolkit\n  name: finops\n  description: Costs.\n  mcp_servers:\n    - server: docs\n      tools: [search]\n  skills: [pdf]\n";
+    git.repo("kits")
+        .commit(&[("catalog.yaml", catalog.as_bytes())], "kits");
+    let added = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources",
+            Some(json!({
+                "name": "kits", "kind": "catalog", "url": git.url("kits"),
+                "allow_private_network": true
+            })),
+        )
+        .await;
+    assert_eq!(added.status, 201, "{}", added.text);
+    let report = latest_sync(app, "kits", |_| true).await;
+    assert_eq!(report["outcome"], "ok", "{report}");
+    assert!(report["refused"].as_array().unwrap().is_empty(), "{report}");
+}
+
+#[tokio::test]
+async fn toolkits_show_members_and_entries_their_toolkits() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    team_and_kits(&app, &git).await;
+
+    let list = app.admin("GET", "/api/v1/catalog/toolkits", None).await;
+    assert_eq!(list.status, 200, "{}", list.text);
+    assert_eq!(list.body.as_array().unwrap().len(), 1, "{}", list.text);
+    assert_eq!(list.body[0]["kind"], "toolkit");
+    assert_eq!(list.body[0]["name"], "finops");
+
+    let kit = app
+        .admin("GET", "/api/v1/catalog/toolkits/kits/finops", None)
+        .await;
+    assert_eq!(kit.status, 200, "{}", kit.text);
+    assert_eq!(kit.body["applied"]["spec"]["kind"], "toolkit");
+    assert_eq!(
+        kit.body["applied"]["members"],
+        json!([
+            {"kind": "mcp_server", "reference": "docs", "source": "kits", "name": "docs",
+             "tools": ["search"], "quarantined": false, "removed": false},
+            {"kind": "skill", "reference": "pdf", "source": "team", "name": "pdf",
+             "tools": null, "quarantined": false, "removed": false},
+        ])
+    );
+    assert_eq!(kit.body["toolkits"], json!([]));
+
+    let pdf = app
+        .admin("GET", "/api/v1/catalog/skills/team/pdf", None)
+        .await;
+    assert_eq!(pdf.body["toolkits"], json!(["kits/finops"]));
+    assert!(pdf.body["applied"].get("members").is_none(), "{}", pdf.text);
+    let skills = app.admin("GET", "/api/v1/catalog/skills", None).await;
+    assert_eq!(skills.body[0]["toolkits"], json!(["kits/finops"]));
+
+    // The toolkit keeps team's skill: team can't be deleted.
+    let deleted = app
+        .admin("DELETE", "/api/v1/catalog-sources/team", None)
+        .await;
+    assert_eq!(deleted.status, 409, "{}", deleted.text);
+    assert_eq!(deleted.body["error"], "in_use");
+    assert!(
+        deleted.text.contains("toolkits/kits/finops"),
+        "{}",
+        deleted.text
+    );
+    assert_eq!(
+        app.admin("DELETE", "/api/v1/catalog-sources/kits", None)
+            .await
+            .status,
+        204
+    );
+    assert_eq!(
+        app.admin("DELETE", "/api/v1/catalog-sources/team", None)
+            .await
+            .status,
+        204
+    );
+}
+
+#[tokio::test]
+async fn a_toolkit_can_be_quarantined() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    team_and_kits(&app, &git).await;
+    let path = "/api/v1/catalog/toolkits/kits/finops/quarantine";
+    let put = app
+        .admin("POST", path, Some(json!({"reason": "Leaks costs."})))
+        .await;
+    assert_eq!(put.status, 200, "{}", put.text);
+    assert_eq!(put.body["quarantine"]["reason"], "Leaks costs.");
+    assert_eq!(
+        app.admin("POST", path, Some(json!({"reason": "again"})))
+            .await
+            .status,
+        409
+    );
+
+    // A quarantined member shows in the toolkit's answer.
+    let member = app
+        .admin(
+            "POST",
+            "/api/v1/catalog/skills/team/pdf/quarantine",
+            Some(json!({"reason": "Broken."})),
+        )
+        .await;
+    assert_eq!(member.status, 200, "{}", member.text);
+    let kit = app
+        .admin("GET", "/api/v1/catalog/toolkits/kits/finops", None)
+        .await;
+    assert_eq!(kit.body["applied"]["members"][1]["quarantined"], true);
+    assert_eq!(kit.body["applied"]["members"][0]["quarantined"], false);
+
+    let lifted = app.admin("DELETE", path, None).await;
+    assert_eq!(lifted.status, 200, "{}", lifted.text);
+    assert_eq!(lifted.body["quarantine"], Value::Null);
+}

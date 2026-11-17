@@ -10,6 +10,9 @@ mod entries;
 mod registries;
 mod sources;
 mod syncs;
+mod toolkits;
+
+pub use toolkits::ToolkitMember;
 
 use sekisho_catalog::model::{CheckedEntry, EntrySpec, ObotVmcp, Refusal, Warning};
 use sekisho_catalog::names::{EntryKind, EntryName, SourceKind, SourceName};
@@ -249,6 +252,8 @@ pub struct Entry {
     pub pending: Option<Revision>,
     pub removed_at: Option<OffsetDateTime>,
     pub quarantine: Option<Quarantine>,
+    /// The toolkits whose applied revision lists it.
+    pub toolkits: Vec<EntryKey>,
 }
 
 /// Why a reference names no single entry.

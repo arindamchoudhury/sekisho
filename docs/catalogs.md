@@ -1,7 +1,7 @@
 # Catalogs
 
 A catalog source is a Git repository that holds MCP servers, A2A agents,
-skills, plugins or prompts. Sekisho reads each source at a commit, checks
+skills, plugins, prompts or [toolkits](#toolkits) of them. Sekisho reads each source at a commit, checks
 every entry it finds, and keeps what it found in PostgreSQL: the entries,
 their revisions and every file, so nothing is fetched from Git again.
 Admins see what each sync found, apply updates, own and quarantine
@@ -44,7 +44,7 @@ listed at once (422); a name that is taken is 409.
 | `GET /api/v1/catalog-sources` | Every source, by name |
 | `GET /api/v1/catalog-sources/{name}` | One source |
 | `PATCH /api/v1/catalog-sources/{name}` | Change `url`, `ref`, `folder`, `username`, `token` or `allow_private_network`; `null` clears `ref`, `username` or `token`. The name and kind never change |
-| `DELETE /api/v1/catalog-sources/{name}` | Delete it, with its syncs and entries (204) |
+| `DELETE /api/v1/catalog-sources/{name}` | Delete it, with its syncs and entries (204); 409 `in_use` while a [toolkit](#toolkits) of another source lists one of its entries |
 
 A source answers its settings and:
 
@@ -94,7 +94,7 @@ report (404 before the first):
 | `vmcps` | Obot virtual MCP servers it found ([Importing Obot catalogs](#importing-obot-catalogs)) |
 
 Kinds in reports and entries are `mcp_server`, `a2a_agent`, `skill`,
-`plugin` and `prompt`.
+`plugin`, `prompt` and `toolkit`.
 
 **Anything Sekisho can't read with certainty is refused, never guessed.**
 A refused entry keeps the revision environments use, and so does an entry
@@ -149,7 +149,7 @@ so skills under `.claude/skills` are found.
 | Catalog files in one `catalog` source | 1,000 (more fails the sync) |
 | An A2A agent's card | 1 MiB |
 
-### `catalog`: MCP servers and A2A agents
+### `catalog`: MCP servers, A2A agents and toolkits
 
 A `catalog` source holds YAML or JSON files with one item or a list of
 items each. Which files are read is chosen as Obot chooses them: the
@@ -180,36 +180,35 @@ a runtime's `egressDomains`, `denyAllEgress`, `startupTimeoutSeconds` and
 `healthzPath`. Other unknown fields are ignored, as Obot ignores them.
 
 **Sekisho's format** (`apiVersion: sekisho/v1alpha1`) refuses unknown
-fields. An MCP server gives exactly one of `remote`, `npx`, `uvx` or
-`container`:
+fields. Like Obot's, a file holds one item or a list of them (not several
+YAML documents). An MCP server gives exactly one of `remote`, `npx`, `uvx`
+or `container`:
 
 ```yaml
-apiVersion: sekisho/v1alpha1
-kind: MCPServer
-name: github
-description: GitHub's MCP server.
-container:
-  image: ghcr.io/github/github-mcp-server:v0.20.1
-  args: [stdio]
-config:
-  - name: GitHub token
-    key: GITHUB_PERSONAL_ACCESS_TOKEN
-    usage: env
-    sensitive: true
-    required: true
----
-apiVersion: sekisho/v1alpha1
-kind: MCPServer
-name: fetch
-npx:
-  package: "@example/fetch-mcp@1.4.2"
-  args: ["--quiet"]
----
-apiVersion: sekisho/v1alpha1
-kind: MCPServer
-name: docs
-remote:
-  url: https://mcp.example.com/mcp
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: github
+  description: GitHub's MCP server.
+  container:
+    image: ghcr.io/github/github-mcp-server:v0.20.1
+    args: [stdio]
+  config:
+    - name: GitHub token
+      key: GITHUB_PERSONAL_ACCESS_TOKEN
+      usage: env
+      sensitive: true
+      required: true
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: fetch
+  npx:
+    package: "@example/fetch-mcp@1.4.2"
+    args: ["--quiet"]
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: docs
+  remote:
+    url: https://mcp.example.com/mcp
 ```
 
 `uvx` takes `package` (such as `mcp-server-time==2026.1.0`), `command` and
@@ -225,6 +224,8 @@ name: billing
 description: Answers questions about invoices.
 url: https://agents.example.com/billing
 ```
+
+A [toolkit](#toolkits) is `kind: Toolkit` in the same format.
 
 ### `skills`
 
@@ -305,7 +306,7 @@ hidden characters, sorted as APM's content scanner sorts them:
 
 | Route | Does |
 |---|---|
-| `GET /api/v1/catalog/{kind}` | The entries of a kind: `mcp-servers`, `a2a-agents`, `skills`, `plugins` or `prompts` |
+| `GET /api/v1/catalog/{kind}` | The entries of a kind: `mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts` or `toolkits` |
 | `GET /api/v1/catalog/{kind}/{source}/{name}` | One entry, with its revisions and their files |
 | `PATCH /api/v1/catalog/{kind}/{source}/{name}` | Change its `owner` |
 | `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of its applied revision |
@@ -322,11 +323,13 @@ An entry answers:
 | `pending` | A newer revision waiting for an apply, or `null` |
 | `removed_at` | When an apply found it gone |
 | `quarantine` | `{"reason", "by", "at"}` while quarantined, else `null` |
+| `toolkits` | The toolkits whose applied revision lists it, as `"<source>/<name>"` |
 
 One entry's answer also gives each revision's `spec` (what Sekisho read:
 its `kind`, description, runtime and so on) and `files` (`path`, `size`,
 `sha256`, `executable`), and its `quarantine_history`: every period in
-quarantine, with who quarantined and lifted it, and when.
+quarantine, with who quarantined and lifted it, and when. A toolkit's
+revisions also give their `members` ([Toolkits](#toolkits)).
 
 A file is answered as `application/octet-stream`, never to be shown in a
 browser. A revision's digest covers its spec and every file, so two syncs
@@ -354,6 +357,64 @@ period is kept in the entry's `quarantine_history`. Today quarantine is
 recorded and shown; what it stops comes with the parts that deliver
 entries: environments will keep listing a quarantined entry, and the
 gateway will refuse its MCP server or A2A agent everywhere at once.
+
+## Toolkits
+
+A toolkit is a reusable set of catalog entries, such as everything a
+FinOps team uses, that environments will list as one item. It is itself
+an entry of kind `toolkit`, written in Sekisho's format in a `catalog`
+source:
+
+```yaml
+apiVersion: sekisho/v1alpha1
+kind: Toolkit
+name: finops
+description: Cloud cost questions and reports.
+mcp_servers:
+  - aws-cost-explorer
+  - server: github
+    tools: [search_issues, get_issue]
+a2a_agents: [cost-analyst]
+skills: [finops-report]
+plugins: [focus-export@platform-plugins]
+prompts: [monthly-review]
+```
+
+It lists `mcp_servers`, `a2a_agents`, `skills`, `plugins` and `prompts`,
+at least one entry in all. An MCP server is its name, or
+`{server, tools}` to allow only those tools; without `tools` it allows
+them all, and `tools: []` is refused. A toolkit holds catalog entries
+only: `models` (models, default models, access and budgets belong to
+environments) and `toolkits` (toolkits don't hold toolkits) are refused,
+as is any other field, an entry listed twice, and a tool's name that is
+empty or listed twice.
+
+**References** are an entry's name, or `name@source` when more than one
+source has an entry of that kind and name. Each is bound to an entry when
+a sync records a new version of the toolkit, from any source, this sync's
+entries included. **A version keeps its bindings**: a source added later
+with an entry of the same name changes nothing until the toolkit itself
+changes. A version is refused when a reference names no entry, names a
+name several sources hold, or names an entry another reference names
+too; the report says which, such as
+`skills[0]: pdf is in sources a, b: write pdf@a or pdf@b`. As with any
+refused entry, environments keep the version they use.
+
+A changed toolkit is a new version that waits for an [apply](#apply) of
+its source, like any entry. One toolkit's answer gives, for its `applied`
+and `pending` revisions, `members`:
+
+```json
+[{"kind": "mcp_server", "reference": "github", "source": "platform",
+  "name": "github", "tools": ["search_issues", "get_issue"],
+  "quarantined": false, "removed": false}]
+```
+
+Every entry's answer lists the `toolkits` whose applied version lists it.
+A toolkit can be [quarantined](#quarantine) like any entry. A source can't
+be deleted while a toolkit of another source lists one of its entries in
+its applied or pending version (409 `in_use`, naming the toolkit, such as
+`toolkits/platform/finops`); a source's own toolkits go with it.
 
 ## Registry credentials
 

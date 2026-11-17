@@ -70,7 +70,9 @@ fn kinds_have_names_and_path_segments() {
         (EntryKind::Skill, "skill", "skills"),
         (EntryKind::Plugin, "plugin", "plugins"),
         (EntryKind::Prompt, "prompt", "prompts"),
+        (EntryKind::Toolkit, "toolkit", "toolkits"),
     ];
+    assert_eq!(EntryKind::ALL.len(), all.len());
     for (kind, name, segment) in all {
         assert_eq!(kind.as_str(), name);
         assert_eq!(kind.path_segment(), segment);
@@ -81,7 +83,11 @@ fn kinds_have_names_and_path_segments() {
 
     assert_eq!(
         SourceKind::Catalog.entry_kinds(),
-        &[EntryKind::McpServer, EntryKind::A2aAgent]
+        &[
+            EntryKind::McpServer,
+            EntryKind::A2aAgent,
+            EntryKind::Toolkit
+        ]
     );
     assert_eq!(SourceKind::Skills.entry_kinds(), &[EntryKind::Skill]);
     assert_eq!(SourceKind::Plugins.entry_kinds(), &[EntryKind::Plugin]);
