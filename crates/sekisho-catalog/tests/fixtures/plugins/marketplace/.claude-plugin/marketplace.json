@@ -1,0 +1,9 @@
+{
+  "name": "acme-tools",
+  "owner": {"name": "Acme"},
+  "metadata": {"pluginRoot": "./plugins"},
+  "plugins": [
+    {"name": "formatter", "source": "formatter", "description": "From the marketplace."},
+    {"name": "linter", "source": "./linter"}
+  ]
+}

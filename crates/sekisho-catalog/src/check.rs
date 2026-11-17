@@ -13,7 +13,7 @@ use crate::model::{CheckedEntry, EntrySpec, ObotVmcp, Refusal, SourceCheck, Warn
 use crate::names::{EntryKind, EntryName, SourceKind};
 use crate::tree::Limits;
 use crate::unicode::scan;
-use crate::{obot, sekisho_format};
+use crate::{obot, plugins, prompts, sekisho_format, skills};
 
 /// How a check reads URLs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,31 +71,82 @@ pub fn check_source_with(
     if !is_folder {
         return Err(CheckError::Missing {});
     }
+    let limits = Limits::DEFAULT;
+    let mut out = SourceCheck::default();
+    let mut vmcps = Vec::new();
     match kind {
-        SourceKind::Catalog => check_catalog(root, options, &Limits::DEFAULT),
-        other => Err(CheckError::NotYet {
-            kind: other.as_str(),
-        }),
+        SourceKind::Catalog => check_catalog(root, options, &limits, &mut out, &mut vmcps)?,
+        SourceKind::Skills => skills::check(root, &limits, &mut out)?,
+        SourceKind::Plugins => plugins::check(root, options, &limits, &mut out)?,
+        SourceKind::Prompts => prompts::check(root, &limits, &mut out)?,
+        other => {
+            return Err(CheckError::NotYet {
+                kind: other.as_str(),
+            });
+        }
     }
+    scan_entry_files(&mut out);
+    refuse_duplicates(&mut out, vmcps);
+    Ok(out)
 }
 
 fn check_catalog(
     root: &Path,
     options: &CheckOptions,
     limits: &Limits,
-) -> Result<SourceCheck, CheckError> {
+    out: &mut SourceCheck,
+    vmcps: &mut Vec<(String, ObotVmcp)>,
+) -> Result<(), CheckError> {
     let found = obot::catalog_files(root, limits.catalog_files)?;
-    let mut out = SourceCheck {
-        refused: found.refused,
-        warnings: found.warnings,
-        ..SourceCheck::default()
-    };
-    let mut vmcps = Vec::new();
+    out.refused.extend(found.refused);
+    out.warnings.extend(found.warnings);
     for (rel, path) in &found.files {
-        read_catalog_file(rel, path, options, limits, &mut out, &mut vmcps);
+        read_catalog_file(rel, path, options, limits, out, vmcps);
     }
-    refuse_duplicates(&mut out, vmcps);
-    Ok(out)
+    Ok(())
+}
+
+/// Every text file of an entry is scanned for hidden characters: a
+/// critical one refuses the entry, a warning is listed with the file's
+/// path in the source, its line and its column. Files that aren't UTF-8
+/// aren't text and aren't scanned.
+fn scan_entry_files(out: &mut SourceCheck) {
+    for entry in std::mem::take(&mut out.entries) {
+        let mut critical = None;
+        let mut warnings = Vec::new();
+        for file in &entry.files {
+            let Ok(text) = std::str::from_utf8(&file.bytes) else {
+                continue;
+            };
+            let found = scan(text);
+            if critical.is_none()
+                && let Some(c) = found.critical.first()
+            {
+                critical = Some(format!("{} holds a hidden character at {c}", file.path));
+            }
+            let path = match (entry.kind, entry.path.as_str()) {
+                (EntryKind::Prompt, p) => p.to_owned(),
+                (_, ".") => file.path.clone(),
+                (_, p) => format!("{p}/{}", file.path),
+            };
+            warnings.extend(found.warnings.iter().map(|w| Warning {
+                path: path.clone(),
+                message: format!("hidden character at {w}"),
+            }));
+        }
+        match critical {
+            Some(reason) => out.refused.push(Refusal {
+                path: entry.path,
+                kind: Some(entry.kind),
+                name: Some(entry.name.to_string()),
+                reason,
+            }),
+            None => {
+                out.warnings.extend(warnings);
+                out.entries.push(entry);
+            }
+        }
+    }
 }
 
 fn refuse_file(out: &mut SourceCheck, rel: &str, reason: String) {

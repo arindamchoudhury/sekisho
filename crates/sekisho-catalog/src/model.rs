@@ -4,17 +4,52 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::launch::Launch;
 use crate::names::{EntryKind, EntryName};
 use crate::pins::{ImageRef, NpmPackage, PythonPackage};
 use crate::tree::TreeFile;
 
-/// An entry's definition, stored with each revision. Task 3 adds skills,
-/// plugins and prompts.
+/// An entry's definition, stored with each revision. A skill's, plugin's
+/// or prompt's files are in [`CheckedEntry::files`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EntrySpec {
     McpServer(McpServerSpec),
     A2aAgent(A2aAgentSpec),
+    Skill(SkillSpec),
+    Plugin(PluginSpec),
+    Prompt(PromptSpec),
+}
+
+/// An Agent Skill's frontmatter, as Obot reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillSpec {
+    pub description: String,
+    pub license: Option<String>,
+    pub compatibility: Option<String>,
+}
+
+/// A Claude Code plugin, an APM bundle among them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginSpec {
+    pub description: String,
+    pub version: Option<String>,
+    /// The MCP servers it starts or reaches, from `.mcp.json` and its
+    /// manifest's `mcpServers`.
+    pub mcp_servers: Vec<PluginMcpServer>,
+    /// Its files matched an APM lock file's `pack.bundle_files` (D169).
+    pub apm_checked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PluginMcpServer {
+    pub name: String,
+    pub launch: Launch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptSpec {
+    pub description: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
