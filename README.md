@@ -41,6 +41,9 @@ and what they carried.
   - its models and its default model, MCP servers (each with a tool
     allow-list) and A2A agents;
   - its skills, plugins and prompts;
+  - toolkits, reusable sets of catalog entries shared by several
+    environments, such as a FinOps toolkit of MCP servers, A2A agents,
+    skills, plugins and prompts; an environment delivers each entry once;
   - its budgets;
   - labels, such as a cost centre, which travel with its spend exports.
 
@@ -99,13 +102,17 @@ and what they carried.
     tools without an A2A client can use them too. Each agent's card is
     pinned when its catalog syncs, and clients get that reviewed copy from
     Sekisho, never a description that changed unseen.
-- **Catalogs from Git.** MCP servers, A2A agents, skills, plugins and prompts,
-  pinned to commits. The MCP and skill catalogs use Obot-compatible formats;
-  plugins use Claude Code's plugin and marketplace format, which is also
+- **Catalogs from Git.** MCP servers, A2A agents, skills, plugins, prompts
+  and toolkits, pinned to commits. The MCP and skill catalogs use
+  Obot-compatible formats; plugins use Claude Code's plugin and
+  marketplace format, which is also
   what Microsoft APM's `apm pack` produces, so teams that write their agents
   and skills with APM can publish them through Sekisho, checked against the
   file hashes in APM's lock file.
   - Every catalog entry has an owner.
+  - Toolkits are catalog entries too, kept in Git, so a change to one waits
+    for an admin to apply it like any other. A toolkit holds entries only,
+    never models; access and budgets stay with environments.
   - Every local MCP server names an exact package version or image digest,
     so a new release can't reach developers until an admin applies it. An
     entry without one is refused.
