@@ -5,6 +5,7 @@
 
 pub mod address;
 mod budgets;
+mod catalog;
 mod dex_tokens;
 mod environments;
 mod error;
@@ -26,6 +27,11 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
+pub use catalog::{
+    Applied, Entry, EntryKey, FileMeta, FoundEntry, NewSource, Quarantine, QuarantineRecord,
+    ResolveError, Revision, Source, SourcePatch, SyncFound, SyncOutcome, SyncOutcomeKind,
+    SyncRecord, SyncReport, SyncSummary,
+};
 pub use dex_tokens::{DexTokenLock, IDP_CHECK_EVERY};
 pub use environments::{Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
