@@ -90,12 +90,15 @@ and what they carried.
   - Local (stdio) MCP servers run on the developer's machine.
   - A2A agents go behind the same gateway, with the same checks. Every
     coding tool reaches them as tools on the environment's MCP endpoint, so
-    tools without an A2A client can use them too.
+    tools without an A2A client can use them too. Each agent's card is
+    pinned when its catalog syncs, and clients get that reviewed copy from
+    Sekisho, never a description that changed unseen.
 - **Catalogs from Git.** MCP servers, A2A agents, skills, plugins and prompts,
   pinned to commits. The MCP and skill catalogs use Obot-compatible formats;
   plugins use Claude Code's plugin and marketplace format, which is also
   what Microsoft APM's `apm pack` produces, so teams that write their agents
-  and skills with APM can publish them through Sekisho.
+  and skills with APM can publish them through Sekisho, checked against the
+  file hashes in APM's lock file.
   - Every catalog entry has an owner.
   - Every local MCP server names an exact package version or image digest,
     so a new release can't reach developers until an admin applies it. An
