@@ -140,6 +140,9 @@ pub struct OffboardedBody {
     ended_sessions: u64,
     revoked_keys: Vec<String>,
     handed_over: Vec<String>,
+    /// The catalog entries handed over, as `<kind>/<source>/<name>` with
+    /// the kind's path segment, such as `skills/team/pdf`.
+    handed_over_entries: Vec<String>,
     /// Whether Dex holds no sign-in of theirs any more. `false` when Dex
     /// couldn't be reached: Sekisho's part is done, and their refresh token
     /// at Dex dies at their next sign-in or by Dex's expiry.
@@ -147,7 +150,8 @@ pub struct OffboardedBody {
 }
 
 /// Offboards a person in one step: disables them, ends their sessions,
-/// revokes their keys and hands what they own to `new_owner`, all or
+/// revokes their keys and hands what they own (environments and catalog
+/// entries) to `new_owner`, all or
 /// nothing; then revokes their sign-in at Dex.
 pub async fn offboard(
     State(state): State<AppState>,
@@ -198,6 +202,11 @@ pub async fn offboard(
         ended_sessions: done.ended_sessions,
         revoked_keys: done.revoked_keys.iter().map(ToString::to_string).collect(),
         handed_over: done.handed_over.iter().map(ToString::to_string).collect(),
+        handed_over_entries: done
+            .handed_over_entries
+            .iter()
+            .map(|k| format!("{}/{}/{}", k.kind.path_segment(), k.source, k.name))
+            .collect(),
         dex_refresh_revoked,
     }))
 }

@@ -6,6 +6,8 @@
 //! are RFC 3339.
 
 mod budgets;
+mod catalog_entries;
+mod catalog_sources;
 mod connectors;
 mod environments;
 mod gateway;
@@ -15,6 +17,7 @@ mod local_accounts;
 mod me;
 mod models;
 mod providers;
+mod registry_credentials;
 mod signing_keys;
 mod users;
 
@@ -27,6 +30,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use sekisho_store::{FieldError, StoreError};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 use serde_json::json;
 
 use crate::app::AppState;
@@ -88,6 +92,53 @@ pub(crate) fn router(state: AppState) -> Router {
             put(connectors::put).delete(connectors::delete),
         )
         .route("/api/v1/signing-keys/rotate", post(signing_keys::rotate))
+        .route(
+            "/api/v1/catalog-sources",
+            get(catalog_sources::list).post(catalog_sources::create),
+        )
+        .route(
+            "/api/v1/catalog-sources/import-obot",
+            post(catalog_sources::import_obot),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}",
+            get(catalog_sources::get)
+                .patch(catalog_sources::update)
+                .delete(catalog_sources::delete),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}/sync",
+            post(catalog_sources::sync),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}/syncs/latest",
+            get(catalog_sources::latest_sync),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}/apply",
+            post(catalog_sources::apply),
+        )
+        .route("/api/v1/catalog/{kind}", get(catalog_entries::list))
+        .route(
+            "/api/v1/catalog/{kind}/{source}/{name}",
+            get(catalog_entries::get).patch(catalog_entries::patch),
+        )
+        .route(
+            "/api/v1/catalog/{kind}/{source}/{name}/files/{*path}",
+            get(catalog_entries::file),
+        )
+        .route(
+            "/api/v1/catalog/{kind}/{source}/{name}/quarantine",
+            post(catalog_entries::quarantine).delete(catalog_entries::lift),
+        )
+        .route(
+            "/api/v1/registry-credentials",
+            get(registry_credentials::list),
+        )
+        .route(
+            "/api/v1/registry-credentials/{host}",
+            put(registry_credentials::put).delete(registry_credentials::delete),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     let internal = Router::new()
         .route("/internal/gateway/config", get(gateway::config))
@@ -232,4 +283,12 @@ impl Fields {
             Err(self.fail())
         }
     }
+}
+
+/// Tells a present `null` (`Some(None)`) from an absent field (`None`,
+/// with `#[serde(default)]`) in `Option<Option<T>>` fields.
+pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }

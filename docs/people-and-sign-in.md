@@ -195,8 +195,8 @@ delete, the group that alone makes them an admin (409): another admin can.
 
 `POST /api/v1/users/{id}/offboard` removes someone in one step, all or
 nothing: it disables them, ends their sessions (and cuts their running
-streams), revokes their keys, and hands their environments to
-`new_owner`:
+streams), revokes their keys, and hands their environments and
+[catalog entries](catalogs.md#owners) to `new_owner`:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -204,8 +204,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"new_owner": "NEW_OWNER_ID"}'
 ```
 
-`new_owner` is needed when they own environments, and must be someone
-else who isn't disabled. The answer lists `ended_sessions`,
-`revoked_keys` and `handed_over`, and `dex_refresh_revoked`: whether Dex
+`new_owner` is needed when they own environments or catalog entries (the
+refusal names them), and must be someone else who isn't disabled. The
+answer lists `ended_sessions`, `revoked_keys`, `handed_over` (the
+environments), `handed_over_entries` (the entries, as
+`<kind>/<source>/<name>`, such as `skills/team/pdf`), and
+`dex_refresh_revoked`: whether Dex
 dropped their sign-in too. It is `false` when Dex couldn't be reached;
 Sekisho's part is done anyway. Nobody can offboard themselves.

@@ -55,7 +55,7 @@ impl Store {
         let files = if with_files {
             sqlx::query(
                 "select path, sha256, size, executable from catalog_revision_files \
-                 where revision_id = $1 order by path",
+                 where revision_id = $1 order by path collate \"C\"",
             )
             .bind(id)
             .fetch_all(&self.pool)

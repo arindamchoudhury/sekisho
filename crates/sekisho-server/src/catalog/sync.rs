@@ -27,7 +27,7 @@ use crate::ApiError;
 use crate::app::AppState;
 
 /// How long a replica holds a source it syncs: past the sync's own limit.
-const LEASE: time::Duration = time::Duration::minutes(10);
+pub(crate) const LEASE: time::Duration = time::Duration::minutes(10);
 /// The longest a sync may take (D165).
 const SYNC_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// Git mode's source is checked every minute (D175).

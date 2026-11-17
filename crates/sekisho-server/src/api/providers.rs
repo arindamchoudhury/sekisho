@@ -5,11 +5,11 @@ use sekisho_core::formats::{AzureEndpoint, HostApi, HostApiPath, HostApis, Provi
 use sekisho_core::names::ProviderName;
 use sekisho_core::presets::{self, HostPreset, PRESETS};
 use sekisho_store::{NewProvider, Provider, ProviderCredential, ProviderOptions, ProviderUpdate};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson, Fields};
+use super::{ApiError, ApiJson, Fields, present};
 use crate::app::AppState;
 
 /// Adds a provider. A `preset` (a known OpenAI-compatible host, listed at
@@ -102,11 +102,6 @@ pub struct ProviderUpdateBody {
     azure_client_secret: Option<String>,
     #[serde(default)]
     cloud_identity: Option<bool>,
-}
-
-/// Tells a present `null` (`Some(None)`) from an absent field (`None`).
-fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
-    T::deserialize(d).map(Some)
 }
 
 /// One API an OpenAI-compatible host serves, and its whole upstream path

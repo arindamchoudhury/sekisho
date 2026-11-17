@@ -223,6 +223,8 @@ impl Store {
         let report: StoredReport = serde_json::from_value(stored).unwrap_or_default();
         Ok(SyncReport {
             id: sync_id,
+            started_at: record.started_at,
+            finished_at: record.finished_at,
             commit,
             outcome,
             error,
@@ -235,6 +237,43 @@ impl Store {
             vmcps: report.vmcps,
             environments: report.environments,
             applied,
+        })
+    }
+
+    /// The report of the latest sync of `name`. NotFound when the source
+    /// is unknown or has never synced.
+    pub async fn latest_sync_report(&self, name: &SourceName) -> Result<SyncReport> {
+        let row = sqlx::query(
+            "select y.id, y.started_at, y.finished_at, y.commit, y.outcome, y.error, y.report,              y.applied_at from catalog_syncs y join catalog_sources s on s.id = y.source_id              where s.name = $1 order by y.seq desc limit 1",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let stored: Option<serde_json::Value> = row.try_get("report")?;
+        let report: StoredReport = match stored {
+            Some(v) => serde_json::from_value(v)
+                .map_err(|e| crate::error::bad_column("report", &e.to_string()))?,
+            None => StoredReport::default(),
+        };
+        Ok(SyncReport {
+            id: row.try_get("id")?,
+            started_at: row.try_get("started_at")?,
+            finished_at: row.try_get("finished_at")?,
+            commit: row.try_get("commit")?,
+            outcome: SyncOutcomeKind::parse(&row.try_get::<String, _>("outcome")?)?,
+            error: row.try_get("error")?,
+            new: report.new,
+            updated: report.updated,
+            unchanged: report.unchanged,
+            missing: report.missing,
+            refused: report.refused,
+            warnings: report.warnings,
+            vmcps: report.vmcps,
+            environments: report.environments,
+            applied: row
+                .try_get::<Option<OffsetDateTime>, _>("applied_at")?
+                .is_some(),
         })
     }
 

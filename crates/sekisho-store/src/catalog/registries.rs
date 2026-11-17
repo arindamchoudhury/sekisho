@@ -30,14 +30,15 @@ fn normal_host(host: &str) -> Option<String> {
 }
 
 impl Store {
-    /// Sets the credential for `host`, replacing any.
+    /// Sets the credential for `host`, replacing any; answers the host as
+    /// stored (lowercase).
     pub async fn set_registry_credential(
         &self,
         secret_box: &SecretBox,
         host: &str,
         username: &str,
         password: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let mut errors = Vec::new();
         let host = normal_host(host);
         if host.is_none() {
@@ -61,14 +62,14 @@ impl Store {
              on conflict (host) do update set username = excluded.username, \
              sealed_password = excluded.sealed_password, updated_at = now()",
         )
-        .bind(host)
+        .bind(&host)
         .bind(username)
         .bind(sealed)
         .execute(&mut *tx)
         .await?;
         notify(&mut tx, ChangeKind::Catalog).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(host.unwrap_or_default())
     }
 
     pub async fn delete_registry_credential(&self, host: &str) -> Result<()> {

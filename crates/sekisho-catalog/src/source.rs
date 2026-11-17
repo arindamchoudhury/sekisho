@@ -196,9 +196,196 @@ impl Folder {
     }
 }
 
+/// Hosts whose repositories Obot reads without `.git`: `<owner>/<repo>`,
+/// then an optional branch.
+const KNOWN_GIT_HOSTS: [&str; 3] = ["github.com", "gitlab.com", "bitbucket.org"];
+
+/// An Obot catalog repository URL, read as Obot reads one
+/// (`pkg/git/git.go` `parseGitURL`, Obot `5e471f101`), D176.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObotRepository {
+    /// What git clones: the path up to and including `<repo>.git`.
+    pub url: SourceUrl,
+    /// The branch after the repository, if any. Without one Sekisho
+    /// follows the repository's default branch; Obot assumes `main`.
+    pub git_ref: Option<GitRef>,
+    /// The repository's name, `.git` removed.
+    pub repo: String,
+}
+
+impl ObotRepository {
+    /// Reads the forms Obot accepts: `https://github.com/<org>/<repo>` (and
+    /// GitLab's and Bitbucket's) with an optional branch after it, any
+    /// host's `…/<repo>.git` with an optional branch after it, and either
+    /// without `https://`, which is then assumed.
+    pub fn parse(s: &str, allow_plain_http: bool) -> Result<Self, SettingError> {
+        const WHAT: &str = "Obot catalog URL";
+        let with_scheme;
+        let s = if s.contains("://") {
+            s
+        } else {
+            with_scheme = format!("https://{s}");
+            &with_scheme
+        };
+        let url = parse_url(s, WHAT, allow_plain_http, false)?;
+        let segments: Vec<&str> = url.path().trim_matches('/').split('/').collect();
+        if segments.iter().any(|seg| seg.is_empty()) {
+            return refuse(WHAT, "give the repository's path, such as /<org>/<repo>");
+        }
+        let host = url.host_str().unwrap_or_default();
+        let (repo_path, rest) = match segments.iter().position(|seg| seg.ends_with(".git")) {
+            Some(i) => (segments[..=i].join("/"), &segments[i + 1..]),
+            None if KNOWN_GIT_HOSTS.contains(&host) && segments.len() >= 2 => (
+                format!("{}/{}.git", segments[0], segments[1]),
+                &segments[2..],
+            ),
+            None => {
+                return refuse(
+                    WHAT,
+                    "give the repository's URL ending in .git, with an optional branch after it",
+                );
+            }
+        };
+        let repo = repo_path
+            .rsplit('/')
+            .next()
+            .and_then(|r| r.strip_suffix(".git"))
+            .unwrap_or_default()
+            .to_owned();
+        if repo.is_empty() {
+            return refuse(WHAT, "give the repository's name before .git");
+        }
+        let mut clone = url.clone();
+        clone.set_path(&format!("/{repo_path}"));
+        let url = SourceUrl::parse(clone.as_str(), allow_plain_http)?;
+        let git_ref = if rest.is_empty() {
+            None
+        } else {
+            Some(GitRef::parse(&rest.join("/"))?)
+        };
+        Ok(Self { url, git_ref, repo })
+    }
+
+    /// The source name an import gives it: `obot-<repo>` as a slug, and
+    /// `obot-<repo>-<n>` for `n` of 2 or more, when that is taken.
+    pub fn source_name(&self, n: usize) -> crate::names::SourceName {
+        let mut slug = String::new();
+        for c in self.repo.chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                slug.push(c);
+            } else if !slug.is_empty() && !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        let suffix = if n >= 2 {
+            format!("-{n}")
+        } else {
+            String::new()
+        };
+        let mut name = format!("obot-{slug}");
+        name.truncate(63 - suffix.len());
+        let mut name = name.trim_end_matches('-').to_owned();
+        name.push_str(&suffix);
+        crate::names::SourceName::parse(&name).expect("a slug of at most 63 characters")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn obot(s: &str) -> (String, Option<String>, String) {
+        let r = ObotRepository::parse(s, false).unwrap();
+        (
+            r.url.as_str().to_owned(),
+            r.git_ref.map(|g| g.as_str().to_owned()),
+            r.repo,
+        )
+    }
+
+    #[test]
+    fn obot_urls_are_read_as_obot_reads_them() {
+        let gh = "https://github.com/obot-platform/mcp-catalog.git".to_owned();
+        assert_eq!(
+            obot("https://github.com/obot-platform/mcp-catalog"),
+            (gh.clone(), None, "mcp-catalog".into())
+        );
+        assert_eq!(
+            obot("https://github.com/obot-platform/mcp-catalog/"),
+            (gh.clone(), None, "mcp-catalog".into())
+        );
+        assert_eq!(
+            obot("github.com/obot-platform/mcp-catalog.git"),
+            (gh.clone(), None, "mcp-catalog".into())
+        );
+        assert_eq!(
+            obot("https://github.com/obot-platform/mcp-catalog/release"),
+            (gh, Some("release".into()), "mcp-catalog".into())
+        );
+        assert_eq!(
+            obot("https://gitlab.com/group/sub/repo.git/feature/catalog"),
+            (
+                "https://gitlab.com/group/sub/repo.git".into(),
+                Some("feature/catalog".into()),
+                "repo".into()
+            )
+        );
+        assert_eq!(
+            obot("https://git.example.com/a/b.git/dev"),
+            (
+                "https://git.example.com/a/b.git".into(),
+                Some("dev".into()),
+                "b".into()
+            )
+        );
+        assert_eq!(
+            obot("https://git.example.com:8443/b.git"),
+            (
+                "https://git.example.com:8443/b.git".into(),
+                None,
+                "b".into()
+            )
+        );
+    }
+
+    #[test]
+    fn other_obot_urls_are_refused() {
+        for bad in [
+            "ssh://git@github.com/a/b.git",
+            "git@github.com:a/b.git",
+            "http://github.com/a/b",
+            "https://git.example.com/a/b",
+            "https://github.com/a",
+            "https://github.com/a//b",
+            "https://github.com/a/b?ref=x",
+            "https://user:pw@github.com/a/b",
+            "https://github.com/a/b/--upload-pack=x",
+            "https://github.com/a/b/x..y",
+            "https://git.example.com/.git",
+        ] {
+            assert!(ObotRepository::parse(bad, false).is_err(), "{bad}");
+        }
+        let err = ObotRepository::parse("https://user:secret@github.com/a/b", false)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("secret"), "{err}");
+    }
+
+    #[test]
+    fn imported_sources_are_named_after_the_repository() {
+        let r = ObotRepository::parse("https://github.com/o/MCP_Catalog.git", false).unwrap();
+        assert_eq!(r.source_name(1).as_str(), "obot-mcp-catalog");
+        assert_eq!(r.source_name(2).as_str(), "obot-mcp-catalog-2");
+        let long =
+            ObotRepository::parse(&format!("https://h.example/{}.git", "x".repeat(80)), false)
+                .unwrap();
+        assert_eq!(long.source_name(1).as_str().len(), 63);
+        assert_eq!(long.source_name(12).as_str().len(), 63);
+        assert!(long.source_name(12).as_str().ends_with("-12"));
+        let odd = ObotRepository::parse("https://h.example/___.git", false).unwrap();
+        assert_eq!(odd.source_name(1).as_str(), "obot");
+    }
 
     #[test]
     fn urls_keep_the_parsers_normal_form() {

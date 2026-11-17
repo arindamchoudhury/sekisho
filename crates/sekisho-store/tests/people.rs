@@ -4,13 +4,18 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use sekisho_catalog::model::{CheckedEntry, EntrySpec, SkillSpec};
+use sekisho_catalog::names::{EntryKind, EntryName, SourceKind, SourceName};
+use sekisho_catalog::source::{Folder, SourceUrl};
+use sekisho_catalog::tree::TreeFile;
 use sekisho_core::keys::KeyState;
 use sekisho_core::money::MicroUsd;
 use sekisho_core::names::{EnvName, GroupName};
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_store::{
-    BudgetScope, ChangeKind, Confirmation, EnvAccess, EnvironmentSpec, FieldError, NewBudget,
-    SignIn, SignInOutcome, Store, StoreError, User,
+    BudgetScope, ChangeKind, Confirmation, EntryKey, EnvAccess, EnvironmentSpec, FieldError,
+    FoundEntry, NewBudget, NewSource, SignIn, SignInOutcome, Store, StoreError, SyncFound,
+    SyncOutcome, SyncRecord, User,
 };
 use time::OffsetDateTime;
 use tokio_stream::StreamExt;
@@ -922,4 +927,101 @@ async fn auth_snapshot_lists_people() {
     assert_eq!(snap.ended_sessions, [recent]);
     assert!(!snap.ended_sessions.contains(&active));
     assert!(snap.public_keys.is_empty());
+}
+
+/// Adds a skills source as `by`, whose first sync finds the skill `pdf`:
+/// `by` owns it.
+async fn owned_skill(
+    store: &Store,
+    sb: &sekisho_core::secret_box::SecretBox,
+    by: Uuid,
+) -> EntryKey {
+    let source = SourceName::parse("team").unwrap();
+    store
+        .add_source(
+            sb,
+            NewSource {
+                name: source.clone(),
+                kind: SourceKind::Skills,
+                url: SourceUrl::parse("https://git.example.com/team.git", false).unwrap(),
+                git_ref: None,
+                folder: Folder::default(),
+                username: None,
+                token: None,
+                allow_private_network: false,
+            },
+            by,
+        )
+        .await
+        .unwrap();
+    let entry = CheckedEntry {
+        kind: EntryKind::Skill,
+        name: EntryName::parse("pdf").unwrap(),
+        path: "pdf".into(),
+        spec: EntrySpec::Skill(SkillSpec {
+            description: "Reads PDFs.".into(),
+            license: None,
+            compatibility: None,
+        }),
+        files: vec![TreeFile {
+            path: "SKILL.md".into(),
+            bytes: b"---\nname: pdf\ndescription: Reads PDFs.\n---\n".to_vec(),
+            executable: false,
+        }],
+    };
+    let record = SyncRecord {
+        commit: Some("a".repeat(40)),
+        started_at: now(),
+        finished_at: now(),
+        outcome: SyncOutcome::Ok(SyncFound {
+            entries: vec![FoundEntry::from_checked(entry)],
+            ..SyncFound::default()
+        }),
+    };
+    store
+        .record_sync(sb, &source, record, now() + time::Duration::hours(1))
+        .await
+        .unwrap();
+    EntryKey {
+        kind: EntryKind::Skill,
+        source,
+        name: EntryName::parse("pdf").unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn offboarding_hands_over_catalog_entries() {
+    let (store, sb) = common::store().await;
+    let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &["eng"])).await;
+    let bob = signed_in(&store, &github("gh|bob", "bob@example.com", &["eng"])).await;
+    let key = owned_skill(&store, &sb, ada.id).await;
+    assert_eq!(store.get_entry(&key).await.unwrap().owner, ada.id);
+
+    let mut rx = store.listen().await.unwrap();
+    let out = store.offboard(&ada.id, Some(bob.id), now()).await.unwrap();
+    assert_eq!(out.handed_over_entries, std::slice::from_ref(&key));
+    assert!(out.handed_over.is_empty());
+    assert_eq!(store.get_entry(&key).await.unwrap().owner, bob.id);
+    let mut seen = BTreeSet::new();
+    for _ in 0..2 {
+        seen.insert(format!("{:?}", next_change(&mut rx).await));
+    }
+    let kinds: BTreeSet<String> = ["Catalog", "Users"].map(String::from).into();
+    assert_eq!(seen, kinds);
+}
+
+#[tokio::test]
+async fn offboarding_without_a_new_owner_is_refused_for_entry_owners() {
+    let (store, sb) = common::store().await;
+    let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &["eng"])).await;
+    let key = owned_skill(&store, &sb, ada.id).await;
+
+    let err = store.offboard(&ada.id, None, now()).await.unwrap_err();
+    let text = message(err);
+    assert!(text.contains("skills/team/pdf"), "{text}");
+    let err = store.offboard(&ada.id, None, now()).await.unwrap_err();
+    assert_eq!(fields(err), ["new_owner"]);
+    // Nothing changed.
+    assert_eq!(store.user(&ada.id).await.unwrap().disabled_at, None);
+    assert_eq!(store.get_entry(&key).await.unwrap().owner, ada.id);
 }

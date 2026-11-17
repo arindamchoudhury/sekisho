@@ -33,8 +33,9 @@ curl -s -H "Authorization: Bearer $TOKEN" https://sekisho.example.com/api/v1/me
 - Model prices are dollars per 1,000,000 tokens.
 - Times are RFC 3339 in UTC, such as `"2026-12-01T00:00:00Z"`.
 - IDs are UUIDs, except environment keys' (12 characters).
-- Secrets you send (provider credentials, connector settings) are never
-  answered back, and never written to the log.
+- Secrets you send (provider credentials, connector settings, catalog
+  sources' tokens, registry passwords) are never answered back, and never
+  written to the log.
 
 ## Errors
 
@@ -85,6 +86,17 @@ Every error is JSON with an `error` code and a `message` for people:
 | `POST /api/v1/local-accounts/{id}/reset` | Reset a local account's password | [Local accounts](people-and-sign-in.md#local-accounts) |
 | `GET /api/v1/connectors`, `PUT`, `DELETE /api/v1/connectors/{id}` | Identity providers' connectors | [Identity providers](people-and-sign-in.md#identity-providers) |
 | `POST /api/v1/signing-keys/rotate` | Rotate the key that signs session tokens | [Tokens](people-and-sign-in.md#tokens) |
+| `GET`, `POST /api/v1/catalog-sources` | List or add catalog sources; adding starts a sync | [Sources](catalogs.md#sources) |
+| `GET`, `PATCH`, `DELETE /api/v1/catalog-sources/{name}` | Read, change or delete a source | [Sources](catalogs.md#sources) |
+| `POST /api/v1/catalog-sources/{name}/sync` | Sync a source now (202) | [Syncs](catalogs.md#syncs) |
+| `GET /api/v1/catalog-sources/{name}/syncs/latest` | What the latest sync found and refused | [Syncs](catalogs.md#syncs) |
+| `POST /api/v1/catalog-sources/{name}/apply` | Apply the latest sync | [Apply](catalogs.md#apply) |
+| `POST /api/v1/catalog-sources/import-obot` | Add Obot catalog repositories as sources | [Importing Obot catalogs](catalogs.md#importing-obot-catalogs) |
+| `GET /api/v1/catalog/{kind}` | The catalog entries of a kind | [Entries](catalogs.md#entries) |
+| `GET`, `PATCH /api/v1/catalog/{kind}/{source}/{name}` | An entry with its revisions; change its owner | [Entries](catalogs.md#entries), [Owners](catalogs.md#owners) |
+| `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of an entry's applied revision | [Entries](catalogs.md#entries) |
+| `POST`, `DELETE /api/v1/catalog/{kind}/{source}/{name}/quarantine` | Quarantine an entry, or lift that | [Quarantine](catalogs.md#quarantine) |
+| `GET /api/v1/registry-credentials`, `PUT`, `DELETE /api/v1/registry-credentials/{host}` | Container registries' credentials | [Registry credentials](catalogs.md#registry-credentials) |
 
 Gateway agents use one more route, `GET /internal/gateway/config`, with
 the gateway token ([Running Sekisho](running.md#the-gateway-agent)).

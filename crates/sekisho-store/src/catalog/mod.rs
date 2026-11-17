@@ -165,6 +165,8 @@ pub struct SyncRecord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SyncReport {
     pub id: Uuid,
+    pub started_at: OffsetDateTime,
+    pub finished_at: OffsetDateTime,
     pub commit: Option<String>,
     pub outcome: SyncOutcomeKind,
     pub error: Option<String>,
@@ -178,7 +180,8 @@ pub struct SyncReport {
     pub warnings: Vec<Warning>,
     pub vmcps: Vec<ObotVmcp>,
     pub environments: serde_json::Value,
-    /// The sync was applied as it was recorded: the source's first.
+    /// The sync is applied: a source's first as it is recorded, later ones
+    /// by an admin.
     pub applied: bool,
 }
 

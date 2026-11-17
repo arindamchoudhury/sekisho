@@ -1,11 +1,13 @@
 //! Offboarding: one transaction that disables a person, ends their
-//! sessions, revokes their keys and hands what they own to a new owner.
+//! sessions, revokes their keys and hands what they own (environments and
+//! catalog entries) to a new owner.
 
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::catalog::{EntryKey, entry_kind, entry_name, source_name};
 use crate::error::{FieldError, bad_column};
 use crate::notify::{ChangeKind, notify};
 use crate::sessions::end_user_sessions;
@@ -21,6 +23,9 @@ pub struct Offboarded {
     pub revoked_keys: Vec<EnvKeyId>,
     /// The environments handed to the new owner, by name.
     pub handed_over: Vec<EnvName>,
+    /// The catalog entries handed to the new owner, by source, kind and
+    /// name.
+    pub handed_over_entries: Vec<EntryKey>,
 }
 
 fn refuse(message: impl Into<String>) -> StoreError {
@@ -30,11 +35,11 @@ fn refuse(message: impl Into<String>) -> StoreError {
 impl Store {
     /// Offboards `user`: disables them, ends their sessions (`offboarded`),
     /// revokes every key of theirs not yet revoked, and hands their
-    /// environments to `new_owner`. All or nothing.
+    /// environments and catalog entries to `new_owner`. All or nothing.
     ///
-    /// Refused (`Validation` on `new_owner`) when they own environments and no
-    /// new owner is named, or the new owner is the person, unknown or
-    /// disabled.
+    /// Refused (`Validation` on `new_owner`) when they own environments or
+    /// entries and no new owner is named, or the new owner is the person,
+    /// unknown or disabled.
     pub async fn offboard(
         &self,
         user: &Uuid,
@@ -64,11 +69,39 @@ impl Store {
                 .bind(user)
                 .fetch_all(&mut *tx)
                 .await?;
+        // Users, then sources, then entries, as the catalog locks them.
+        let owned_entries: Vec<(String, String, String)> = sqlx::query_as(
+            "select e.kind, s.name, e.name from catalog_entries e              join catalog_sources s on s.id = e.source_id              where e.owner_id = $1 order by s.name, e.kind, e.name for update of e",
+        )
+        .bind(user)
+        .fetch_all(&mut *tx)
+        .await?;
+        let handed_entries = owned_entries
+            .iter()
+            .map(|(kind, source, name)| {
+                Ok(EntryKey {
+                    kind: entry_kind(kind)?,
+                    source: source_name(source)?,
+                    name: entry_name(name)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         match new_owner {
-            None if !owned.is_empty() => {
+            None if !owned.is_empty() || !handed_entries.is_empty() => {
+                let mut what = Vec::new();
+                if !owned.is_empty() {
+                    what.push(format!("environments {}", owned.join(", ")));
+                }
+                if !handed_entries.is_empty() {
+                    let entries: Vec<String> = handed_entries
+                        .iter()
+                        .map(|k| format!("{}/{}/{}", k.kind.path_segment(), k.source, k.name))
+                        .collect();
+                    what.push(format!("catalog entries {}", entries.join(", ")));
+                }
                 return Err(refuse(format!(
                     "they own {}; name a new owner for them",
-                    owned.join(", ")
+                    what.join(" and ")
                 )));
             }
             None => {}
@@ -113,6 +146,16 @@ impl Store {
             None => Vec::new(),
         };
         handed.sort();
+        if let Some(n) = new_owner
+            && !handed_entries.is_empty()
+        {
+            sqlx::query("update catalog_entries set owner_id = $2 where owner_id = $1")
+                .bind(user)
+                .bind(n)
+                .execute(&mut *tx)
+                .await?;
+            notify(&mut tx, ChangeKind::Catalog).await?;
+        }
         notify(&mut tx, ChangeKind::Users).await?;
         if !revoked.is_empty() {
             notify(&mut tx, ChangeKind::Keys).await?;
@@ -132,6 +175,11 @@ impl Store {
                 .iter()
                 .map(|n| EnvName::parse(n).map_err(|_| bad_column("environment name", n)))
                 .collect::<Result<_>>()?,
+            handed_over_entries: if new_owner.is_some() {
+                handed_entries
+            } else {
+                Vec::new()
+            },
         })
     }
 }
