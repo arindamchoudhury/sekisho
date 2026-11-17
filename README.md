@@ -84,7 +84,8 @@ and what they carried.
   - MCP clients such as Claude Code sign in to Sekisho themselves.
   - Sekisho signs each user in to remote servers that need OAuth (GitHub,
     Slack, Linear and so on), keeps their tokens, and sends each request with
-    its own user's token.
+    its own user's token. Admins can cap the scopes those tokens get, per
+    server and per environment.
   - It works with clients on the 2026-07-28 MCP specification and on earlier
     ones.
   - Local (stdio) MCP servers run on the developer's machine.
