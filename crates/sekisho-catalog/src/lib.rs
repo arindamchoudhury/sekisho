@@ -4,6 +4,7 @@
 pub mod apm;
 pub mod card;
 pub mod check;
+pub mod environment;
 pub mod labels;
 pub mod launch;
 pub mod model;

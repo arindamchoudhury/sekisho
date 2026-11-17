@@ -79,10 +79,10 @@ pub fn check_source_with(
         SourceKind::Skills => skills::check(root, &limits, &mut out)?,
         SourceKind::Plugins => plugins::check(root, options, &limits, &mut out)?,
         SourceKind::Prompts => prompts::check(root, &limits, &mut out)?,
-        other => {
-            return Err(CheckError::NotYet {
-                kind: other.as_str(),
-            });
+        SourceKind::Environments => {
+            check_environments(root, "", &limits, &mut out)?;
+            refuse_duplicate_environments(&mut out);
+            out.refused.sort_by(|a, b| a.path.cmp(&b.path));
         }
     }
     scan_entry_files(&mut out);
@@ -104,6 +104,141 @@ fn check_catalog(
         read_catalog_file(rel, path, options, limits, out, vmcps);
     }
     Ok(())
+}
+
+/// Git mode's folder: every `*.yaml` or `*.yml` outside hidden folders
+/// whose `kind` is `Environment`. A file that fails is refused with every
+/// problem; YAML of other kinds is left alone.
+fn check_environments(
+    dir: &Path,
+    prefix: &str,
+    limits: &Limits,
+    out: &mut SourceCheck,
+) -> Result<(), CheckError> {
+    let unreadable = |e: std::io::Error| CheckError::Unreadable {
+        reason: format!(
+            "{}: {}",
+            if prefix.is_empty() { "." } else { prefix },
+            e.kind()
+        ),
+    };
+    let mut items = fs::read_dir(dir)
+        .map_err(unreadable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(unreadable)?;
+    items.sort_by_key(|i| i.file_name());
+    for item in items {
+        let name = item.file_name().to_string_lossy().into_owned();
+        let kind = item.file_type().map_err(unreadable)?;
+        let rel = format!("{prefix}{name}");
+        if kind.is_dir() {
+            if !name.starts_with('.') {
+                check_environments(&item.path(), &format!("{rel}/"), limits, out)?;
+            }
+            continue;
+        }
+        let lower = name.to_lowercase();
+        if !(lower.ends_with(".yaml") || lower.ends_with(".yml")) {
+            continue;
+        }
+        if !kind.is_file() {
+            refuse_file(out, &rel, "a symlink or special file isn't read".to_owned());
+            continue;
+        }
+        let mut bytes = Vec::new();
+        let read = fs::File::open(item.path())
+            .and_then(|f| f.take(limits.file_bytes + 1).read_to_end(&mut bytes));
+        if let Err(e) = read {
+            refuse_file(out, &rel, format!("can't be read: {}", e.kind()));
+            continue;
+        }
+        if bytes.len() as u64 > limits.file_bytes {
+            refuse_file(
+                out,
+                &rel,
+                format!("is larger than {} bytes", limits.file_bytes),
+            );
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            refuse_file(out, &rel, "isn't UTF-8 text".to_owned());
+            continue;
+        };
+        let value: Value = match serde_yaml_ng::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                refuse_file(out, &rel, format!("isn't valid YAML: {e}"));
+                continue;
+            }
+        };
+        if value.get("kind").and_then(Value::as_str) != Some(crate::environment::KIND) {
+            continue;
+        }
+        let shown_name = value.get("name").and_then(Value::as_str).map(str::to_owned);
+        let hidden = scan(&text);
+        if let Some(found) = hidden.critical.first() {
+            out.refused.push(Refusal {
+                path: rel,
+                kind: None,
+                name: shown_name,
+                reason: format!("the file holds a hidden character at {found}"),
+            });
+            continue;
+        }
+        out.warnings.extend(hidden.warnings.iter().map(|w| Warning {
+            path: rel.clone(),
+            message: format!("hidden character at {w}"),
+        }));
+        match crate::environment::parse_yaml(&text) {
+            Ok(doc) => out.environments.push((rel, doc)),
+            Err(problems) => out.refused.push(Refusal {
+                path: rel,
+                kind: None,
+                name: shown_name,
+                reason: problems
+                    .iter()
+                    .map(|p| {
+                        if p.field.is_empty() {
+                            p.message.clone()
+                        } else {
+                            format!("{}: {}", p.field, p.message)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }),
+        }
+    }
+    Ok(())
+}
+
+/// Two files naming one environment are both refused.
+fn refuse_duplicate_environments(out: &mut SourceCheck) {
+    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
+    for (path, doc) in &out.environments {
+        paths
+            .entry(doc.name.to_string())
+            .or_default()
+            .push(path.clone());
+    }
+    for (path, doc) in std::mem::take(&mut out.environments) {
+        let same = &paths[doc.name.as_str()];
+        if same.len() == 1 {
+            out.environments.push((path, doc));
+        } else {
+            out.refused.push(Refusal {
+                reason: format!(
+                    "{} files name the environment {} ({}); names must be unique",
+                    same.len(),
+                    doc.name,
+                    same.join(", ")
+                ),
+                path,
+                kind: None,
+                name: Some(doc.name.to_string()),
+            });
+        }
+    }
 }
 
 /// Every text file of an entry is scanned for hidden characters: a

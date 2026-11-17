@@ -735,10 +735,3 @@ fn limits_refuse_an_entry() {
     let c = check_source(SourceKind::Skills, dir.path()).unwrap();
     assert!(refusal(&c, "many").contains("5000"));
 }
-
-#[test]
-fn environments_sources_wait_for_their_reader() {
-    // Task 4 reads Git mode's environments.
-    let dir = tempfile::tempdir().unwrap();
-    assert!(check_source(SourceKind::Environments, dir.path()).is_err());
-}

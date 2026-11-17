@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::environment::EnvironmentDoc;
 use crate::launch::Launch;
 use crate::names::{EntryKind, EntryName};
 use crate::pins::{ImageRef, NpmPackage, PythonPackage};
@@ -257,6 +258,8 @@ pub struct SourceCheck {
     pub refused: Vec<Refusal>,
     pub warnings: Vec<Warning>,
     pub vmcps: Vec<ObotVmcp>,
+    /// Git mode's environments: each file's path and what it holds.
+    pub environments: Vec<(String, EnvironmentDoc)>,
 }
 
 #[cfg(test)]
