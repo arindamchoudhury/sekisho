@@ -2,11 +2,15 @@
 //!
 //! [`store`] gives a migrated `Store` on a throwaway PostgreSQL 18 container.
 //! It needs Docker. [`people`] signs people in to it, and [`FakeDex`] stands
-//! in for Dex.
+//! in for Dex. [`git_http`], [`registry`] and [`agents`] stand in for the Git
+//! hosts, container registries and A2A agents catalogs reach.
 
+pub mod agents;
 pub mod eventstream;
 pub mod fake_dex;
+pub mod git_http;
 pub mod people;
+pub mod registry;
 
 pub use fake_dex::FakeDex;
 

@@ -12,6 +12,31 @@ use sekisho_store::StoreOptions;
 use url::Url;
 
 use crate::app::Settings;
+use crate::catalog::CatalogSettings;
+
+/// The bounds of `SEKISHO_CATALOG_SYNC_INTERVAL`: often enough to matter,
+/// rarely enough not to hammer Git hosts.
+const SYNC_EVERY_MIN: Duration = Duration::from_secs(60);
+const SYNC_EVERY_MAX: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// A whole number and a unit: `90s`, `30m`, `1h`, `1d`.
+fn duration(value: &str) -> Result<Duration, String> {
+    let rule = "use a whole number and a unit, s, m, h or d, such as 30m or 1h";
+    let value = value.trim();
+    let split = value.find(|c: char| !c.is_ascii_digit()).ok_or(rule)?;
+    let (number, unit) = value.split_at(split);
+    let number: u64 = number.parse().map_err(|_| rule)?;
+    let seconds = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(rule.to_owned()),
+    };
+    Ok(Duration::from_secs(
+        number.checked_mul(seconds).ok_or(rule)?,
+    ))
+}
 
 /// Shortest accepted bootstrap or gateway token.
 const MIN_TOKEN_CHARS: usize = 16;
@@ -234,6 +259,36 @@ impl ServerConfig {
             }
         };
 
+        let mut catalog = CatalogSettings::default();
+        if let Some(value) = var("SEKISHO_CATALOG_SYNC_INTERVAL") {
+            let every =
+                duration(&value).map_err(|r| invalid("SEKISHO_CATALOG_SYNC_INTERVAL", r))?;
+            if !(SYNC_EVERY_MIN..=SYNC_EVERY_MAX).contains(&every) {
+                return Err(invalid(
+                    "SEKISHO_CATALOG_SYNC_INTERVAL",
+                    "use 1m to 7d".to_owned(),
+                ));
+            }
+            catalog.sync_every = every;
+        }
+        catalog.allow_plain_http = match var("SEKISHO_E2E_PLAIN_HTTP").as_deref() {
+            None | Some("0") => false,
+            Some("1") if cfg!(feature = "e2e") => true,
+            Some("1") => {
+                return Err(invalid(
+                    "SEKISHO_E2E_PLAIN_HTTP",
+                    "plain HTTP to Git hosts, registries and agents is only for the                      end-to-end tests' mock, so only a build with the e2e feature can turn it on"
+                        .to_owned(),
+                ));
+            }
+            Some(other) => {
+                return Err(invalid(
+                    "SEKISHO_E2E_PLAIN_HTTP",
+                    format!("use 1 or 0, not {other:?}"),
+                ));
+            }
+        };
+
         Ok(Self {
             database_url,
             database_max_connections,
@@ -251,6 +306,7 @@ impl ServerConfig {
                 republish: REPUBLISH,
                 public_url,
                 admin_groups,
+                catalog,
             },
         })
     }
@@ -371,6 +427,65 @@ mod tests {
         let mut vars = required();
         vars.insert("SEKISHO_E2E_BARE_ROUTE", "1");
         assert!(load(&vars).unwrap().settings.render.bare_route);
+    }
+
+    /// Plain HTTP to Git hosts, registries and agents is for the
+    /// end-to-end tests' mock alone.
+    #[test]
+    #[cfg(not(feature = "e2e"))]
+    fn plain_http_needs_an_e2e_build() {
+        let mut vars = required();
+        vars.insert("SEKISHO_E2E_PLAIN_HTTP", "1");
+        let message = error(&vars);
+        assert!(
+            message.contains("SEKISHO_E2E_PLAIN_HTTP") && message.contains("e2e"),
+            "{message}"
+        );
+        vars.insert("SEKISHO_E2E_PLAIN_HTTP", "0");
+        assert!(!load(&vars).unwrap().settings.catalog.allow_plain_http);
+    }
+
+    #[test]
+    #[cfg(feature = "e2e")]
+    fn an_e2e_build_can_turn_on_plain_http() {
+        let mut vars = required();
+        vars.insert("SEKISHO_E2E_PLAIN_HTTP", "1");
+        assert!(load(&vars).unwrap().settings.catalog.allow_plain_http);
+    }
+
+    #[test]
+    fn the_catalog_sync_interval_is_read_and_bounded() {
+        let mut vars = required();
+        let catalog = load(&vars).unwrap().settings.catalog;
+        assert_eq!(catalog.sync_every, Duration::from_secs(3600));
+        assert!(!catalog.allow_plain_http);
+        assert_eq!(catalog.git_program, std::path::PathBuf::from("git"));
+        for (value, seconds) in [
+            ("30m", 1800),
+            ("2h", 7200),
+            ("90s", 90),
+            ("1d", 86_400),
+            ("1h", 3600),
+        ] {
+            vars.insert("SEKISHO_CATALOG_SYNC_INTERVAL", value);
+            assert_eq!(
+                load(&vars).unwrap().settings.catalog.sync_every,
+                Duration::from_secs(seconds),
+                "{value}"
+            );
+        }
+        for bad in ["59s", "8d", "60", "1x", "-1h", "h", "1.5h", ""] {
+            vars.insert("SEKISHO_CATALOG_SYNC_INTERVAL", bad);
+            if bad.is_empty() {
+                // An empty value counts as unset.
+                assert!(load(&vars).is_ok());
+                continue;
+            }
+            assert!(
+                error(&vars).contains("SEKISHO_CATALOG_SYNC_INTERVAL"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

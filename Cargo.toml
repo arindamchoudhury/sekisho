@@ -28,6 +28,11 @@ clap = { version = "4.6.7", features = ["derive"] }
 crc = "3.4.0"
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
 glob = "0.3.4"
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", default-features = false }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "ring", "tls12"] }
+hyper-util = { version = "0.1.21", default-features = false }
 jsonschema = { version = "0.60.1", default-features = false }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 prost = "0.14.4"
@@ -35,6 +40,11 @@ prost-types = "0.14.4"
 protox = "0.10.0"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false }
+# TLS for what Sekisho fetches itself (catalog sources' registries and agent
+# cards), through hyper-rustls with ring passed explicitly: no aws-lc-rs build,
+# and reqwest stays plain HTTP everywhere (D178).
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7.1"
 semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -53,6 +63,7 @@ tonic = "0.14.6"
 tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"
 tower = "0.5.3"
+tower-service = "0.3.3"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 url = "2.5.8"

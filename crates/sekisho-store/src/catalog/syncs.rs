@@ -464,7 +464,7 @@ async fn apply_in(
         .bind(now)
         .execute(&mut *conn)
         .await?;
-    sqlx::query("update catalog_sources set applied_commit = $2, updated_at = now() where id = $1")
+    sqlx::query("update catalog_sources set applied_commit = $2 where id = $1")
         .bind(source_id)
         .bind(commit)
         .execute(&mut *conn)

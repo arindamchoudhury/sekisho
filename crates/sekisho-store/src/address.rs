@@ -5,7 +5,7 @@
 //! save-time check only; plan 8's egress rules also block metadata addresses
 //! from agentgateway.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 /// A lookup that takes longer counts as one that doesn't resolve.
@@ -119,34 +119,77 @@ fn read_base_url(raw: &str, drop_extras: bool) -> Result<BaseUrl, BaseUrlError> 
 ///
 /// Errors name an address but never the URL or its host.
 pub async fn check_destination(url: &BaseUrl, allow_private: bool) -> Result<(), String> {
-    let addresses: Vec<IpAddr> = match &url.host {
-        url::Host::Ipv4(ip) => vec![IpAddr::V4(*ip)],
-        url::Host::Ipv6(ip) => vec![IpAddr::V6(*ip)],
-        url::Host::Domain(host) => match tokio::time::timeout(
-            LOOKUP_TIMEOUT,
-            tokio::net::lookup_host((host.as_str(), url.port)),
-        )
-        .await
-        {
-            Ok(Ok(found)) => found.map(|a| a.ip()).collect(),
-            Ok(Err(_)) | Err(_) => Vec::new(),
-        },
-    };
+    let addresses = lookup(&url.host, url.port).await;
     if addresses.is_empty() {
         return if allow_private {
             Ok(())
         } else {
             Err(
-                "the host doesn't resolve from the Sekisho server; if it resolves only on \
-                 the gateway's network, turn on allow_private_network"
+                "the host doesn't resolve from the Sekisho server; if it resolves only on                  the gateway's network, turn on allow_private_network"
                     .to_owned(),
             )
         };
     }
-    let classes: Vec<(IpAddr, Class)> = addresses
+    judge(&addresses, allow_private)
+}
+
+/// Resolves `host` for a connection Sekisho makes itself (catalog syncs,
+/// registries, agent cards), and answers every address only if each passes
+/// [`check_destination`]'s rules. The caller connects to these addresses
+/// and nowhere else, so DNS can't move the connection after the check. A
+/// host that doesn't resolve is refused even with `allow_private`, since
+/// nothing else would resolve it.
+pub async fn resolve_checked(
+    host: &url::Host,
+    port: u16,
+    allow_private: bool,
+) -> Result<Vec<SocketAddr>, String> {
+    let addresses = lookup(host, port).await;
+    if addresses.is_empty() {
+        return Err("the host doesn't resolve from the Sekisho server".to_owned());
+    }
+    judge(&addresses, allow_private)?;
+    Ok(addresses
         .into_iter()
+        .map(|ip| SocketAddr::new(as_ipv4_if_mapped(ip), port))
+        .collect())
+}
+
+/// The host's addresses: itself when it is one; empty when the lookup
+/// fails or times out.
+async fn lookup(host: &url::Host, port: u16) -> Vec<IpAddr> {
+    match host {
+        url::Host::Ipv4(ip) => vec![IpAddr::V4(*ip)],
+        url::Host::Ipv6(ip) => vec![IpAddr::V6(*ip)],
+        url::Host::Domain(host) => {
+            match tokio::time::timeout(
+                LOOKUP_TIMEOUT,
+                tokio::net::lookup_host((host.as_str(), port)),
+            )
+            .await
+            {
+                Ok(Ok(found)) => {
+                    let mut seen = Vec::new();
+                    for ip in found.map(|a| a.ip()) {
+                        if !seen.contains(&ip) {
+                            seen.push(ip);
+                        }
+                    }
+                    seen
+                }
+                Ok(Err(_)) | Err(_) => Vec::new(),
+            }
+        }
+    }
+}
+
+/// Refuses the lot if any address is one that can't be used, or private
+/// without `allow_private`. Errors name an address, never the host.
+fn judge(addresses: &[IpAddr], allow_private: bool) -> Result<(), String> {
+    let classes: Vec<(IpAddr, Class)> = addresses
+        .iter()
         .map(|ip| {
-            let ip = as_ipv4_if_mapped(ip);
+            let ip = as_ipv4_if_mapped(*ip);
             (ip, classify(ip))
         })
         .collect();
@@ -240,6 +283,34 @@ fn classify(ip: IpAddr) -> Class {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resolving_answers_only_checked_addresses() {
+        use std::net::SocketAddr;
+        let v4 = |a, b, c, d| url::Host::Ipv4(Ipv4Addr::new(a, b, c, d));
+        let loopback: SocketAddr = "127.0.0.1:8443".parse().unwrap();
+        assert_eq!(
+            resolve_checked(&v4(127, 0, 0, 1), 8443, true)
+                .await
+                .unwrap(),
+            [loopback]
+        );
+        let refused = resolve_checked(&v4(127, 0, 0, 1), 8443, false)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("needs allow_private_network"), "{refused}");
+        let metadata = resolve_checked(&v4(169, 254, 169, 254), 80, true)
+            .await
+            .unwrap_err();
+        assert!(metadata.contains("metadata"), "{metadata}");
+        let mapped = url::Host::Ipv6("::ffff:169.254.169.254".parse().unwrap());
+        assert!(resolve_checked(&mapped, 80, true).await.is_err());
+        // Sekisho connects itself, so a host it can't resolve is refused
+        // even with allow_private_network, unlike a provider's base URL.
+        let nowhere = url::Host::Domain("sekisho-test.invalid".to_owned());
+        let err = resolve_checked(&nowhere, 443, true).await.unwrap_err();
+        assert!(err.contains("doesn't resolve"), "{err}");
+    }
 
     #[test]
     fn base_urls_are_read_as_agentgateway_reads_them() {

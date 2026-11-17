@@ -1,6 +1,6 @@
 [package]
 name = "sekisho-testkit"
-description = "Test support for Sekisho: throwaway PostgreSQL stores, a Dex in memory and a mock model server"
+description = "Test support for Sekisho: throwaway PostgreSQL stores, a Dex in memory, a mock model server, and Git, registry and A2A agent stand-ins"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -24,7 +24,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 testcontainers = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }

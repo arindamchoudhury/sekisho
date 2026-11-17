@@ -25,6 +25,8 @@ use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use url::Url;
 
+use crate::catalog::CatalogSettings;
+
 /// What the server needs besides the store and the encryption key.
 #[derive(Clone)]
 pub struct Settings {
@@ -43,6 +45,8 @@ pub struct Settings {
     pub public_url: Url,
     /// `SEKISHO_ADMIN_GROUPS`: members of these groups are admins.
     pub admin_groups: Vec<String>,
+    /// How catalog sources are synced.
+    pub catalog: CatalogSettings,
 }
 
 impl fmt::Debug for Settings {
@@ -54,6 +58,7 @@ impl fmt::Debug for Settings {
             .field("republish", &self.republish)
             .field("public_url", &self.public_url.as_str())
             .field("admin_groups", &self.admin_groups)
+            .field("catalog", &self.catalog)
             .finish_non_exhaustive()
     }
 }
@@ -81,6 +86,7 @@ struct Inner {
     republish: Duration,
     /// The newest gateway config version this replica has seen saved.
     published: watch::Sender<i64>,
+    catalog: CatalogSettings,
 }
 
 impl AppState {
@@ -116,6 +122,7 @@ impl AppState {
                 long_poll: settings.long_poll,
                 republish: settings.republish,
                 published: watch::channel(0).0,
+                catalog: settings.catalog,
             }),
         }
     }
@@ -159,6 +166,11 @@ impl AppState {
 
     pub(crate) fn admin_groups(&self) -> &[String] {
         &self.inner.admin_groups
+    }
+
+    /// How catalog sources are synced.
+    pub fn catalog(&self) -> &CatalogSettings {
+        &self.inner.catalog
     }
 
     /// Whether Sekisho's client is registered at Dex, so sign-ins can start.

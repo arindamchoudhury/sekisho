@@ -19,6 +19,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/sekisho target/release/sekisho-mock-model /out/
 
 FROM debian:trixie-slim
+# git reads catalog sources (2.37 or later, for http.curloptResolve);
+# ca-certificates lets Sekisho verify the Git hosts, registries and agents it
+# reaches.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 # agentgateway runs as 65532 and must read the config file the gateway agent
 # writes (mode 0600) on a shared volume, so Sekisho runs as 65532 too.
 RUN mkdir /config && chown 65532:65532 /config

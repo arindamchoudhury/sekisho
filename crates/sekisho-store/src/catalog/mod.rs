@@ -66,6 +66,9 @@ pub struct Source {
     pub pending: bool,
     /// A replica holds the source's claim.
     pub syncing: bool,
+    /// When its settings last changed: a sync before that read something
+    /// else.
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

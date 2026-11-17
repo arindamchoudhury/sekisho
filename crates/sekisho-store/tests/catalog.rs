@@ -239,12 +239,19 @@ async fn changing_the_url_needs_the_token_again() {
         allow_private_network: Some(true),
         ..SourcePatch::default()
     };
+    let before = store
+        .get_source(&source_name("public"))
+        .await
+        .unwrap()
+        .updated_at;
     let public = store
         .update_source(&sb, &source_name("public"), patch)
         .await
         .unwrap();
     assert_eq!(public.git_ref, None);
     assert!(public.allow_private_network);
+    // A change of settings is dated, so a sync can tell its last read is stale.
+    assert!(public.updated_at > before);
     assert!(matches!(
         store
             .update_source(&sb, &source_name("nope"), SourcePatch::default())
@@ -360,11 +367,17 @@ async fn a_later_sync_waits_for_apply() {
         b"v1"
     );
 
+    let settings_changed = store.get_source(&a).await.unwrap().updated_at;
     let applied = store
         .apply_source(&a, OffsetDateTime::now_utc())
         .await
         .unwrap();
     assert_eq!(names(&applied.updated), ["pdf"]);
+    // Applying isn't a change of the source's settings.
+    assert_eq!(
+        store.get_source(&a).await.unwrap().updated_at,
+        settings_changed
+    );
     assert!(applied.removed.is_empty());
     let pdf = store.get_entry(&key("a", "pdf")).await.unwrap();
     assert_eq!(pdf.applied.as_ref().unwrap().commit, "c2");

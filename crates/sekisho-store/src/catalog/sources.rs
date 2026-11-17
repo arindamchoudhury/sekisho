@@ -19,7 +19,7 @@ use crate::{Result, Store, StoreError};
 /// sync waits for apply, and whether a replica holds it.
 macro_rules! source_select {
     () => {
-        "select s.id, s.name, s.kind, s.url, s.git_ref, s.folder, s.username, \
+        "select s.id, s.name, s.kind, s.url, s.git_ref, s.folder, s.username, s.updated_at, \
          s.sealed_token is not null as has_token, s.allow_private_network, s.added_by, \
          s.applied_commit, coalesce(s.claimed_until > now(), false) as syncing, \
          l.id as sync_id, l.started_at, l.finished_at, l.commit as sync_commit, \
@@ -68,6 +68,7 @@ fn from_row(row: &PgRow) -> Result<Source> {
         latest_sync,
         pending: row.try_get("pending")?,
         syncing: row.try_get("syncing")?,
+        updated_at: row.try_get("updated_at")?,
     })
 }
 

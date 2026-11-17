@@ -11,6 +11,7 @@ use sekisho_core::secret_box::SecretBox;
 use sekisho_gateway::{HookTargets, RenderOptions};
 use sekisho_hooks::cache::AuthCache;
 use sekisho_server::app::{AppState, Settings, register_with_dex, router, start_publisher};
+use sekisho_server::catalog::CatalogSettings;
 use sekisho_testkit::people::{person, session_token};
 use sekisho_testkit::{FakeDex, TestStore};
 use serde_json::{Value, json};
@@ -60,6 +61,11 @@ pub fn settings() -> Settings {
         republish: Duration::from_millis(300),
         public_url: Url::parse(ISSUER).unwrap(),
         admin_groups: vec![ADMIN_GROUP.to_owned(), format!("github/{ADMIN_GROUP}")],
+        // The tests' Git hosts, registries and agents speak plain HTTP.
+        catalog: CatalogSettings {
+            allow_plain_http: true,
+            ..CatalogSettings::default()
+        },
     }
 }
 

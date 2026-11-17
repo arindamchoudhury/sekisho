@@ -22,6 +22,8 @@ use sekisho_server::app::{
     AppState, IDP_SWEEP_EVERY, KEY_ROTATION_CHECK, register_with_dex, router, start_publisher,
     start_sign_in_upkeep,
 };
+use sekisho_server::catalog::outbound::install_crypto;
+use sekisho_server::catalog::sync::start_scheduler;
 use sekisho_server::config::ServerConfig;
 use sekisho_store::{Store, StoreOptions};
 use time::OffsetDateTime;
@@ -68,6 +70,9 @@ async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
+    // rustls' crypto for what Sekisho fetches itself: ring, not aws-lc-rs
+    // (D178).
+    install_crypto();
     let result = match Cli::parse().command {
         Command::Serve => serve().await,
         Command::Migrate => migrate().await,
@@ -169,6 +174,12 @@ async fn serve() -> anyhow::Result<()> {
     // Sign-ins answer 503 until Sekisho is registered at Dex.
     register_with_dex(&state, Duration::from_secs(5));
     start_sign_in_upkeep(&state, KEY_ROTATION_CHECK, IDP_SWEEP_EVERY);
+    if state.catalog().allow_plain_http {
+        tracing::warn!(
+            "SEKISHO_E2E_PLAIN_HTTP is on: catalog sources, registries and agents may be              reached over plain HTTP"
+        );
+    }
+    start_scheduler(state.clone(), state.catalog().sync_every);
 
     let admin_listener = tokio::net::TcpListener::bind(config.listen)
         .await
