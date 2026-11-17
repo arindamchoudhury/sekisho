@@ -1,0 +1,40 @@
+- entryKey: a
+  name: A
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/a
+- entryKey: b
+  name: B
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/b
+- type: vmcp
+  entryKey: team-tools
+  displayName: Team Tools
+  description: The team's servers.
+  components:
+    - id: c1
+      name: A
+      mcpServerCatalogEntryKey: a
+    - id: c2
+      name: B
+      mcpServerCatalogEntryKey: b
+      toolOverrides:
+        - name: x
+          enabled: true
+        - name: y
+          enabled: true
+          overrideName: why
+        - name: z
+          enabled: false
+    - id: c3
+      name: C
+      mcpServerCatalogEntryKey: other::c
+  profiles:
+    - name: readers
+- type: vmcp
+  displayName: Plain Set
+  components:
+    - id: c1
+      name: A
+      mcpServerCatalogEntryKey: a

@@ -1,0 +1,48 @@
+- name: GitHub Issues
+  description: Issues and pull requests on GitHub.
+  runtime: npx
+  npxConfig:
+    package: "@acme/github-issues@1.2.3"
+    args: ["--stdio"]
+  config:
+    - name: GitHub token
+      key: github-token
+      description: A personal access token.
+      sensitive: true
+      required: true
+      usage: env
+- entryKey: fetch
+  name: Fetch Server
+  shortDescription: Fetches web pages.
+  description: A longer description that loses to shortDescription.
+  runtime: uvx
+  uvxConfig:
+    package: mcp-server-fetch==0.6.2
+    command: mcp-server-fetch
+- name: Image Server
+  runtime: containerized
+  containerizedConfig:
+    image: ghcr.io/o/i:1.0
+    port: 8080
+    path: /mcp
+    args: ["--verbose"]
+- name: Remote One
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/mcp
+    staticOAuthRequired: true
+  config:
+    - name: API key
+      key: x_api_key
+      usage: header
+      prefix: "Bearer "
+      sensitive: true
+    - name: Region
+      key: region
+      usage: header
+      value: 8080
+  toolPreview:
+    - name: search
+      description: Searches.
+  metadata:
+    unsupportedTools: a,b

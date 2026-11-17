@@ -396,6 +396,28 @@ impl fmt::Display for ImageRef {
     }
 }
 
+/// Each is stored as its canonical text and checked again when read.
+macro_rules! serde_as_text {
+    ($ty:ident, $parse:ident) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = <String as serde::Deserialize>::deserialize(d)?;
+                Self::$parse(&s).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+serde_as_text!(NpmPackage, parse_exact);
+serde_as_text!(PythonPackage, parse_exact);
+serde_as_text!(ImageRef, parse);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +449,17 @@ mod tests {
         ] {
             assert!(!is_registry(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn pins_are_stored_as_their_canonical_text() {
+        let image = ImageRef::parse("nginx:1.27").unwrap();
+        let json = serde_json::to_string(&image).unwrap();
+        assert_eq!(json, "\"registry-1.docker.io/library/nginx:1.27\"");
+        assert_eq!(serde_json::from_str::<ImageRef>(&json).unwrap(), image);
+        let py = PythonPackage::parse_exact("a@1.0").unwrap();
+        assert_eq!(serde_json::to_string(&py).unwrap(), "\"a==1.0\"");
+        assert!(serde_json::from_str::<NpmPackage>("\"pkg@latest\"").is_err());
     }
 
     #[test]

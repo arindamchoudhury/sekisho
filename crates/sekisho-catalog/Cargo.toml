@@ -1,6 +1,6 @@
 [package]
 name = "sekisho-catalog"
-description = "Sekisho's catalog rules: entry and source names, references, labels, exact package versions, image references, hidden characters and source settings"
+description = "Sekisho's catalog rules: names, references, labels, exact versions, hidden characters, source settings, and what a source's folder holds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,14 @@ repository.workspace = true
 
 [dependencies]
 sekisho-core = { workspace = true }
+glob = { workspace = true }
 semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

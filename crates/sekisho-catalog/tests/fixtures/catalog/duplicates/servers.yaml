@@ -1,0 +1,13 @@
+- entryKey: dup
+  name: First
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/1
+- name: Dup
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/2
+- name: unique
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/3

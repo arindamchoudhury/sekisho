@@ -1,0 +1,43 @@
+- apiVersion: sekisho/v1alpha1
+  kind: A2AAgent
+  name: planner
+  description: Plans work.
+  url: https://agents.example.com/planner
+  card_url: https://agents.example.com/planner/card.json
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: docs
+  description: Our docs.
+  remote:
+    url: https://mcp.example.com/docs?team=a
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: local
+  container:
+    image: nginx:1.27
+    port: 8080
+    path: /mcp
+  config:
+    - name: Level
+      key: log-level
+      usage: env
+      value: debug
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: coloured
+  colour: red
+  remote:
+    url: https://mcp.example.com/c
+- apiVersion: sekisho/v1alpha1
+  kind: MCPServer
+  name: two
+  remote:
+    url: https://mcp.example.com/two
+  npx:
+    package: pkg@1.0.0
+- apiVersion: sekisho/v1alpha1
+  kind: Widget
+  name: odd
+- apiVersion: sekisho/v2
+  kind: MCPServer
+  name: future

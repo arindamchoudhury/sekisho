@@ -1,0 +1,43 @@
+- name: loose
+  runtime: npx
+  npxConfig:
+    package: pkg
+- name: openapi-one
+  runtime: openapi
+  openAPIConfig:
+    url: https://api.example.com/openapi.json
+- name: composite-one
+  runtime: composite
+- name: templated
+  runtime: remote
+  remoteConfig:
+    urlTemplate: https://{{tenant}}.example.com/mcp
+- name: hostnamed
+  runtime: remote
+  remoteConfig:
+    hostname: example.com
+- name: tunnelled
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/t
+    tunnelName: office
+- name: bad-image
+  runtime: containerized
+  containerizedConfig:
+    image: "Bad Image"
+    port: 8080
+    path: /mcp
+- name: no-config
+  runtime: uvx
+- name: file-config
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/f
+  config:
+    - name: Credentials file
+      key: creds
+      usage: file
+- name: good
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/good

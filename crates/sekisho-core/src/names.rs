@@ -93,6 +93,20 @@ macro_rules! name_type {
                 f.write_str(&self.0)
             }
         }
+
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(&self.0)
+            }
+        }
+
+        /// Checked like [`Self::parse`].
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = <String as serde::Deserialize>::deserialize(d)?;
+                Self::parse(&s).map_err(serde::de::Error::custom)
+            }
+        }
     };
 }
 
@@ -202,5 +216,15 @@ mod tests {
         }
         let refused = ConnectorId::parse("local").unwrap_err().to_string();
         assert!(refused.contains("reserved"), "{refused}");
+    }
+
+    #[test]
+    fn names_are_json_strings_checked_on_the_way_in() {
+        let name = EntryName::parse("pdf").unwrap();
+        assert_eq!(serde_json::to_string(&name).unwrap(), "\"pdf\"");
+        assert_eq!(serde_json::from_str::<EntryName>("\"pdf\"").unwrap(), name);
+        let err = serde_json::from_str::<EntryName>("\"Pdf\"").unwrap_err();
+        assert!(err.to_string().contains("invalid entry name"), "{err}");
+        assert!(serde_json::from_str::<SourceName>("\"environments\"").is_err());
     }
 }

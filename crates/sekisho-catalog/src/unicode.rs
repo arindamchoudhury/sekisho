@@ -12,6 +12,16 @@ pub struct Finding {
     pub what: &'static str,
 }
 
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "line {}, column {}: U+{:04X} ({})",
+            self.line, self.column, self.codepoint as u32, self.what
+        )
+    }
+}
+
 /// What [`scan`] found in one text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scan {
@@ -78,6 +88,15 @@ mod tests {
     fn columns_count_characters_not_bytes() {
         let s = scan("éé\u{202E}");
         assert_eq!((s.critical[0].line, s.critical[0].column), (1, 3));
+    }
+
+    #[test]
+    fn findings_say_where_and_what() {
+        let s = scan("a\u{202E}");
+        assert_eq!(
+            s.critical[0].to_string(),
+            "line 1, column 2: U+202E (bidirectional embedding or override)"
+        );
     }
 
     #[test]

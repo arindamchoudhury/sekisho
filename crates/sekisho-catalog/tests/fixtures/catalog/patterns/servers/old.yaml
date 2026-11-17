@@ -1,0 +1,4 @@
+name: old
+runtime: remote
+remoteConfig:
+  fixedURL: https://mcp.example.com/old

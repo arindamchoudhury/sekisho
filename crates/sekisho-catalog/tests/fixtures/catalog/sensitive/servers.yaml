@@ -1,0 +1,19 @@
+- name: leaky
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/leaky
+  config:
+    - name: Token
+      key: token
+      usage: env
+      sensitive: true
+      value: sk-not-a-real-secret
+- name: asks
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/asks
+  config:
+    - name: Token
+      key: token
+      usage: env
+      sensitive: true

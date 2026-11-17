@@ -1,0 +1,4 @@
+apiVersion: sekisho/v1alpha1
+kind: A2AAgent
+name: dup
+url: https://agents.example.com/dup

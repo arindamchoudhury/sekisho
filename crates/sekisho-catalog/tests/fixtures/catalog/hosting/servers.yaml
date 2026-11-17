@@ -1,0 +1,8 @@
+name: hosted
+runtime: npx
+npxConfig:
+  package: pkg@1.0.0
+  egressDomains: [api.example.com]
+resources:
+  limits:
+    memory: 1Gi

@@ -36,7 +36,10 @@ impl fmt::Display for EntryRef {
 }
 
 /// What a catalog entry is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     McpServer,
     A2aAgent,
@@ -86,7 +89,8 @@ impl EntryKind {
 }
 
 /// What a catalog source's repository holds (D164).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// Obot's MCP catalog format, and Sekisho's own for MCP servers and A2A
     /// agents.

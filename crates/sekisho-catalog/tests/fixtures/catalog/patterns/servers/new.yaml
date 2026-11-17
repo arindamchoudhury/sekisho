@@ -1,0 +1,4 @@
+name: new
+runtime: remote
+remoteConfig:
+  fixedURL: https://mcp.example.com/new
