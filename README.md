@@ -75,6 +75,11 @@ and what they carried.
   - Budgets and spend are shown in your currency: an admin picks the
     display currency and sets its exchange rate. Underneath, Sekisho records
     spend in US dollars, the currency providers price in.
+  - A cache report shows what each person, environment, key and model
+    spends on prompt-cache reads and writes. It also estimates
+    cache rebuilds: requests that wrote the whole context to the cache
+    again after a break longer than the cache lasts, and what they cost
+    beyond a cache read.
   - Budgets send alerts to signed webhooks, at 50%, 80% and 100% by default.
   - Spend exports as CSV, JSON or [FOCUS](https://focus.finops.org/), the
     FinOps cost format, so it can sit beside the rest of the company's cloud
