@@ -9,6 +9,7 @@ pub mod agents;
 pub mod eventstream;
 pub mod fake_dex;
 pub mod git_http;
+pub mod github;
 pub mod people;
 pub mod registry;
 

@@ -111,7 +111,7 @@ impl Store {
     ) -> Result<SyncReport> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "select id, username, sealed_token, applied_commit from catalog_sources \
+            "select id, kind, username, sealed_token, applied_commit from catalog_sources \
              where name = $1 for update",
         )
         .bind(name.as_str())
@@ -237,7 +237,10 @@ impl Store {
             .bind(&stored)
             .execute(&mut *tx)
             .await?;
-        if outcome == SyncOutcomeKind::Ok && first {
+        // Git mode's syncs apply themselves: each new commit is applied
+        // (D175).
+        let environments = row.try_get::<String, _>("kind")? == "environments";
+        if outcome == SyncOutcomeKind::Ok && (first || environments) {
             apply_in(&mut tx, source_id, sync_id, record.finished_at).await?;
             applied = true;
         }

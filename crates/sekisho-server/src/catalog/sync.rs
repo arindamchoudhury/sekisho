@@ -157,8 +157,10 @@ async fn read_source(state: &AppState, source: &Source) -> (Option<String>, Sync
         Err(e) => return failed(e.to_string()),
     };
     if source.kind == SourceKind::Environments {
-        // Git mode's applier (plan 3, Task 10) takes these.
-        return (Some(commit), SyncOutcome::Ok(SyncFound::default()));
+        return match super::git_mode::apply(state, source, check).await {
+            Ok(found) => (Some(commit), SyncOutcome::Ok(found)),
+            Err(e) => (Some(commit), SyncOutcome::Failed(e)),
+        };
     }
     let out = Outbound::new(settings.allow_plain_http);
     let mut refused = check.refused;

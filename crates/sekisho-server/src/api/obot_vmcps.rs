@@ -176,6 +176,7 @@ pub async fn create(
     ApiJson(body): ApiJson<CreateBody>,
 ) -> Result<(StatusCode, Json<CreatedBody>), ApiError> {
     let source = source_path(&name)?;
+    super::git_mode::refuse_in_git_mode(&state, &key).await?;
     let key = EntryName::parse(&key).map_err(|_| ApiError::NotFound)?;
     let vmcp = state
         .store()

@@ -244,6 +244,7 @@ pub async fn put(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    super::git_mode::refuse_in_git_mode(&state, &path).await?;
     let yaml = is_yaml(headers.get(header::CONTENT_TYPE));
     let (doc, owner) = if yaml {
         let text = std::str::from_utf8(&body)
@@ -342,6 +343,18 @@ pub async fn delete(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.store().delete_environment(&path_name(&name)?).await?;
+    let name = path_name(&name)?;
+    // In Git mode, one whose file is in Git is deleted through Git; one
+    // gone from Git, or made before Git mode, can be deleted here.
+    if state
+        .store()
+        .get_environment(&name)
+        .await?
+        .git_path
+        .is_some()
+    {
+        super::git_mode::refuse_in_git_mode(&state, name.as_str()).await?;
+    }
+    state.store().delete_environment(&name).await?;
     Ok(StatusCode::NO_CONTENT)
 }

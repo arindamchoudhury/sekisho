@@ -45,6 +45,8 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
 | `toolkits` | [Toolkits](catalogs.md#toolkits), whose entries the environment delivers too |
 | `owner` | JSON only: the owner's user ID. Without it, the owner stays the same, or the admin who creates the environment owns it. `PATCH` changes it on its own ([below](#owners)) |
 
+In [Git mode](#git-mode), environments change through pull requests instead.
+
 Every list keeps its order. A field the environment doesn't know is
 refused, and so is every problem at once (422, `fields` naming each, such
 as `skills[1]` or `default_models.openai`).
@@ -164,6 +166,82 @@ In YAML, `api_version` and `kind` are required, and the fields Sekisho
 sets (`owner`, `id`, timestamps, `effective_default_models`,
 `catalog_status`, `delivered`) are refused. `GET` leaves out empty lists
 and unset defaults, and what it writes reads back to the same environment.
+
+### Git mode
+
+In Git mode, environments are kept as YAML files in one repository, and
+Sekisho applies each new commit. Changes go through pull requests on
+GitHub (github.com or GitHub Enterprise Server), so they are reviewed
+where your code is. The API stops editing environments while it is on.
+
+Turn it on, or change its settings, with `PUT /api/v1/git-mode`:
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  https://sekisho.example.com/api/v1/git-mode \
+  -d '{"url": "https://github.com/acme/sekisho-environments.git",
+       "folder": "environments", "token": "...", "github_token": "..."}'
+```
+
+| Field | Required | What it is |
+|---|---|---|
+| `url` | yes | The repository's `https://` URL, as for a [catalog source](catalogs.md#sources); its last two path segments are the GitHub repository (`owner/name`) |
+| `ref` | no | The branch to follow; without one, the default branch. Pull requests are opened against it |
+| `folder` | no | The folder holding the environment files; without one, the root |
+| `username`, `token` | no | What reads the repository, as for a catalog source. A `PUT` without `token` clears it |
+| `allow_private_network` | no | `true` lets the Git host and GitHub's API be on a private or local address |
+| `github_api_url` | for other hosts | GitHub's REST API: `https://api.github.com` for `github.com` (the default), or GitHub Enterprise Server's, such as `https://ghe.example.com/api/v3` |
+| `github_token` | yes | Opens pull requests. A fine-grained token for that repository alone, with read and write access to **Contents** and **Pull requests**. Sealed in the database and never answered back |
+
+Every `PUT` replaces all the settings. Git mode reads the repository
+through a catalog source named `environments` (a name no other source
+can take), synced every minute; the admin who turns Git mode on owns the
+environments it creates. `GET /api/v1/git-mode` answers `{"enabled":
+false}` when it is off, and otherwise its settings (`source`, as a
+catalog source answers, without tokens), `github_api_url`,
+`has_github_token`, `enabled_by`, `enabled_at` and `latest_sync`.
+
+**The files** are every `.yaml` or `.yml` file in the folder (and the
+folders under it, hidden ones skipped) whose `kind` is `Environment`, in
+the [YAML format](#yaml): one environment each, with `api_version` and
+`kind`, and without an owner. Other YAML is left alone, and two files
+naming one environment are both refused.
+
+**Each sync** reads the newest commit and saves every environment it
+holds, each file on its own, as a `PUT` would; no apply is needed. Its
+report, in `latest_sync.environments`, has three lists:
+
+- `applied`: the environments saved;
+- `refused`: the files that couldn't be, as `{"path", "name", "fields"}`,
+  each field with its message, such as a model that doesn't exist. **The
+  environment stays as it was**;
+- `not_in_git`: environments whose files are gone. **A sync never deletes
+  an environment**: it stays, and can now be deleted with `DELETE`.
+
+**While Git mode is on**, `PUT /api/v1/environments/{name}`, creating one
+from an [Obot virtual server](catalogs.md#virtual-servers), and `DELETE`
+of an environment whose file is in Git answer 409, pointing to
+proposals. `PATCH` still changes an owner, since owners aren't in Git.
+
+**Proposals.** `POST /api/v1/environments/{name}/proposals` opens a pull
+request:
+
+- `{"environment": {...}}` with the environment as JSON, or
+  `{"environment": "<YAML>"}` with its YAML, proposes it as the
+  environment's new file. It is checked as a save would be first (422 with
+  every problem, and nothing reaches GitHub); nothing is saved;
+- `{"delete": true}` proposes deleting the environment's file.
+
+The file is the one the environment was read from, or
+`<folder>/<name>.yaml` for a new one. Sekisho makes a branch
+`sekisho/<name>-<8 hex>` off the followed branch, commits the change
+there, and opens a pull request whose description names the admin who
+proposed it. The answer (201) is `{"number", "url"}`. When the pull
+request is merged, the next sync applies it. GitHub's refusals, such as
+a token without the permissions above, answer 503 with GitHub's message.
+
+`DELETE /api/v1/git-mode` turns Git mode off: its source and syncs go,
+the environments stay as ordinary ones, and the API edits them again.
 
 ### Owners
 

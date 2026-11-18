@@ -191,6 +191,9 @@ pub struct Environment {
     /// [`EnvironmentSpec`]).
     pub entries: Vec<EnvEntry>,
     pub effective_defaults: EffectiveDefaults,
+    /// Where Git mode read it, relative to the repository's root; `None`
+    /// outside Git mode, or once its file is gone.
+    pub git_path: Option<String>,
 }
 
 /// One entry an environment delivers (D186): listed by the environment
@@ -218,7 +221,7 @@ pub struct Delivered {
 macro_rules! select_environments {
     () => {
         "select e.id, e.name, e.description, e.notice, e.access_groups, e.owner_id, \
-         e.created_at, e.updated_at, e.labels, \
+         e.created_at, e.updated_at, e.labels, e.git_path, \
          (select name from models where id = e.default_anthropic_model_id) as default_anthropic, \
          (select name from models where id = e.default_openai_model_id) as default_openai, \
          (select name from models where id = e.default_gemini_model_id) as default_gemini, \
@@ -229,6 +232,19 @@ macro_rules! select_environments {
          left join environment_models em on em.environment_id = e.id \
          left join models m on m.id = em.model_id"
     };
+}
+
+/// How [`Store::save_environment`] saves.
+#[derive(Clone, Copy)]
+enum Save<'a> {
+    /// Create or replace.
+    Upsert,
+    /// Create only: Conflict when the name is taken.
+    Create,
+    /// Check as a save would, writing nothing.
+    Check,
+    /// Create or replace from Git mode's file at this path.
+    Git(&'a str),
 }
 
 /// An environment name agentgateway's Gemini paths can't carry.
@@ -359,6 +375,7 @@ fn from_row(row: &PgRow) -> Result<Environment> {
         updated_at: row.try_get("updated_at")?,
         entries: Vec::new(),
         effective_defaults: EffectiveDefaults::default(),
+        git_path: row.try_get("git_path")?,
     })
 }
 
@@ -511,7 +528,8 @@ impl Store {
         spec: EnvironmentSpec,
         actor: Uuid,
     ) -> Result<Environment> {
-        self.save_environment(spec, actor, false).await
+        self.saved(self.save_environment(spec, actor, Save::Upsert).await?)
+            .await
     }
 
     /// Creates the environment, never replacing one: Conflict when the name
@@ -521,15 +539,46 @@ impl Store {
         spec: EnvironmentSpec,
         actor: Uuid,
     ) -> Result<Environment> {
-        self.save_environment(spec, actor, true).await
+        self.saved(self.save_environment(spec, actor, Save::Create).await?)
+            .await
+    }
+
+    /// Checks the environment as a save would, saving nothing: Git mode's
+    /// proposals are checked before they reach GitHub.
+    pub async fn check_environment(&self, spec: EnvironmentSpec, actor: Uuid) -> Result<()> {
+        self.save_environment(spec, actor, Save::Check).await?;
+        Ok(())
+    }
+
+    /// Saves an environment read from Git mode's repository at `git_path`.
+    /// A stored owner stays; a new environment is `owner`'s.
+    pub async fn apply_git_environment(
+        &self,
+        mut spec: EnvironmentSpec,
+        git_path: &str,
+        owner: Uuid,
+    ) -> Result<Environment> {
+        spec.owner = None;
+        self.saved(
+            self.save_environment(spec, owner, Save::Git(git_path))
+                .await?,
+        )
+        .await
+    }
+
+    /// The environment a save wrote.
+    async fn saved(&self, name: Option<EnvName>) -> Result<Environment> {
+        self.get_environment(&name.ok_or(StoreError::NotFound)?)
+            .await
     }
 
     async fn save_environment(
         &self,
         mut spec: EnvironmentSpec,
         actor: Uuid,
-        create_only: bool,
-    ) -> Result<Environment> {
+        mode: Save<'_>,
+    ) -> Result<Option<EnvName>> {
+        let create_only = matches!(mode, Save::Create);
         let names: Vec<String> = spec.models.iter().map(|m| m.as_str().to_owned()).collect();
         let name_text = spec.name.to_string();
         let taken = || StoreError::Conflict(format!("an environment named {name_text} exists"));
@@ -578,6 +627,10 @@ impl Store {
         }
         let bound = bind_references(&mut tx, stored.map(|(id, _)| id), &spec, &mut errors).await?;
         check(errors)?;
+        if matches!(mode, Save::Check) {
+            // Dropped, the transaction rolls back: nothing was written.
+            return Ok(None);
+        }
         spec.owner = Some(owner);
 
         let id_of = |m: &Option<ModelName>| m.as_ref().map(|m| known[m.as_str()].0);
@@ -614,6 +667,13 @@ impl Store {
             .await?
             .ok_or_else(taken)?;
         let id: Uuid = row.try_get("id")?;
+        if let Save::Git(path) = mode {
+            sqlx::query("update environments set git_path = $2 where id = $1")
+                .bind(id)
+                .bind(path)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("delete from environment_models where environment_id = $1")
             .bind(id)
             .execute(&mut *tx)
@@ -649,7 +709,37 @@ impl Store {
         }
         notify(&mut tx, ChangeKind::Environments).await?;
         tx.commit().await?;
-        self.get_environment(&spec.name).await
+        Ok(Some(spec.name))
+    }
+
+    /// Clears the Git path of every environment of Git mode that the latest
+    /// commit no longer holds: not in `found`, and not at one of
+    /// `kept_paths` (files that couldn't be read keep theirs). Answers
+    /// them; they stay, and can now be deleted (D175).
+    pub async fn set_git_paths_missing(
+        &self,
+        found: &[EnvName],
+        kept_paths: &[String],
+    ) -> Result<Vec<EnvName>> {
+        let found: Vec<&str> = found.iter().map(EnvName::as_str).collect();
+        let mut tx = self.pool.begin().await?;
+        let names: Vec<String> = sqlx::query_scalar(
+            "update environments set git_path = null, updated_at = now()              where git_path is not null and not (name = any($1))              and not (git_path = any($2)) returning name",
+        )
+        .bind(&found)
+        .bind(kept_paths)
+        .fetch_all(&mut *tx)
+        .await?;
+        if !names.is_empty() {
+            notify(&mut tx, ChangeKind::Environments).await?;
+        }
+        tx.commit().await?;
+        let mut names = names
+            .iter()
+            .map(|n| EnvName::parse(n).map_err(|_| bad_column("environment name", n)))
+            .collect::<Result<Vec<_>>>()?;
+        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(names)
     }
 
     /// Hands the environment to `owner`, an enabled user; nothing else

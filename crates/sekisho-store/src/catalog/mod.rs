@@ -7,11 +7,13 @@
 //! then entries.
 
 mod entries;
+mod git_mode;
 mod registries;
 mod sources;
 mod syncs;
 pub(crate) mod toolkits;
 
+pub use git_mode::{GitMode, GitModeSettings};
 pub use toolkits::ToolkitMember;
 
 use sekisho_catalog::model::{CheckedEntry, EntrySpec, ObotVmcp, Refusal, Warning};

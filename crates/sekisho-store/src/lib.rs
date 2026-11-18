@@ -28,9 +28,9 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub use budgets::{Budget, BudgetScope, BudgetStatus, Charged, NewBudget};
 pub use catalog::{
-    Applied, Entry, EntryKey, FileMeta, FoundEntry, NewSource, Quarantine, QuarantineRecord,
-    ResolveError, Revision, Source, SourcePatch, SyncFound, SyncOutcome, SyncOutcomeKind,
-    SyncRecord, SyncReport, SyncSummary, ToolkitMember,
+    Applied, Entry, EntryKey, FileMeta, FoundEntry, GitMode, GitModeSettings, NewSource,
+    Quarantine, QuarantineRecord, ResolveError, Revision, Source, SourcePatch, SyncFound,
+    SyncOutcome, SyncOutcomeKind, SyncRecord, SyncReport, SyncSummary, ToolkitMember,
 };
 pub use dex_tokens::{DexTokenLock, IDP_CHECK_EVERY};
 pub use environments::{Delivered, EffectiveDefaults, EnvEntry, Environment, EnvironmentSpec};

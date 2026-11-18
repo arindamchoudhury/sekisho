@@ -11,6 +11,7 @@ mod catalog_sources;
 mod connectors;
 mod environments;
 mod gateway;
+mod git_mode;
 mod groups;
 mod keys;
 mod local_accounts;
@@ -57,6 +58,16 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/v1/models", get(models::list).post(models::create))
         .route("/api/v1/models/{name}", delete(models::delete))
         .route("/api/v1/environments", get(environments::list))
+        .route(
+            "/api/v1/git-mode",
+            get(git_mode::get)
+                .put(git_mode::put)
+                .delete(git_mode::delete),
+        )
+        .route(
+            "/api/v1/environments/{name}/proposals",
+            post(git_mode::propose),
+        )
         .route(
             "/api/v1/environments/{name}",
             get(environments::get)

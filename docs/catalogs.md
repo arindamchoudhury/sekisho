@@ -27,7 +27,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Field | Required | What it is |
 |---|---|---|
-| `name` | yes | 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit. `environments` is reserved |
+| `name` | yes | 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit. `environments` is reserved for [Git mode](environments-and-keys.md#git-mode)'s source, of kind `environments`, which is managed through `/api/v1/git-mode` |
 | `kind` | yes | What the repository holds: `catalog`, `skills`, `plugins` or `prompts` ([below](#what-each-kind-reads)) |
 | `url` | yes | The repository's `https://` URL, at most 2,048 characters, with no user name, password, query or fragment, not starting with `-` |
 | `ref` | no | The branch or tag to follow (or a full `refs/…` name): 1–255 letters, digits or `. _ / -`, not starting with `-` or `/`, without `..`, `//` or `@{`. Without one, the repository's default branch |

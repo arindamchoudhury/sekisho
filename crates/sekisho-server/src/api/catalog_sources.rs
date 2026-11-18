@@ -180,7 +180,7 @@ fn path_name(name: &str) -> Result<SourceName, ApiError> {
 
 /// Claims `name` and syncs it on a task of its own; a replica that holds it
 /// already syncs it.
-fn sync_in_background(state: &AppState, name: SourceName) {
+pub(crate) fn sync_in_background(state: &AppState, name: SourceName) {
     let state = state.clone();
     tokio::spawn(async move {
         match state

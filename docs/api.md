@@ -75,6 +75,8 @@ Every error is JSON with an `error` code and a `message` for people:
 | `GET /api/v1/environments` | List environments | [Environments](environments-and-keys.md#environments) |
 | `GET`, `PUT`, `DELETE /api/v1/environments/{name}` | Read, create or replace, or delete one; as JSON, or as YAML with `Content-Type` or `Accept: application/yaml` | [Environments](environments-and-keys.md#environments), [YAML](environments-and-keys.md#yaml) |
 | `PATCH /api/v1/environments/{name}` | Change its owner: `{"owner"}` only | [Owners](environments-and-keys.md#owners) |
+| `POST /api/v1/environments/{name}/proposals` | Propose an environment's new version, or its deletion, as a GitHub pull request (Git mode) | [Git mode](environments-and-keys.md#git-mode) |
+| `GET`, `PUT`, `DELETE /api/v1/git-mode` | Read, turn on or change, or turn off Git mode | [Git mode](environments-and-keys.md#git-mode) |
 | `GET /api/v1/environments/{name}/keys` | Every key for an environment | [Keys](environments-and-keys.md#keys-for-admins) |
 | `POST /api/v1/keys/{id}/{suspend,resume,revoke}` | Change anyone's key | [Keys](environments-and-keys.md#keys-for-admins) |
 | `GET`, `POST /api/v1/budgets` | List or add budgets | [Budgets](budgets-and-spend.md) |

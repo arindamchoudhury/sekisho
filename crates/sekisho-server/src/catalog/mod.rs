@@ -8,6 +8,8 @@
 
 pub mod cards;
 pub mod git;
+pub mod git_mode;
+pub mod github;
 pub mod outbound;
 pub mod registry;
 pub mod sync;

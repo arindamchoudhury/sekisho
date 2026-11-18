@@ -150,6 +150,16 @@ impl Repo {
     /// Writes `files` (other files stay), commits them on `main`, pushes,
     /// and answers the commit.
     pub fn commit(&self, files: &[(&str, &[u8])], message: &str) -> String {
+        // Once something is committed, take what the bare one has.
+        let committed = Command::new("git")
+            .arg("-C")
+            .arg(&self.work)
+            .args(["rev-parse", "--verify", "-q", "HEAD"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if committed {
+            self.sync_from_bare();
+        }
         for (path, bytes) in files {
             let path = self.work.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -166,6 +176,30 @@ impl Repo {
             &["push", "-q", "-f", &bare, "HEAD:refs/heads/main"],
         );
         git(&self.work, &["rev-parse", "HEAD"])
+    }
+
+    /// Removes `paths`, commits on `main` and pushes: answers the commit.
+    /// The work tree first takes `main` as the bare repository has it, so
+    /// commits made there (a merged pull request) stay.
+    pub fn remove(&self, paths: &[&str], message: &str) -> String {
+        self.sync_from_bare();
+        for path in paths {
+            git(&self.work, &["rm", "-q", path]);
+        }
+        git(&self.work, &["commit", "-q", "-m", message]);
+        let bare = self.bare.to_string_lossy().into_owned();
+        git(
+            &self.work,
+            &["push", "-q", "-f", &bare, "HEAD:refs/heads/main"],
+        );
+        git(&self.work, &["rev-parse", "HEAD"])
+    }
+
+    /// Resets the work tree to the bare repository's `main`.
+    fn sync_from_bare(&self) {
+        let bare = self.bare.to_string_lossy().into_owned();
+        git(&self.work, &["fetch", "-q", &bare, "main"]);
+        git(&self.work, &["reset", "-q", "--hard", "FETCH_HEAD"]);
     }
 
     /// Makes branch `name` at the latest commit.
