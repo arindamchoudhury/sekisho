@@ -264,16 +264,21 @@ A plugin's MCP servers (its manifest's `mcpServers`, or `.mcp.json`) are
 checked by the program they start, known by its file name (so
 `/usr/bin/npx` and `npx.cmd` are `npx`):
 
-- `npx` and `uvx` must name one exact package, with no option that
-  changes where it comes from;
+- a package runner must name one exact package, with no option that
+  changes where it comes from: `npx`, `bunx`, `pnpm dlx`, `yarn dlx` and
+  `npm exec` (or `npm x`) an npm package such as `pkg@1.2.3`; `uvx`,
+  `uv tool run` and `pipx run` a Python package such as `tool==1.0`;
 - `docker` must be `docker run` with one image (pinned to its digest at
   sync) and only these options: `-i`, `-t`, `--rm`, `-d`, `-e`/`--env`,
   `--env-file`, `-v`/`--volume`, `--mount`, `--name`, `--network`,
   `-p`/`--publish`, `-w`/`--workdir`, `--entrypoint`, `-u`/`--user`,
   `--platform` and `-l`/`--label`. These can mount the developer's files
   or use the host's network: review them as you would the plugin's code;
-- any other program (`node`, `python`, `bunx`, a shell) isn't checked: it
-  runs what the plugin holds, or whatever it fetches itself. Review such
+- a shell given a command line to run (`sh -c`, `bash -lc`, `cmd /c`,
+  `powershell -Command`) is refused, since Sekisho can't check what it
+  runs; a shell running a script among the plugin's files is allowed;
+- any other program (`node`, `python`, a script) isn't checked: it runs
+  what the plugin holds, or whatever it fetches itself. Review such
   plugins before you add them.
 
 A server's `env` can't set the variables above that change which package

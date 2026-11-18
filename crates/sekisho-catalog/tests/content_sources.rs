@@ -785,3 +785,133 @@ fn launchers_are_known_by_their_file_name() {
     let c = mcp_plugin(r#"{"a": {"command": "docker.exe", "args": ["run"]}}"#);
     assert!(c.entries.is_empty(), "{:#?}", c.entries);
 }
+
+/// One server's launch, as a JSON server definition.
+fn launch(command: &str, args: &[&str]) -> SourceCheck {
+    let args: Vec<String> = args.iter().map(|a| format!("{a:?}")).collect();
+    mcp_plugin(&format!(
+        r#"{{"a": {{"command": {command:?}, "args": [{}]}}}}"#,
+        args.join(", ")
+    ))
+}
+
+#[test]
+fn other_package_runners_need_exact_versions() {
+    for (command, args, runner) in [
+        ("bunx", vec!["pkg@1.2.3"], "bunx"),
+        ("bunx", vec!["--bun", "-p", "pkg@1.2.3", "tool"], "bunx"),
+        ("pnpm", vec!["dlx", "pkg@1.2.3"], "pnpm dlx"),
+        ("yarn", vec!["dlx", "-q", "pkg@1.2.3"], "yarn dlx"),
+        (
+            "npm",
+            vec!["exec", "--yes", "--", "pkg@1.2.3", "--flag"],
+            "npm exec",
+        ),
+        ("npm", vec!["x", "pkg@1.2.3"], "npm exec"),
+    ] {
+        let c = launch(command, &args);
+        assert!(c.refused.is_empty(), "{command} {args:?}: {:#?}", c.refused);
+        match &plugin(entry(&c, "p")).mcp_servers[0].launch {
+            Launch::NpmRunner { runner: r, package } => {
+                assert_eq!(
+                    (r.as_str(), package.to_string().as_str()),
+                    (runner, "pkg@1.2.3")
+                );
+            }
+            other => panic!("{command} {args:?}: {other:?}"),
+        }
+    }
+    for (command, args, runner) in [
+        ("uv", vec!["tool", "run", "tool==1.0"], "uv tool run"),
+        (
+            "uv",
+            vec!["tool", "run", "--from", "pkg==2.0", "tool"],
+            "uv tool run",
+        ),
+        ("pipx", vec!["run", "tool==1.0"], "pipx run"),
+        (
+            "pipx",
+            vec!["run", "--spec", "pkg==2.0", "tool"],
+            "pipx run",
+        ),
+    ] {
+        let c = launch(command, &args);
+        assert!(c.refused.is_empty(), "{command} {args:?}: {:#?}", c.refused);
+        match &plugin(entry(&c, "p")).mcp_servers[0].launch {
+            Launch::PythonRunner { runner: r, .. } => assert_eq!(r, runner),
+            other => panic!("{command} {args:?}: {other:?}"),
+        }
+    }
+    for (command, args, why) in [
+        ("bunx", vec!["pkg"], "exact version"),
+        ("pnpm", vec!["dlx", "pkg@latest"], "exact version"),
+        ("pnpm", vec!["dlx", "-c", "pkg@1.2.3 run"], "-c"),
+        ("yarn", vec!["dlx", "pkg"], "exact version"),
+        ("npm", vec!["exec", "pkg"], "exact version"),
+        (
+            "npm",
+            vec!["exec", "--registry", "https://evil.example", "pkg@1.2.3"],
+            "--registry",
+        ),
+        ("npm", vec!["exec", "-c", "pkg@1.2.3"], "-c"),
+        ("uv", vec!["tool", "run", "tool"], "exact version"),
+        (
+            "uv",
+            vec![
+                "tool",
+                "run",
+                "--index-url",
+                "https://evil.example",
+                "tool==1.0",
+            ],
+            "--index-url",
+        ),
+        ("pipx", vec!["run", "tool"], "exact version"),
+        (
+            "pipx",
+            vec![
+                "run",
+                "--pip-args=--index-url=https://evil.example",
+                "tool==1.0",
+            ],
+            "--pip-args",
+        ),
+    ] {
+        let c = launch(command, &args);
+        assert!(c.entries.is_empty(), "{command} {args:?} was accepted");
+        let reason = &c.refused[0].reason;
+        assert!(reason.contains(why), "{command} {args:?}: {reason}");
+    }
+}
+
+#[test]
+fn shell_command_lines_are_refused() {
+    for (command, args) in [
+        ("sh", vec!["-c", "npx -y pkg@latest"]),
+        ("/bin/bash", vec!["-lc", "npx pkg"]),
+        ("zsh", vec!["-c", "x"]),
+        ("cmd", vec!["/c", "npx pkg"]),
+        ("cmd.exe", vec!["/C", "npx pkg"]),
+        ("powershell", vec!["-Command", "npx pkg"]),
+        ("pwsh", vec!["-c", "npx pkg"]),
+        ("pwsh.exe", vec!["-EncodedCommand", "AAAA"]),
+    ] {
+        let c = launch(command, &args);
+        assert!(c.entries.is_empty(), "{command} {args:?} was accepted");
+        assert!(
+            c.refused[0].reason.contains("shell"),
+            "{command} {args:?}: {}",
+            c.refused[0].reason
+        );
+    }
+    // A script among the plugin's own files runs unchecked, as `node` does.
+    for (command, args) in [
+        ("bash", vec!["${CLAUDE_PLUGIN_ROOT}/run.sh"]),
+        ("bash", vec!["-e", "${CLAUDE_PLUGIN_ROOT}/run.sh"]),
+        ("pwsh", vec!["-File", "${CLAUDE_PLUGIN_ROOT}/run.ps1"]),
+        ("pnpm", vec!["start"]),
+    ] {
+        let c = launch(command, &args);
+        assert!(c.refused.is_empty(), "{command} {args:?}: {:#?}", c.refused);
+    }
+}
