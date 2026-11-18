@@ -936,3 +936,263 @@ async fn environments_list_entries_and_keep_their_sources() {
         json!([{"field": "skills[1]", "message": "no skill named nope"}])
     );
 }
+
+// ------------------------------------------------------------ Obot virtual servers (Task 9)
+
+const OBOT_CATALOG: &str = "- entryKey: a
+  name: A
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/a
+- entryKey: b
+  name: B
+  runtime: remote
+  remoteConfig:
+    fixedURL: https://mcp.example.com/b
+- entryKey: bad
+  name: Bad
+  runtime: openapi
+- type: vmcp
+  entryKey: team-tools
+  displayName: Team Tools
+  description: The team's servers.
+  components:
+    - id: c1
+      name: A
+      mcpServerCatalogEntryKey: a
+    - id: c2
+      name: B
+      mcpServerCatalogEntryKey: b
+      toolOverrides:
+        - name: x
+          enabled: true
+        - name: y
+          enabled: true
+          overrideName: why
+        - name: z
+          enabled: false
+    - id: c3
+      name: C
+      mcpServerCatalogEntryKey: other::c
+  profiles:
+    - name: readers
+- type: vmcp
+  entryKey: gaps
+  displayName: Gaps
+  components:
+    - id: c1
+      name: A
+      mcpServerCatalogEntryKey: a
+    - id: c2
+      name: Gone
+      mcpServerCatalogEntryKey: gone
+    - id: c3
+      name: Bad
+      mcpServerCatalogEntryKey: bad
+    - id: c4
+      name: None enabled
+      mcpServerCatalogEntryKey: b
+      toolOverrides:
+        - name: z
+          enabled: false
+";
+
+/// A catalog source `obot` holding Obot's servers and virtual servers.
+async fn obot_source(app: &TestApp, git: &GitServer) {
+    git.repo("obot")
+        .commit(&[("catalog.yaml", OBOT_CATALOG.as_bytes())], "obot");
+    let added = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources",
+            Some(json!({
+                "name": "obot", "kind": "catalog", "url": git.url("obot"),
+                "allow_private_network": true
+            })),
+        )
+        .await;
+    assert_eq!(added.status, 201, "{}", added.text);
+    let report = latest_sync(app, "obot", |_| true).await;
+    assert_eq!(report["outcome"], "ok", "{report}");
+}
+
+fn offer<'a>(offers: &'a Value, key: &str) -> &'a Value {
+    offers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["key"] == key)
+        .unwrap_or_else(|| panic!("no offer {key}: {offers}"))
+}
+
+#[tokio::test]
+async fn vmcp_offers_are_listed_with_differences() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    obot_source(&app, &git).await;
+    let r = app
+        .admin("GET", "/api/v1/catalog-sources/obot/vmcps", None)
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body.as_array().unwrap().len(), 2, "{}", r.text);
+    let team = offer(&r.body, "team-tools");
+    assert_eq!(team["display_name"], "Team Tools");
+    assert_eq!(team["description"], "The team's servers.");
+    assert_eq!(
+        team["servers"],
+        json!([{"server": "a", "tools": null}, {"server": "b", "tools": ["x", "y"]}])
+    );
+    assert_eq!(team["missing"], json!([]));
+    let differences = team["differences"].to_string();
+    for part in ["profiles", "other::c", "why"] {
+        assert!(differences.contains(part), "{part}: {differences}");
+    }
+    assert_eq!(
+        app.admin("GET", "/api/v1/catalog-sources/nope/vmcps", None)
+            .await
+            .status,
+        404
+    );
+}
+
+#[tokio::test]
+async fn an_offer_becomes_an_environment() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    obot_source(&app, &git).await;
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/team-tools/environment",
+            Some(json!({"name": "team-tools", "access_groups": ["github/eng"]})),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    let env = &r.body["environment"];
+    assert_eq!(env["name"], "team-tools");
+    assert_eq!(env["description"], "The team's servers.");
+    assert_eq!(env["access_groups"], json!(["github/eng"]));
+    assert_eq!(
+        env["mcp_servers"],
+        json!(["a@obot", {"server": "b@obot", "tools": ["x", "y"]}])
+    );
+    assert_eq!(env["owner"], json!(app.owner));
+    assert_eq!(r.body["missing"], json!([]));
+    assert!(r.body["differences"].to_string().contains("profiles"));
+    let got = app
+        .admin("GET", "/api/v1/environments/team-tools", None)
+        .await;
+    assert_eq!(got.body["mcp_servers"], env["mcp_servers"]);
+
+    // An unknown offer, an invalid name.
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/nope/environment",
+            Some(json!({"name": "x"})),
+        )
+        .await;
+    assert_eq!(r.status, 404, "{}", r.text);
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/team-tools/environment",
+            Some(json!({"name": "Not A Name"})),
+        )
+        .await;
+    assert_eq!(r.status, 422, "{}", r.text);
+    assert_eq!(field_names(&r), ["name"]);
+}
+
+#[tokio::test]
+async fn components_without_an_entry_are_left_out_and_listed() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    obot_source(&app, &git).await;
+    let offers = app
+        .admin("GET", "/api/v1/catalog-sources/obot/vmcps", None)
+        .await;
+    let gaps = offer(&offers.body, "gaps");
+    let missing: Vec<&str> = gaps["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["server"].as_str().unwrap())
+        .collect();
+    assert_eq!(missing, ["gone", "bad", "b"], "{gaps}");
+
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/gaps/environment",
+            Some(json!({"name": "gaps"})),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(r.body["environment"]["mcp_servers"], json!(["a@obot"]));
+    assert_eq!(r.body["missing"], gaps["missing"]);
+    assert!(
+        r.body["missing"][2]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no tool"),
+        "{}",
+        r.text
+    );
+
+    // A quarantined server is left out too.
+    let q = app
+        .admin(
+            "POST",
+            "/api/v1/catalog/mcp-servers/obot/a/quarantine",
+            Some(json!({"reason": "Bad."})),
+        )
+        .await;
+    assert_eq!(q.status, 200, "{}", q.text);
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/team-tools/environment",
+            Some(json!({"name": "team"})),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(
+        r.body["environment"]["mcp_servers"],
+        json!([{"server": "b@obot", "tools": ["x", "y"]}])
+    );
+    assert_eq!(r.body["missing"][0]["server"], "a");
+    assert!(
+        r.body["missing"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("quarantined")
+    );
+}
+
+#[tokio::test]
+async fn an_existing_environment_is_never_overwritten() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    obot_source(&app, &git).await;
+    let first = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/team",
+            Some(json!({"description": "Ours.", "access_groups": ["github/eng"]})),
+        )
+        .await;
+    assert_eq!(first.status, 200, "{}", first.text);
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources/obot/vmcps/team-tools/environment",
+            Some(json!({"name": "team"})),
+        )
+        .await;
+    assert_eq!(r.status, 409, "{}", r.text);
+    assert_eq!(r.body["error"], "conflict");
+    let after = app.admin("GET", "/api/v1/environments/team", None).await;
+    assert_eq!(after.body["description"], "Ours.");
+    assert_eq!(after.body["mcp_servers"], json!([]));
+}

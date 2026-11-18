@@ -16,6 +16,7 @@ mod keys;
 mod local_accounts;
 mod me;
 mod models;
+mod obot_vmcps;
 mod providers;
 mod registry_credentials;
 mod signing_keys;
@@ -118,6 +119,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/api/v1/catalog-sources/{name}/apply",
             post(catalog_sources::apply),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}/vmcps",
+            get(obot_vmcps::list),
+        )
+        .route(
+            "/api/v1/catalog-sources/{name}/vmcps/{key}/environment",
+            post(obot_vmcps::create),
         )
         .route("/api/v1/catalog/{kind}", get(catalog_entries::list))
         .route(

@@ -463,5 +463,43 @@ is 422 with its position, such as `urls[1]`. The answer (201) is
 characters as `-`), then `obot-<repo>-2`, `-3` and so on when the name is
 taken.
 
-Obot's virtual MCP servers (`type: vmcp` items) are listed in each sync's
-report under `vmcps`, with what Sekisho can't carry over.
+### Virtual servers
+
+An Obot virtual MCP server (a `type: vmcp` item) groups servers of the
+catalog, each with the tools it enables. Sekisho has no virtual servers of
+its own; it offers each one as an environment an admin can create. Each
+sync's report lists them under `vmcps`, and
+`GET /api/v1/catalog-sources/{name}/vmcps` lists the offers of the
+source's applied sync:
+
+| Field | What it is |
+|---|---|
+| `key`, `display_name`, `description` | The virtual server's `entryKey` (or its display name, made a name), name and description |
+| `servers` | Each component's server, `{"server", "tools"}`; `tools` is the tools its `toolOverrides` enable, or `null` for all. A server two components name is listed once, with their tools together |
+| `differences` | What can't carry over, one line each |
+| `missing` | Servers an environment can't list, `{"server", "reason"}`: refused or not in the catalog, not applied yet, quarantined, removed, or with no tool enabled |
+
+What carries over is each server and its enabled tools. What doesn't is
+listed as a difference: components naming another catalog's entry
+(`catalog::entry`, left out), tool prefixes, renamed tools and replaced
+tool descriptions (tools keep their own names and descriptions),
+configuration policies, single-user servers, tool search and profiles. A
+virtual server with `minObotVersion` or `maxObotVersion` is refused, as in
+Obot.
+
+`POST /api/v1/catalog-sources/{name}/vmcps/{key}/environment` creates the
+environment:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  https://sekisho.example.com/api/v1/catalog-sources/obot-mcp-catalog/vmcps/team-tools/environment \
+  -d '{"name": "team-tools", "access_groups": ["github/acme:platform"], "models": ["claude-sonnet-4-5"]}'
+```
+
+It takes the environment's `name`, and optionally its `access_groups` and
+`models`. The environment gets the virtual server's description and its
+servers as `<server>@<source>` with their tools; missing servers are left
+out. The answer (201) is `{"environment", "differences", "missing"}`, and
+whoever creates it owns it. It never replaces an environment: a name
+that is taken is 409, and the environment stays as it was. Change it
+afterwards as any other [environment](environments-and-keys.md).

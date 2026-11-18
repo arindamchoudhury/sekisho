@@ -508,16 +508,40 @@ impl Store {
     /// environment that has none. The owner must be an enabled user.
     pub async fn upsert_environment(
         &self,
-        mut spec: EnvironmentSpec,
+        spec: EnvironmentSpec,
         actor: Uuid,
     ) -> Result<Environment> {
+        self.save_environment(spec, actor, false).await
+    }
+
+    /// Creates the environment, never replacing one: Conflict when the name
+    /// is taken, even by a save that lands meanwhile.
+    pub async fn create_environment(
+        &self,
+        spec: EnvironmentSpec,
+        actor: Uuid,
+    ) -> Result<Environment> {
+        self.save_environment(spec, actor, true).await
+    }
+
+    async fn save_environment(
+        &self,
+        mut spec: EnvironmentSpec,
+        actor: Uuid,
+        create_only: bool,
+    ) -> Result<Environment> {
         let names: Vec<String> = spec.models.iter().map(|m| m.as_str().to_owned()).collect();
+        let name_text = spec.name.to_string();
+        let taken = || StoreError::Conflict(format!("an environment named {name_text} exists"));
         let mut tx = self.pool.begin().await?;
         let stored: Option<(Uuid, Option<Uuid>)> =
             sqlx::query_as("select id, owner_id from environments where name = $1")
                 .bind(spec.name.as_str())
                 .fetch_optional(&mut *tx)
                 .await?;
+        if create_only && stored.is_some() {
+            return Err(taken());
+        }
         let owner = spec.owner.or(stored.and_then(|(_, o)| o)).unwrap_or(actor);
         // Locked before the environment (users before environments, as in
         // offboarding), so offboarding the owner waits for this save.
@@ -558,32 +582,37 @@ impl Store {
 
         let id_of = |m: &Option<ModelName>| m.as_ref().map(|m| known[m.as_str()].0);
         let labels = serde_json::to_value(spec.labels.as_map()).expect("labels serialise");
-        let row = sqlx::query(
-            "insert into environments (name, description, notice, access_groups, owner_id, \
-             labels, default_anthropic_model_id, default_openai_model_id, \
-             default_gemini_model_id, small_model_id) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-             on conflict (name) do update set description = excluded.description, \
+        const INSERT: &str = "insert into environments (name, description, notice, \
+             access_groups, owner_id, labels, default_anthropic_model_id, \
+             default_openai_model_id, default_gemini_model_id, small_model_id) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ";
+        const REPLACE: &str = "on conflict (name) do update set \
+             description = excluded.description, \
              notice = excluded.notice, access_groups = excluded.access_groups, \
              owner_id = excluded.owner_id, labels = excluded.labels, \
              default_anthropic_model_id = excluded.default_anthropic_model_id, \
              default_openai_model_id = excluded.default_openai_model_id, \
              default_gemini_model_id = excluded.default_gemini_model_id, \
              small_model_id = excluded.small_model_id, updated_at = now() \
-             returning id",
-        )
-        .bind(spec.name.as_str())
-        .bind(&spec.description)
-        .bind(&spec.notice)
-        .bind(&spec.access_groups)
-        .bind(owner)
-        .bind(&labels)
-        .bind(id_of(&spec.default_models.anthropic))
-        .bind(id_of(&spec.default_models.openai))
-        .bind(id_of(&spec.default_models.gemini))
-        .bind(id_of(&spec.small_model))
-        .fetch_one(&mut *tx)
-        .await?;
+             returning id";
+        // A create never replaces: a row saved meanwhile wins, and this is
+        // Conflict.
+        const KEEP: &str = "on conflict (name) do nothing returning id";
+        let sql = format!("{INSERT}{}", if create_only { KEEP } else { REPLACE });
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(spec.name.as_str())
+            .bind(&spec.description)
+            .bind(&spec.notice)
+            .bind(&spec.access_groups)
+            .bind(owner)
+            .bind(&labels)
+            .bind(id_of(&spec.default_models.anthropic))
+            .bind(id_of(&spec.default_models.openai))
+            .bind(id_of(&spec.default_models.gemini))
+            .bind(id_of(&spec.small_model))
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(taken)?;
         let id: Uuid = row.try_get("id")?;
         sqlx::query("delete from environment_models where environment_id = $1")
             .bind(id)

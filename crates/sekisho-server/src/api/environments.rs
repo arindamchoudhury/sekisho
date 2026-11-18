@@ -202,12 +202,21 @@ async fn answer(state: &AppState, e: Environment, yaml: bool) -> Result<Response
         let text = e.spec.to_doc().to_yaml();
         return Ok(([(header::CONTENT_TYPE, YAML)], text).into_response());
     }
+    Ok(Json(json_body(state, e).await?).into_response())
+}
+
+/// The JSON answer for one environment, with its owner's email and what
+/// it delivers.
+pub(crate) async fn json_body(
+    state: &AppState,
+    e: Environment,
+) -> Result<EnvironmentBody, ApiError> {
     let email = match e.owner {
         Some(owner) => Some(state.store().user(&owner).await?.email),
         None => None,
     };
     let delivered = state.store().environment_catalog(e.id).await?;
-    Ok(Json(EnvironmentBody::new(e, email, delivered)).into_response())
+    Ok(EnvironmentBody::new(e, email, delivered))
 }
 
 fn path_name(name: &str) -> Result<EnvName, ApiError> {

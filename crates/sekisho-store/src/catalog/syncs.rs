@@ -274,6 +274,24 @@ impl Store {
         })
     }
 
+    /// The Obot virtual servers in the latest applied sync of `name`: what
+    /// environments may be made from. Empty before the first apply.
+    pub async fn applied_vmcps(&self, name: &SourceName) -> Result<Vec<ObotVmcp>> {
+        let row: Option<(Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+            "select s.id, (select y.report from catalog_syncs y where y.source_id = s.id              and y.applied_at is not null order by y.seq desc limit 1)              from catalog_sources s where s.name = $1",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let (_, report) = row.ok_or(StoreError::NotFound)?;
+        let report: StoredReport = match report {
+            Some(v) => serde_json::from_value(v)
+                .map_err(|e| crate::error::bad_column("report", &e.to_string()))?,
+            None => StoredReport::default(),
+        };
+        Ok(report.vmcps)
+    }
+
     /// The report of the latest sync of `name`. NotFound when the source
     /// is unknown or has never synced.
     pub async fn latest_sync_report(&self, name: &SourceName) -> Result<SyncReport> {
