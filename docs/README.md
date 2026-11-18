@@ -33,7 +33,8 @@ documentation.
 | [The gateway](gateway.md) | Calling models through an environment's routes, which client API reaches which model, and every refusal |
 | [Catalogs](catalogs.md) | Catalog sources (MCP servers, A2A agents, skills, plugins, prompts), syncs, entries, owners, quarantine, registry credentials and importing Obot catalogs |
 | [People and sign-in](people-and-sign-in.md) | Signing in, tokens, the first admin, local accounts, identity providers, groups, admins and offboarding |
-| [Testing on Linux](testing-on-linux.md) | Building Sekisho and running every test, the images and the end-to-end suite on a Linux machine, with a results checklist |
+| [Testing on Linux](testing-on-linux.md) | `make check`: building Sekisho and running every test, the images and the end-to-end suite on a Linux machine |
+| [Testing on Linux by hand](testing-on-linux-by-hand.md) | The same checks as commands to run one at a time, with a results checklist |
 
 Sekisho runs [agentgateway](https://github.com/agentgateway/agentgateway),
 unmodified, in front of the model providers, and answers its checks. People
