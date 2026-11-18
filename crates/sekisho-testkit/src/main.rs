@@ -49,6 +49,16 @@
 //! `contentBlockStop`, `messageStop`, then `metadata` with the usage), with
 //! the same chunks, interval and usage.
 //!
+//! Catalogs (plan 3): the mock also serves Git over smart HTTP at
+//! `/git/<repo>.git` (`POST /_git/{repo}/commit` with `{"files": {path:
+//! text}, "remove": [path], "message"}` commits to `main`, making the repo
+//! when new), a container registry at `/v2/` (`PUT /_registry/{repo}/{tag}`
+//! with `{"digest"}` sets a tag), A2A agents' cards at `/a2a/` (`PUT
+//! /_cards/{agent}` with the card sets `<agent>/.well-known/agent-card.json`)
+//! and GitHub's API for Git mode at `/repos/` over those repositories
+//! (`POST /_github/{owner}/{repo}/pulls/{n}/merge` merges a pull request).
+//! None of these is recorded.
+//!
 //! Every other path answers 200 `{"mock": "unrouted"}`, so a request that
 //! should never have reached the provider is visible. Every request except
 //! `/_…` and `/healthz` is recorded: `GET /_requests` lists them (method, raw
@@ -62,14 +72,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
+use axum::extract::Path;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::serve::ListenerExt;
 use axum::{Json, Router};
-use sekisho_testkit::eventstream;
+use sekisho_testkit::git_http::{self, Repo};
+use sekisho_testkit::{agents, eventstream, github, registry};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -81,6 +93,20 @@ type Seen = Arc<Mutex<Vec<Value>>>;
 async fn main() {
     let addr = std::env::var("MOCK_LISTEN").unwrap_or_else(|_| "0.0.0.0:8000".into());
     let seen: Seen = Arc::default();
+    let catalog = Catalog::new();
+    let (github_router, _) = github::router(catalog.root.clone());
+    let outside = Router::new()
+        .merge(git_http::serve(catalog.root.clone()))
+        .merge(registry::router(catalog.images.clone(), false))
+        .merge(agents::router(catalog.cards.clone()))
+        .merge(github_router)
+        .merge(
+            Router::new()
+                .route("/_git/{repo}/commit", post(git_commit))
+                .route("/_registry/{*path}", put(set_image))
+                .route("/_cards/{agent}", put(set_card))
+                .with_state(catalog),
+        );
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
         .route("/v1/messages", post(messages))
@@ -96,9 +122,10 @@ async fn main() {
         .route("/_requests", get(requests))
         .route("/_last_headers", get(last_headers))
         .route("/healthz", get(|| async { "ok" }))
+        .with_state(seen.clone())
+        .merge(outside)
         .fallback(unrouted)
-        .layer(middleware::from_fn_with_state(seen.clone(), record))
-        .with_state(seen);
+        .layer(middleware::from_fn_with_state(seen, record));
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("cannot listen on {addr}: {e}"))
@@ -120,7 +147,12 @@ fn header_number(headers: &HeaderMap, name: &str, default: u64) -> u64 {
 
 async fn record(State(seen): State<Seen>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if !path.starts_with("/_") && path != "/healthz" {
+    // What catalogs reach (Git, the registry, cards, GitHub) is not a
+    // provider's request.
+    let catalog = ["/git/", "/v2/", "/a2a/", "/repos/", "/token"]
+        .iter()
+        .any(|p| path.starts_with(p));
+    if !path.starts_with("/_") && path != "/healthz" && !catalog {
         let headers: BTreeMap<String, String> = req
             .headers()
             .iter()
@@ -565,4 +597,115 @@ async fn converse_stream(headers: HeaderMap) -> Response {
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response()
+}
+
+/// What the mock serves to catalog syncs, and what tests change in it.
+#[derive(Clone)]
+struct Catalog {
+    root: std::path::PathBuf,
+    repos: Arc<Mutex<std::collections::HashMap<String, Repo>>>,
+    images: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    cards: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+}
+
+impl Catalog {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join("sekisho-mock-git");
+        std::fs::create_dir_all(&root).expect("make the Git folder");
+        Self {
+            root,
+            repos: Arc::default(),
+            images: Arc::default(),
+            cards: Arc::default(),
+        }
+    }
+}
+
+fn plain_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+/// Commits `files` and removes `remove` on the repository's `main`.
+async fn git_commit(
+    State(c): State<Catalog>,
+    Path(repo): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !plain_name(&repo) {
+        return (axum::http::StatusCode::BAD_REQUEST, "bad repository name").into_response();
+    }
+    let files: Vec<(String, String)> = body["files"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let remove: Vec<String> = body["remove"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let message = body["message"].as_str().unwrap_or("commit").to_owned();
+    let commit = tokio::task::spawn_blocking(move || {
+        let mut repos = c.repos.lock().unwrap();
+        let r = repos
+            .entry(repo.clone())
+            .or_insert_with(|| Repo::create(&c.root, &repo));
+        let mut commit = String::new();
+        if !files.is_empty() || remove.is_empty() {
+            let files: Vec<(&str, &[u8])> = files
+                .iter()
+                .map(|(p, t)| (p.as_str(), t.as_bytes()))
+                .collect();
+            commit = r.commit(&files, &message);
+        }
+        if !remove.is_empty() {
+            let paths: Vec<&str> = remove.iter().map(String::as_str).collect();
+            commit = r.remove(&paths, &message);
+        }
+        commit
+    })
+    .await
+    .expect("commit");
+    Json(json!({ "commit": commit })).into_response()
+}
+
+/// `PUT /_registry/<repo>/<tag>` with `{"digest"}`.
+async fn set_image(
+    State(c): State<Catalog>,
+    Path(path): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let (Some((repo, tag)), Some(digest)) = (path.rsplit_once('/'), body["digest"].as_str()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "use /_registry/<repo>/<tag>",
+        )
+            .into_response();
+    };
+    c.images
+        .lock()
+        .unwrap()
+        .insert(format!("{repo}:{tag}"), digest.to_owned());
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// `PUT /_cards/<agent>` with the card, served at its v1.0 path.
+async fn set_card(
+    State(c): State<Catalog>,
+    Path(agent): Path<String>,
+    Json(card): Json<Value>,
+) -> Response {
+    c.cards
+        .lock()
+        .unwrap()
+        .insert(format!("{agent}/.well-known/agent-card.json"), card);
+    Json(json!({ "ok": true })).into_response()
 }

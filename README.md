@@ -10,7 +10,7 @@ highways, where guards checked each traveller's papers and decided who passed
 and what they carried.
 
 > **Status:** release 1 is being built, and isn't ready to use yet. Its first
-> two parts work and are tested end to end against agentgateway v1.7.0 and
+> three parts work and are tested end to end against agentgateway v1.7.0 and
 > Dex v2.46.1. **Sign-in:** people sign in through Dex, with local accounts
 > (the first admin is made on `/setup`) or an identity provider's connector,
 > and get one-hour session tokens that work on the gateway like environment
@@ -30,8 +30,15 @@ and what they carried.
 > mix models from any providers, and every coding tool reaches each of them
 > through its own API, passed through or translated; Sekisho refuses a model
 > the environment doesn't list, or one the tool's API can't reach. Tested
-> with 3,000 environments. The web UI, the CLI, MCP servers and catalogs come
-> next. Everything below describes what release 1 will do; the
+> with 3,000 environments. **Catalogs:** admins add Git repositories of MCP
+> servers, A2A agents, skills, plugins (APM bundles checked), prompts and
+> toolkits, Obot's catalogs among them; each sync is pinned to a commit, with
+> image digests and agent cards pinned too, and updates wait for an admin's
+> apply; entries have owners and can be quarantined. Environments list
+> entries and toolkits, default models and labels, as JSON or YAML, and can
+> be kept in Git, with changes proposed as GitHub pull requests. The web UI,
+> the CLI, delivering catalog entries to coding tools, and calling MCP
+> servers and A2A agents through the gateway come next. Everything below describes what release 1 will do; the
 > [documentation](docs/README.md) describes what works today.
 
 ## What release 1 will do

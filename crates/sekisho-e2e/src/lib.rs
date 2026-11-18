@@ -577,3 +577,115 @@ pub fn assert_between(spent: i64, low: i64, high: i64) {
         "charged {spent} micro-USD, expected {low}..={high}"
     );
 }
+
+// ------------------------------------------------------------ catalogs (plan 3)
+
+/// The mock as Sekisho reaches it inside the stack: Git, the registry,
+/// agent cards and GitHub.
+pub const MOCK_INTERNAL: &str = "http://mock-model:8000";
+
+/// A repository on the mock, as Sekisho clones it.
+pub fn git_url(repo: &str) -> String {
+    format!("{MOCK_INTERNAL}/git/{repo}.git")
+}
+
+async fn mock_call(method: reqwest::Method, path: &str, body: Value) -> Value {
+    let r = http()
+        .request(method, format!("{MOCK}{path}"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{path}: {}", r.status());
+    r.json().await.unwrap_or(Value::Null)
+}
+
+/// Commits `files` (path, text) on the mock repository's `main`: the commit.
+pub async fn git_commit(repo: &str, files: &[(&str, &str)]) -> String {
+    let files: serde_json::Map<String, Value> = files
+        .iter()
+        .map(|(p, t)| ((*p).to_owned(), Value::String((*t).to_owned())))
+        .collect();
+    let body = mock_call(
+        reqwest::Method::POST,
+        &format!("/_git/{repo}/commit"),
+        serde_json::json!({ "files": files }),
+    )
+    .await;
+    body["commit"].as_str().unwrap().to_owned()
+}
+
+/// Removes `paths` on the mock repository's `main`: the commit.
+pub async fn git_remove(repo: &str, paths: &[&str]) -> String {
+    let body = mock_call(
+        reqwest::Method::POST,
+        &format!("/_git/{repo}/commit"),
+        serde_json::json!({ "remove": paths }),
+    )
+    .await;
+    body["commit"].as_str().unwrap().to_owned()
+}
+
+/// Points the mock registry's `repo:tag` at `digest`.
+pub async fn set_image(repo: &str, tag: &str, digest: &str) {
+    mock_call(
+        reqwest::Method::PUT,
+        &format!("/_registry/{repo}/{tag}"),
+        serde_json::json!({ "digest": digest }),
+    )
+    .await;
+}
+
+/// Serves `card` as the mock agent's v1.0 card.
+pub async fn set_card(agent: &str, card: Value) {
+    mock_call(reqwest::Method::PUT, &format!("/_cards/{agent}"), card).await;
+}
+
+/// Adds a source of `kind` reading the mock repository `repo`, and waits
+/// for its first sync: its report.
+pub async fn add_source(name: &str, kind: &str, repo: &str) -> Value {
+    let (s, body) = admin(
+        "POST",
+        "/api/v1/catalog-sources",
+        Some(serde_json::json!({
+            "name": name, "kind": kind, "url": git_url(repo), "allow_private_network": true
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    wait_sync(name, None).await
+}
+
+/// The latest sync's report once it isn't `after` (a sync ID).
+pub async fn wait_sync(source: &str, after: Option<&str>) -> Value {
+    let path = format!("/api/v1/catalog-sources/{source}/syncs/latest");
+    for _ in 0..600 {
+        let (s, body) = admin("GET", &path, None).await;
+        if s == StatusCode::OK && body["id"].as_str() != after {
+            return body;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no new sync of {source}");
+}
+
+/// Syncs `source` now and waits for the report.
+pub async fn sync_now(source: &str) -> Value {
+    let path = format!("/api/v1/catalog-sources/{source}/syncs/latest");
+    let (_, before) = admin("GET", &path, None).await;
+    let before = before["id"].as_str().map(str::to_owned);
+    loop {
+        let (s, body) = admin(
+            "POST",
+            &format!("/api/v1/catalog-sources/{source}/sync"),
+            None,
+        )
+        .await;
+        match s {
+            StatusCode::ACCEPTED => break,
+            StatusCode::CONFLICT => tokio::time::sleep(Duration::from_millis(200)).await,
+            _ => panic!("sync of {source}: {s} {body}"),
+        }
+    }
+    wait_sync(source, before.as_deref()).await
+}

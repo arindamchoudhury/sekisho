@@ -6,7 +6,11 @@ which doesn't exist yet: the web UI, the `sekisho` CLI for developers, and
 delivering catalog entries to coding tools and calling MCP servers and A2A
 agents through Sekisho (catalogs exist, and environments list their
 entries). What these pages describe is built and tested, most of it end
-to end against agentgateway v1.7.0 and Dex v2.46.1 (catalogs not yet).
+to end against agentgateway v1.7.0 and Dex v2.46.1. Catalogs are proven
+end to end against a Git server, a container registry and agent cards in
+the mock, not against GitHub, GitLab, Docker Hub, GHCR or real agents; Git
+mode's pull requests are proven against a mock of GitHub's API, not GitHub
+itself.
 The end-to-end tests send every request through agentgateway to a mock
 provider that speaks each API (Anthropic Messages, Chat Completions,
 Responses, Gemini, Bedrock Converse and Azure's paths), and check what

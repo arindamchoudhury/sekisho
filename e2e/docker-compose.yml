@@ -82,6 +82,9 @@ services:
       SEKISHO_HOOKS_GRPC_TARGET: sekisho:9081
       # Adds the hook-free /bare/openai route for the latency test.
       SEKISHO_E2E_BARE_ROUTE: "1"
+      # Catalog sources, the registry, agent cards and GitHub are the mock,
+      # over plain HTTP (plan 3).
+      SEKISHO_E2E_PLAIN_HTTP: "1"
       # Browsers (the tests) reach Sekisho and Dex on the published ports;
       # Sekisho reaches Dex on the private network.
       SEKISHO_PUBLIC_URL: http://127.0.0.1:18080
