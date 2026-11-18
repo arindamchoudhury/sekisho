@@ -70,7 +70,6 @@ struct Reply {
 
 async fn env(store: &Store, name: &str, models: &[&str]) -> EnvName {
     let spec = EnvironmentSpec {
-        name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
@@ -79,6 +78,7 @@ async fn env(store: &Store, name: &str, models: &[&str]) -> EnvName {
             .map(|m| ModelName::parse(m).unwrap())
             .collect(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse(name).unwrap())
     };
     store
         .upsert_environment(

@@ -15,23 +15,43 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
   https://sekisho.example.com/api/v1/environments/data-team \
   -d '{
     "description": "The data team",
-    "notice": "",
     "access_groups": ["data", "github/acme:data-eng"],
-    "models": ["claude-sonnet-4-5", "gpt-5", "mistral-small-3.2"]
+    "models": ["claude-sonnet-4-5", "gpt-5", "mistral-small-3.2"],
+    "default_models": {"openai": "gpt-5"},
+    "small_model": "mistral-small-3.2",
+    "labels": {"cost-centre": "4711", "team": "data"},
+    "mcp_servers": ["github", {"server": "docs@platform", "tools": ["search", "read"]}],
+    "a2a_agents": ["cost-analyst"],
+    "skills": ["pdf"],
+    "plugins": [],
+    "prompts": ["monthly-review"],
+    "toolkits": ["finops"]
   }'
 ```
 
 | Field | Meaning |
 |---|---|
-| `api_version` | Optional; `sekisho/v1alpha1` if given |
-| `name` | Optional; must match the name in the path. 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit, but not `models`, which the gateway would misread in a Gemini path. It is also the route prefix |
+| `api_version` | Optional in JSON; `sekisho/v1alpha1` if given |
+| `kind` | Optional in JSON; `Environment` if given |
+| `name` | Optional in JSON; must match the name in the path. 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit, but not `models`, which the gateway would misread in a Gemini path. It is also the route prefix |
 | `description`, `notice` | Text for people. The notice is meant to be shown to whoever uses the environment |
 | `access_groups` | Who may use it: Sekisho groups by name, or identity providers' groups as `<connector>/<group>`, such as `github/acme:platform`. No groups means no one may use it |
 | `models` | The [models](providers-and-models.md#models) its routes serve, in order, from any providers. Each must exist, and none twice |
-| `owner` | The owner's user ID. Without it, the owner stays the same, or the admin who creates the environment owns it. Offboarding hands an owner's environments to someone else |
+| `default_models` | The model each coding tool starts on, per API format: `anthropic`, `openai`, `gemini` ([below](#default-models)) |
+| `small_model` | A model for tools that call one in the background, as Claude Code does; one of `models` |
+| `labels` | Key–value pairs that spend exports carry ([below](#labels)) |
+| `mcp_servers` | [Catalog](catalogs.md) MCP servers: a name, or `{"server", "tools"}` to allow only those tools |
+| `a2a_agents`, `skills`, `plugins`, `prompts` | Catalog entries of each kind |
+| `toolkits` | [Toolkits](catalogs.md#toolkits), whose entries the environment delivers too |
+| `owner` | JSON only: the owner's user ID. Without it, the owner stays the same, or the admin who creates the environment owns it. `PATCH` changes it on its own ([below](#owners)) |
 
-The answer adds `id`, `owner_email`, `created_at` and `updated_at`. A
-fetched environment can be sent back as it is: those fields are ignored.
+Every list keeps its order. A field the environment doesn't know is
+refused, and so is every problem at once (422, `fields` naming each, such
+as `skills[1]` or `default_models.openai`).
+
+The answer adds `id`, `owner_email`, `created_at`, `updated_at`,
+`effective_default_models`, `catalog_status` and `delivered`. A fetched
+environment can be sent back as it is: those fields are ignored.
 `GET /api/v1/environments` lists every environment, and
 `GET /api/v1/environments/{name}` reads one.
 
@@ -41,6 +61,116 @@ without ending requests already running.
 
 `DELETE /api/v1/environments/{name}` deletes the environment with its
 keys, its budgets and its keys' budgets.
+
+### Catalog entries
+
+Each catalog list names entries as `name`, or as `name@source` when more
+than one source has an entry of that kind and name; a bare name that
+several sources hold is refused with the forms to use, such as
+`pdf is in sources a, b: write pdf@a or pdf@b`. A name that matches
+nothing is refused too (`no skill named nope`), and so is one entry named
+twice.
+
+**A saved reference stays bound** to the entry it named. Saved again the
+same way, it keeps that entry even if another source has since added an
+entry of the same name; written differently, it is looked up again.
+
+An entry is added only when its source's sync has been
+[applied](catalogs.md#apply) and it is neither
+[quarantined](catalogs.md#quarantine) nor removed from its source. One the
+environment lists already stays when it is quarantined or removed later,
+and `catalog_status` says so: one row per reference, with `kind`,
+`reference` as saved, the `source` and `name` it is bound to, and
+`quarantined` and `removed`. Toolkits are listed there too.
+
+A source can't be deleted while an environment lists one of its entries
+(409 `in_use`, naming the environment).
+
+### What an environment delivers
+
+`delivered` is what the environment gives its coding tools: its own
+entries, then those only its toolkits bring, **each entry once**. A
+quarantined toolkit brings nothing; what the environment lists itself, or
+gets from another toolkit, stays. Toolkits themselves aren't delivered.
+
+| Field | Meaning |
+|---|---|
+| `kind`, `source`, `name` | The entry |
+| `tools` | An MCP server's allowed tools: the union of what the environment and each toolkit allow, sorted; `null` when any of them allows every tool |
+| `listed` | The environment lists it itself |
+| `via` | The toolkits that bring it, as `<source>/<name>` |
+| `quarantined`, `removed` | As in `catalog_status`; delivery leaves a quarantined entry out ([Quarantine](catalogs.md#quarantine)) |
+
+Nothing reaches coding tools yet: `sekisho use` and the gateway's MCP and
+A2A routes are still to come.
+
+### Default models
+
+Each coding tool starts on its own default model, which the environment
+may not serve. An environment therefore has a default for each API
+format, chosen from its models:
+
+- a default named in `default_models` must be one of `models`, and every
+  API of its format must reach it: for `openai`, both Chat Completions and
+  the Responses API, so not Claude on an Anthropic provider (Codex sends
+  Responses, which can't reach it); for `gemini`, a Gemini provider's
+  model ([The gateway](gateway.md));
+- a format with no default named uses the first of `models` that it
+  reaches, and has none when no listed model is reached.
+
+`effective_default_models` answers each format's default as named or as it
+falls back, and `small`: the `small_model` when one is named, else `null`
+(tools then use their default model). A model named as a default can't be
+deleted, since it is one of the environment's models.
+
+### Labels
+
+Labels are free-form, such as `"cost-centre": "4711"`. At most 32; a key
+is 1–63 lowercase letters, digits, `.`, `_` or `-`, starting and ending
+with a letter or digit, and keys starting with `sekisho` are reserved; a
+value is 1–256 characters with no control characters and no space at
+either end. In YAML a number or `true` is read as its text.
+
+### YAML
+
+The same environment can be written as YAML, the format Git mode and
+`sekisho check` will read. `PUT` with `Content-Type: application/yaml`
+takes it, and `GET` with `Accept: application/yaml` answers it:
+
+```yaml
+api_version: sekisho/v1alpha1
+kind: Environment
+name: data-team
+description: The data team
+access_groups:
+- data
+models:
+- claude-sonnet-4-5
+- gpt-5
+default_models:
+  openai: gpt-5
+labels:
+  cost-centre: '4711'
+mcp_servers:
+- github
+- server: docs@platform
+  tools:
+  - search
+toolkits:
+- finops
+```
+
+In YAML, `api_version` and `kind` are required, and the fields Sekisho
+sets (`owner`, `id`, timestamps, `effective_default_models`,
+`catalog_status`, `delivered`) are refused. `GET` leaves out empty lists
+and unset defaults, and what it writes reads back to the same environment.
+
+### Owners
+
+`PATCH /api/v1/environments/{name}` with `{"owner": "<user ID>"}` hands the
+environment to another owner, an enabled user, and changes nothing else;
+it takes no other field. [Offboarding](people-and-sign-in.md#offboarding)
+hands a person's environments over too.
 
 ## The environments you may use
 

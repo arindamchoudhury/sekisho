@@ -807,12 +807,12 @@ async fn idp_checks_are_claimed_once_a_day() {
     let (store, sb) = common::store().await;
     let admin = common::admin(&store).await;
     let spec = EnvironmentSpec {
-        name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
         models: Vec::<ModelName>::new(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse("data-team").unwrap())
     };
     let data = store
         .upsert_environment(spec, admin)

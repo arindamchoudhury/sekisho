@@ -7,10 +7,11 @@ their revisions and every file, so nothing is fetched from Git again.
 Admins see what each sync found, apply updates, own and quarantine
 entries.
 
-What works today is the catalog itself: sources, syncs, entries, owners
-and quarantine. **Environments can't list catalog entries yet, and
-nothing in a catalog reaches a coding tool or the gateway yet**: MCP
-servers and A2A agents can't be called through Sekisho.
+What works today is the catalog itself (sources, syncs, entries, owners
+and quarantine), and [environments](environments-and-keys.md#catalog-entries)
+listing its entries and toolkits. **Nothing in a catalog reaches a coding
+tool or the gateway yet**: MCP servers and A2A agents can't be called
+through Sekisho.
 
 ## Sources
 
@@ -44,7 +45,7 @@ listed at once (422); a name that is taken is 409.
 | `GET /api/v1/catalog-sources` | Every source, by name |
 | `GET /api/v1/catalog-sources/{name}` | One source |
 | `PATCH /api/v1/catalog-sources/{name}` | Change `url`, `ref`, `folder`, `username`, `token` or `allow_private_network`; `null` clears `ref`, `username` or `token`. The name and kind never change |
-| `DELETE /api/v1/catalog-sources/{name}` | Delete it, with its syncs and entries (204); 409 `in_use` while a [toolkit](#toolkits) of another source lists one of its entries |
+| `DELETE /api/v1/catalog-sources/{name}` | Delete it, with its syncs and entries (204); 409 `in_use` while an [environment](environments-and-keys.md#catalog-entries), or a [toolkit](#toolkits) of another source, lists one of its entries |
 
 A source answers its settings and:
 
@@ -324,6 +325,7 @@ An entry answers:
 | `removed_at` | When an apply found it gone |
 | `quarantine` | `{"reason", "by", "at"}` while quarantined, else `null` |
 | `toolkits` | The toolkits whose applied revision lists it, as `"<source>/<name>"` |
+| `environments` | The environments that list it themselves |
 
 One entry's answer also gives each revision's `spec` (what Sekisho read:
 its `kind`, description, runtime and so on) and `files` (`path`, `size`,
@@ -353,10 +355,12 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 `reason` has 1–500 characters, newlines allowed. Quarantining an entry
 that is quarantined already, or lifting one that isn't, is 409. Every
-period is kept in the entry's `quarantine_history`. Today quarantine is
-recorded and shown; what it stops comes with the parts that deliver
-entries: environments will keep listing a quarantined entry, and the
-gateway will refuse its MCP server or A2A agent everywhere at once.
+period is kept in the entry's `quarantine_history`. Environments that
+list a quarantined entry keep listing it, flagged in their
+`catalog_status` and `delivered`, and new ones can't add it; a quarantined
+toolkit brings nothing to any environment. What it stops at the gateway
+comes with the MCP and A2A routes: its MCP server or A2A agent refused
+everywhere at once.
 
 ## Toolkits
 

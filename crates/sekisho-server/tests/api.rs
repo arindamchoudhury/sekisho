@@ -1323,3 +1323,264 @@ async fn model_cache_prices_round_trip() {
         r.text
     );
 }
+
+// ------------------------------------------------------------ environments in YAML, owners (plan 3, Task 8)
+
+/// A call with a raw body: status, `Content-Type` and text.
+async fn raw(
+    app: &TestApp,
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    accept: Option<&str>,
+    body: Option<&str>,
+) -> (u16, String, String) {
+    let mut req = app
+        .http
+        .request(method.parse().unwrap(), format!("{}{path}", app.base))
+        .bearer_auth(&app.token);
+    if let Some(ct) = content_type {
+        req = req.header("content-type", ct);
+    }
+    if let Some(a) = accept {
+        req = req.header("accept", a);
+    }
+    if let Some(b) = body {
+        req = req.body(b.to_owned());
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, ct, resp.text().await.unwrap())
+}
+
+const TEAM_YAML: &str = "api_version: sekisho/v1alpha1
+kind: Environment
+name: team
+description: The team.
+access_groups:
+- github/eng
+models:
+- mock-model
+default_models:
+  anthropic: mock-model
+small_model: mock-model
+labels:
+  cost-centre: 4711
+";
+
+#[tokio::test]
+async fn an_environment_round_trips_as_yaml() {
+    let app = app().await;
+    app.provider_and_model().await;
+    let path = "/api/v1/environments/team";
+    let (status, ct, text) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        None,
+        Some(TEAM_YAML),
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+    assert!(ct.starts_with("application/json"), "{ct}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["labels"], json!({"cost-centre": "4711"}));
+    assert_eq!(body["default_models"]["anthropic"], "mock-model");
+    assert_eq!(body["small_model"], "mock-model");
+    assert_eq!(body["owner"], json!(app.owner));
+
+    let (status, ct, yaml) = raw(&app, "GET", path, None, Some("application/yaml"), None).await;
+    assert_eq!(status, 200, "{yaml}");
+    assert_eq!(ct, "application/yaml");
+    assert!(yaml.contains("cost-centre: '4711'"), "{yaml}");
+    assert!(!yaml.contains("owner"), "{yaml}");
+    // What GET writes, PUT reads back to the same document.
+    let (status, _, text) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        None,
+        Some(&yaml),
+    )
+    .await;
+    assert_eq!(status, 200, "{text}");
+    let (_, _, again) = raw(&app, "GET", path, None, Some("application/yaml"), None).await;
+    assert_eq!(again, yaml);
+    // A PUT in YAML may ask for YAML back.
+    let (_, ct, _) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        Some("application/yaml"),
+        Some(&yaml),
+    )
+    .await;
+    assert_eq!(ct, "application/yaml");
+
+    // The JSON answer goes back as it is.
+    let got = app.admin("GET", path, None).await;
+    let put = app.admin("PUT", path, Some(got.body.clone())).await;
+    assert_eq!(put.status, 200, "{}", put.text);
+    let mut before = got.body.clone();
+    let mut after = app.admin("GET", path, None).await.body;
+    before["updated_at"] = Value::Null;
+    after["updated_at"] = Value::Null;
+    assert_eq!(before, after);
+    assert_eq!(
+        after["effective_default_models"],
+        json!({"anthropic": "mock-model", "openai": "mock-model", "gemini": null, "small": "mock-model"})
+    );
+    assert_eq!(after["catalog_status"], json!([]));
+    assert_eq!(after["delivered"], json!([]));
+
+    // YAML whose name isn't the path's.
+    let other = TEAM_YAML.replace("name: team", "name: other");
+    let (status, _, text) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        None,
+        Some(&other),
+    )
+    .await;
+    assert_eq!(status, 422, "{text}");
+    assert!(text.contains("\"name\""), "{text}");
+    // YAML must say what it is.
+    let bare = TEAM_YAML.replace("api_version: sekisho/v1alpha1\nkind: Environment\n", "");
+    let (status, _, text) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        None,
+        Some(&bare),
+    )
+    .await;
+    assert_eq!(status, 422, "{text}");
+    assert!(
+        text.contains("api_version") && text.contains("\"kind\""),
+        "{text}"
+    );
+    let (status, _, _) = raw(
+        &app,
+        "PUT",
+        path,
+        Some("application/yaml"),
+        None,
+        Some("a: ["),
+    )
+    .await;
+    assert_eq!(status, 422);
+}
+
+#[tokio::test]
+async fn yaml_with_an_owner_is_refused() {
+    let app = app().await;
+    app.provider_and_model().await;
+    let yaml = format!("{TEAM_YAML}owner: {}\n", app.owner);
+    let (status, _, text) = raw(
+        &app,
+        "PUT",
+        "/api/v1/environments/team",
+        Some("application/yaml"),
+        None,
+        Some(&yaml),
+    )
+    .await;
+    assert_eq!(status, 422, "{text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["fields"][0]["field"], "owner", "{text}");
+    // JSON may still name the owner; a bad one is a bad request.
+    let bad = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/team",
+            Some(json!({"models": ["mock-model"], "owner": "nobody"})),
+        )
+        .await;
+    assert_eq!(bad.status, 400, "{}", bad.text);
+}
+
+#[tokio::test]
+async fn the_owner_changes_with_patch() {
+    let app = app().await;
+    app.provider_and_model().await;
+    assert_eq!(app.put_env("team", &["mock-model"]).await.status, 200);
+    let (ada, _) = app.sign_in("ada@example.com", &["eng"]).await;
+    let path = "/api/v1/environments/team";
+
+    let r = app.admin("PATCH", path, Some(json!({"owner": ada}))).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert_eq!(r.body["owner"], json!(ada));
+    assert_eq!(r.body["owner_email"], "ada@example.com");
+    assert_eq!(r.body["models"], json!(["mock-model"]));
+
+    let r = app.admin("PATCH", path, Some(json!({}))).await;
+    assert_eq!(r.status, 422, "{}", r.text);
+    assert_eq!(r.body["fields"][0]["field"], "owner");
+    let r = app
+        .admin("PATCH", path, Some(json!({"owner": ada, "models": []})))
+        .await;
+    assert_eq!(r.status, 400, "{}", r.text);
+    let r = app
+        .admin("PATCH", path, Some(json!({"owner": Uuid::nil()})))
+        .await;
+    assert_eq!(r.status, 422, "{}", r.text);
+    let r = app
+        .admin(
+            "PATCH",
+            "/api/v1/environments/nope",
+            Some(json!({"owner": ada})),
+        )
+        .await;
+    assert_eq!(r.status, 404, "{}", r.text);
+}
+
+#[tokio::test]
+async fn environments_made_before_plan_3_still_load() {
+    let app = app().await;
+    sqlx::query(
+        "insert into environments (name, description, notice, access_groups, owner_id) \
+         values ('old', 'From before.', '', '{github/eng}', $1)",
+    )
+    .bind(app.owner)
+    .execute(app.store.pool())
+    .await
+    .unwrap();
+    let r = app.admin("GET", "/api/v1/environments/old", None).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    for list in [
+        "models",
+        "mcp_servers",
+        "a2a_agents",
+        "skills",
+        "plugins",
+        "prompts",
+        "toolkits",
+        "catalog_status",
+        "delivered",
+    ] {
+        assert_eq!(r.body[list], json!([]), "{list}");
+    }
+    assert_eq!(
+        r.body["default_models"],
+        json!({"anthropic": null, "openai": null, "gemini": null})
+    );
+    assert_eq!(r.body["small_model"], Value::Null);
+    assert_eq!(r.body["labels"], json!({}));
+    assert_eq!(
+        r.body["effective_default_models"],
+        json!({"anthropic": null, "openai": null, "gemini": null, "small": null})
+    );
+    let all = app.admin("GET", "/api/v1/environments", None).await;
+    assert_eq!(all.body[0]["name"], "old");
+}

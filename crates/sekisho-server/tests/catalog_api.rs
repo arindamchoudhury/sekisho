@@ -868,3 +868,71 @@ async fn a_toolkit_can_be_quarantined() {
     assert_eq!(lifted.status, 200, "{}", lifted.text);
     assert_eq!(lifted.body["quarantine"], Value::Null);
 }
+
+#[tokio::test]
+async fn environments_list_entries_and_keep_their_sources() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    team_and_kits(&app, &git).await;
+    let put = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/data",
+            Some(json!({
+                "access_groups": ["github/eng"],
+                "skills": ["pdf"],
+                "toolkits": ["finops"],
+            })),
+        )
+        .await;
+    assert_eq!(put.status, 200, "{}", put.text);
+    assert_eq!(
+        put.body["catalog_status"],
+        json!([
+            {"kind": "skill", "reference": "pdf", "source": "team", "name": "pdf",
+             "quarantined": false, "removed": false},
+            {"kind": "toolkit", "reference": "finops", "source": "kits", "name": "finops",
+             "quarantined": false, "removed": false},
+        ])
+    );
+    assert_eq!(
+        put.body["delivered"],
+        json!([
+            {"kind": "skill", "source": "team", "name": "pdf", "tools": null, "listed": true,
+             "via": ["kits/finops"], "quarantined": false, "removed": false},
+            {"kind": "mcp_server", "source": "kits", "name": "docs", "tools": ["search"],
+             "listed": false, "via": ["kits/finops"], "quarantined": false, "removed": false},
+        ])
+    );
+    let pdf = app
+        .admin("GET", "/api/v1/catalog/skills/team/pdf", None)
+        .await;
+    assert_eq!(pdf.body["environments"], json!(["data"]));
+    let skills = app.admin("GET", "/api/v1/catalog/skills", None).await;
+    assert_eq!(skills.body[0]["environments"], json!(["data"]));
+
+    let deleted = app
+        .admin("DELETE", "/api/v1/catalog-sources/kits", None)
+        .await;
+    assert_eq!(deleted.status, 409, "{}", deleted.text);
+    assert_eq!(deleted.body["error"], "in_use");
+    assert!(
+        deleted.text.contains("environment data"),
+        "{}",
+        deleted.text
+    );
+
+    // A reference to nothing is refused at its place.
+    let bad = app
+        .admin(
+            "PUT",
+            "/api/v1/environments/data",
+            Some(json!({"access_groups": ["github/eng"], "skills": ["pdf", "nope"]})),
+        )
+        .await;
+    assert_eq!(bad.status, 422, "{}", bad.text);
+    assert_eq!(
+        bad.body["fields"],
+        json!([{"field": "skills[1]", "message": "no skill named nope"}])
+    );
+}

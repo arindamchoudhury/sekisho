@@ -44,12 +44,12 @@ async fn put_env(store: &Store, name: &str, models: &[&str]) {
     store
         .upsert_environment(
             EnvironmentSpec {
-                name: EnvName::parse(name).unwrap(),
                 description: String::new(),
                 notice: String::new(),
                 access_groups: Vec::new(),
                 models: models.iter().map(|m| model(m)).collect(),
                 owner: None,
+                ..EnvironmentSpec::new(EnvName::parse(name).unwrap())
             },
             sekisho_testkit::people::person(store, "admin@example.com", &[]).await,
         )

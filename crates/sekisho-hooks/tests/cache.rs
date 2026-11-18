@@ -14,12 +14,12 @@ const ISSUER: &str = "https://sekisho.test";
 
 async fn env(store: &Store, name: &str) -> EnvName {
     let spec = EnvironmentSpec {
-        name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse(name).unwrap())
     };
     store
         .upsert_environment(
@@ -336,7 +336,6 @@ async fn the_cache_holds_each_environments_models() {
     }
     let admin = sekisho_testkit::people::person(&store, "admin@example.com", &["eng"]).await;
     let spec = |models: &[&str]| EnvironmentSpec {
-        name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
@@ -345,6 +344,7 @@ async fn the_cache_holds_each_environments_models() {
             .map(|m| ModelName::parse(m).unwrap())
             .collect(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse("data-team").unwrap())
     };
     store
         .upsert_environment(spec(&["gpt-5"]), admin)

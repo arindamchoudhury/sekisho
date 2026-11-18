@@ -60,6 +60,7 @@ pub(crate) fn router(state: AppState) -> Router {
             "/api/v1/environments/{name}",
             get(environments::get)
                 .put(environments::put)
+                .patch(environments::patch)
                 .delete(environments::delete),
         )
         // Keys are made by their owners, on /api/v1/me/keys.

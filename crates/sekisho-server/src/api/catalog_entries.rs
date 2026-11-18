@@ -191,6 +191,8 @@ pub struct EntrySummaryBody {
     quarantine: Option<QuarantineBody>,
     /// The toolkits whose applied revision lists it, as `<source>/<name>`.
     toolkits: Vec<String>,
+    /// The environments that list it themselves.
+    environments: Vec<String>,
 }
 
 impl From<Entry> for EntrySummaryBody {
@@ -206,6 +208,7 @@ impl From<Entry> for EntrySummaryBody {
             removed_at: e.removed_at,
             quarantine: e.quarantine.map(Into::into),
             toolkits: toolkit_names(&e.toolkits),
+            environments: e.environments.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -225,6 +228,7 @@ pub struct EntryBody {
     /// Every period in quarantine, oldest first.
     quarantine_history: Vec<QuarantineRecordBody>,
     toolkits: Vec<String>,
+    environments: Vec<String>,
 }
 
 fn kind_segment(kind: &str) -> Result<EntryKind, ApiError> {
@@ -261,6 +265,7 @@ async fn entry_body(state: &AppState, key: &EntryKey) -> Result<EntryBody, ApiEr
         quarantine: e.quarantine.map(Into::into),
         quarantine_history: history.into_iter().map(Into::into).collect(),
         toolkits: toolkit_names(&e.toolkits),
+        environments: e.environments.iter().map(ToString::to_string).collect(),
     })
 }
 

@@ -35,12 +35,12 @@ fn group(name: &str) -> GroupName {
 
 fn spec(name: &str, access_groups: &[&str]) -> EnvironmentSpec {
     EnvironmentSpec {
-        name: env(name),
         description: String::new(),
         notice: String::new(),
         access_groups: access_groups.iter().map(|g| g.to_string()).collect(),
         models: Vec::new(),
         owner: None,
+        ..EnvironmentSpec::new(env(name))
     }
 }
 

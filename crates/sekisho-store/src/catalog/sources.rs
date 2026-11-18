@@ -233,8 +233,8 @@ impl Store {
     }
 
     /// Deletes a source with its syncs, entries and their revisions.
-    /// `InUse` while another source's toolkit lists one of its entries in
-    /// its applied or pending revision.
+    /// `InUse` while an environment lists one of its entries, or another
+    /// source's toolkit does in its applied or pending revision.
     pub async fn delete_source(&self, name: &SourceName) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let id: Uuid =
@@ -243,8 +243,19 @@ impl Store {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(StoreError::NotFound)?;
-        // A toolkit elsewhere that lists one of its entries keeps it (D186).
-        let users = super::toolkits::toolkits_using_source(&mut tx, id).await?;
+        // Environments that list one of its entries, and toolkits elsewhere
+        // that do, keep it (D186).
+        let environments: Vec<String> = sqlx::query_scalar(
+            "select distinct e.name from environment_entries ee              join environments e on e.id = ee.environment_id              join catalog_entries c on c.id = ee.entry_id              where c.source_id = $1 order by e.name",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut users: Vec<String> = environments
+            .into_iter()
+            .map(|e| format!("environment {e}"))
+            .collect();
+        users.extend(super::toolkits::toolkits_using_source(&mut tx, id).await?);
         if !users.is_empty() {
             return Err(StoreError::InUse(users.join(", ")));
         }

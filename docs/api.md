@@ -25,8 +25,9 @@ curl -s -H "Authorization: Bearer $TOKEN" https://sekisho.example.com/api/v1/me
 ## Conventions
 
 - Request and answer bodies are JSON, with `snake_case` fields. A request
-  with a field the route doesn't know is refused (400), so a misspelt field
-  never goes unnoticed.
+  with a field the route doesn't know is refused (400; 422 for an
+  environment, listed with its other problems), so a misspelt field never
+  goes unnoticed. Environments may also be sent and read as YAML.
 - Money is a decimal string of US dollars with at most six decimal places,
   such as `"3"` or `"0.075"`: no sign, exponent, separator or currency
   symbol.
@@ -72,7 +73,8 @@ Every error is JSON with an `error` code and a `message` for people:
 | `GET`, `POST /api/v1/models` | List or add models | [Models](providers-and-models.md#models) |
 | `DELETE /api/v1/models/{name}` | Delete a model | [Models](providers-and-models.md#models) |
 | `GET /api/v1/environments` | List environments | [Environments](environments-and-keys.md#environments) |
-| `GET`, `PUT`, `DELETE /api/v1/environments/{name}` | Read, create or replace, or delete one | [Environments](environments-and-keys.md#environments) |
+| `GET`, `PUT`, `DELETE /api/v1/environments/{name}` | Read, create or replace, or delete one; as JSON, or as YAML with `Content-Type` or `Accept: application/yaml` | [Environments](environments-and-keys.md#environments), [YAML](environments-and-keys.md#yaml) |
+| `PATCH /api/v1/environments/{name}` | Change its owner: `{"owner"}` only | [Owners](environments-and-keys.md#owners) |
 | `GET /api/v1/environments/{name}/keys` | Every key for an environment | [Keys](environments-and-keys.md#keys-for-admins) |
 | `POST /api/v1/keys/{id}/{suspend,resume,revoke}` | Change anyone's key | [Keys](environments-and-keys.md#keys-for-admins) |
 | `GET`, `POST /api/v1/budgets` | List or add budgets | [Budgets](budgets-and-spend.md) |

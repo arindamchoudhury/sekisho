@@ -10,7 +10,7 @@ mod entries;
 mod registries;
 mod sources;
 mod syncs;
-mod toolkits;
+pub(crate) mod toolkits;
 
 pub use toolkits::ToolkitMember;
 
@@ -254,6 +254,8 @@ pub struct Entry {
     pub quarantine: Option<Quarantine>,
     /// The toolkits whose applied revision lists it.
     pub toolkits: Vec<EntryKey>,
+    /// The environments that list it themselves, by name.
+    pub environments: Vec<sekisho_core::names::EnvName>,
 }
 
 /// Why a reference names no single entry.

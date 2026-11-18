@@ -51,12 +51,12 @@ struct Rig {
 async fn rig() -> Rig {
     let (store, secret_box) = sekisho_testkit::store().await;
     let spec = EnvironmentSpec {
-        name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse("data-team").unwrap())
     };
     let env = store
         .upsert_environment(

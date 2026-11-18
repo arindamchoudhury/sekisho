@@ -20,12 +20,12 @@ const NOW: OffsetDateTime = datetime!(2026-11-08 12:00 UTC);
 
 async fn env(store: &Store, name: &str) -> EnvName {
     let spec = EnvironmentSpec {
-        name: EnvName::parse(name).unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse(name).unwrap())
     };
     store
         .upsert_environment(spec, common::admin(store).await)

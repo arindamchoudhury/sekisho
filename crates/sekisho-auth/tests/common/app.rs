@@ -401,12 +401,12 @@ impl T {
     /// An environment for group `eng`, and a key in it for `owner`.
     pub async fn key_for(&self, owner: Uuid, env: &str) -> EnvKey {
         let spec = EnvironmentSpec {
-            name: EnvName::parse(env).unwrap(),
             description: String::new(),
             notice: String::new(),
             access_groups: vec!["github/eng".into()],
             models: Vec::new(),
             owner: None,
+            ..EnvironmentSpec::new(EnvName::parse(env).unwrap())
         };
         let name = self
             .store

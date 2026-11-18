@@ -120,7 +120,25 @@ impl Store {
             removed_at: row.try_get("removed_at")?,
             quarantine,
             toolkits: self.toolkits_listing(row.try_get("id")?).await?,
+            environments: self.environments_listing(row.try_get("id")?).await?,
         })
+    }
+
+    /// The environments that list entry `id` themselves, by name.
+    async fn environments_listing(&self, id: Uuid) -> Result<Vec<sekisho_core::names::EnvName>> {
+        let names: Vec<String> = sqlx::query_scalar(
+            "select e.name from environment_entries ee              join environments e on e.id = ee.environment_id              where ee.entry_id = $1 order by e.name",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        names
+            .iter()
+            .map(|n| {
+                sekisho_core::names::EnvName::parse(n)
+                    .map_err(|_| bad_column("environment name", n))
+            })
+            .collect()
     }
 
     /// Every entry, or every entry of one kind, by source and name; their

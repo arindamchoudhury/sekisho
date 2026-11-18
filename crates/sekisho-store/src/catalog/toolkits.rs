@@ -35,7 +35,7 @@ pub(super) struct Binding {
 }
 
 /// How a kind is named in messages.
-fn kind_words(kind: EntryKind) -> &'static str {
+pub(crate) fn kind_words(kind: EntryKind) -> &'static str {
     match kind {
         EntryKind::McpServer => "MCP server",
         EntryKind::A2aAgent => "A2A agent",
@@ -58,8 +58,34 @@ fn list_name(kind: EntryKind) -> &'static str {
     }
 }
 
+/// Why a reference names no single entry, as environments and toolkits
+/// say it: `no skill named x`, or `x is in sources a, b: write x@a or x@b`.
+pub(crate) fn not_resolved(
+    kind: EntryKind,
+    reference: &EntryRef,
+    error: ResolveError,
+) -> Result<String> {
+    match error {
+        ResolveError::NotFound => Ok(format!("no {} named {reference}", kind_words(kind))),
+        ResolveError::Ambiguous(sources) => {
+            let names: Vec<&str> = sources.iter().map(SourceName::as_str).collect();
+            let forms: Vec<String> = names
+                .iter()
+                .map(|s| format!("{}@{s}", reference.name))
+                .collect();
+            Ok(format!(
+                "{} is in sources {}: write {}",
+                reference.name,
+                names.join(", "),
+                forms.join(" or ")
+            ))
+        }
+        ResolveError::Store(e) => Err(e),
+    }
+}
+
 /// The entry a reference names (D167), inside a transaction.
-pub(super) async fn resolve_in(
+pub(crate) async fn resolve_in(
     conn: &mut PgConnection,
     kind: EntryKind,
     reference: &EntryRef,
@@ -126,23 +152,7 @@ pub(super) async fn bind(
                     });
                 }
             },
-            Err(ResolveError::NotFound) => {
-                problems.push(format!("{field}: no {} named {written}", kind_words(kind)))
-            }
-            Err(ResolveError::Ambiguous(sources)) => {
-                let names: Vec<&str> = sources.iter().map(SourceName::as_str).collect();
-                let forms: Vec<String> = names
-                    .iter()
-                    .map(|s| format!("{}@{s}", reference.name))
-                    .collect();
-                problems.push(format!(
-                    "{field}: {} is in sources {}: write {}",
-                    reference.name,
-                    names.join(", "),
-                    forms.join(" or ")
-                ));
-            }
-            Err(ResolveError::Store(e)) => return Err(e),
+            Err(e) => problems.push(format!("{field}: {}", not_resolved(kind, reference, e)?)),
         }
         *position += 1;
     }

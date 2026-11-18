@@ -85,12 +85,12 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
             .unwrap();
     }
     let spec = EnvironmentSpec {
-        name: EnvName::parse("data-team").unwrap(),
         description: String::new(),
         notice: String::new(),
         access_groups: vec!["github/eng".into()],
         models: Vec::new(),
         owner: None,
+        ..EnvironmentSpec::new(EnvName::parse("data-team").unwrap())
     };
     let env = store
         .upsert_environment(
