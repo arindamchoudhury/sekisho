@@ -111,10 +111,37 @@ pub(crate) async fn resolve_in(
     }
 }
 
-/// Binds every reference of `spec`, or answers why the toolkit is refused:
-/// each problem as `field: message`, joined by `; `.
+/// The entry a toolkit of `source_id` names with `reference`: a bare name
+/// is first the entry of that kind and name in the toolkit's own source
+/// (the owner's D187), and only otherwise the unique one elsewhere.
+async fn resolve_for_toolkit(
+    conn: &mut PgConnection,
+    source_id: Uuid,
+    kind: EntryKind,
+    reference: &EntryRef,
+) -> std::result::Result<Uuid, ResolveError> {
+    if reference.source.is_none() {
+        let own: Option<Uuid> = sqlx::query_scalar(
+            "select id from catalog_entries where source_id = $1 and kind = $2 and name = $3",
+        )
+        .bind(source_id)
+        .bind(kind.as_str())
+        .bind(reference.name.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(id) = own {
+            return Ok(id);
+        }
+    }
+    resolve_in(conn, kind, reference).await
+}
+
+/// Binds every reference of `spec`, a toolkit of `source_id`, or answers
+/// why the toolkit is refused: each problem as `field: message`, joined by
+/// `; `.
 pub(super) async fn bind(
     conn: &mut PgConnection,
+    source_id: Uuid,
     spec: &ToolkitSpec,
 ) -> Result<std::result::Result<Vec<Binding>, String>> {
     let mut bindings = Vec::new();
@@ -131,7 +158,7 @@ pub(super) async fn bind(
         let position = positions.entry(kind).or_insert(0);
         let field = format!("{}[{position}]", list_name(kind));
         let written = reference.to_string();
-        match resolve_in(conn, kind, reference).await {
+        match resolve_for_toolkit(conn, source_id, kind, reference).await {
             Ok(entry_id) => match named.get(&(kind, entry_id)) {
                 Some(first) => problems.push(format!(
                     "{field}: {written} names the same {} as {first}",

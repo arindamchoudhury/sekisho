@@ -1368,3 +1368,72 @@ async fn a_source_a_toolkit_uses_cannot_be_deleted() {
         0
     );
 }
+
+#[tokio::test]
+async fn a_toolkits_bare_reference_prefers_its_own_source() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "a pdf", &[]), skill("notes", "notes", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("pdf", "b pdf", &[])],
+    )
+    .await;
+    // Its own source has pdf: that one, though a and b have one too; notes
+    // only elsewhere: the unique one; an explicit source wins.
+    let report = source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![
+            skill("pdf", "own pdf", &[]),
+            toolkit("kit", "v1", &[], &["pdf", "notes"]),
+            toolkit("explicit", "v1", &[], &["pdf@b"]),
+        ],
+    )
+    .await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    let kit = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
+    let bound: Vec<String> = members(&store, kit.applied.unwrap().id)
+        .await
+        .into_iter()
+        .map(|m| m.2)
+        .collect();
+    assert_eq!(bound, ["kits/pdf", "a/notes"]);
+    let explicit = store.get_entry(&kit_key("kits", "explicit")).await.unwrap();
+    assert_eq!(
+        members(&store, explicit.applied.unwrap().id).await[0].2,
+        "b/pdf"
+    );
+
+    // Without one of its own, a name two other sources hold is refused,
+    // naming them.
+    let report = source_with(
+        &store,
+        &sb,
+        "other",
+        admin,
+        "o1",
+        vec![toolkit("kit", "v1", &[], &["pdf"])],
+    )
+    .await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    assert_eq!(
+        report.refused[0].reason,
+        "skills[0]: pdf is in sources a, b, kits: write pdf@a or pdf@b or pdf@kits"
+    );
+}

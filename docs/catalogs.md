@@ -418,16 +418,22 @@ environments) and `toolkits` (toolkits don't hold toolkits) are refused,
 as is any other field, an entry listed twice, and a tool's name that is
 empty or listed twice.
 
-**References** are an entry's name, or `name@source` when more than one
-source has an entry of that kind and name. Each is bound to an entry when
-a sync records a new version of the toolkit, from any source, this sync's
-entries included. **A version keeps its bindings**: a source added later
-with an entry of the same name changes nothing until the toolkit itself
-changes. A version is refused when a reference names no entry, names a
-name several sources hold, or names an entry another reference names
-too; the report says which, such as
-`skills[0]: pdf is in sources a, b: write pdf@a or pdf@b`. As with any
-refused entry, environments keep the version they use.
+**References** are an entry's name, or `name@source`. **A bare name means
+the entry of that kind and name in the toolkit's own source**, when it has
+one, so a toolkit published in a repository works in any install, whatever
+that install calls the source; `name@source` picks another source on
+purpose. Only when its own source has no such entry is a bare name looked
+up in the other sources, where it must be unique. (Environments don't get
+this preference: their bare names must always be unique.)
+
+Each reference is bound to an entry when a sync records a new version of
+the toolkit, from any source, this sync's entries included. **A version
+keeps its bindings**: a source added later with an entry of the same name
+changes nothing until the toolkit itself changes. A version is refused
+when a reference names no entry, names a name several other sources hold,
+or names an entry another reference names too; the report says which,
+such as `skills[0]: pdf is in sources a, b: write pdf@a or pdf@b`. As
+with any refused entry, environments keep the version they use.
 
 A changed toolkit is a new version that waits for an [apply](#apply) of
 its source, like any entry. One toolkit's answer gives, for its `applied`

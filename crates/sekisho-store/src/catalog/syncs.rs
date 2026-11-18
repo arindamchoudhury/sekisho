@@ -171,7 +171,7 @@ impl Store {
                     )
                     .await?
                 {
-                    match toolkits::bind(&mut tx, spec).await? {
+                    match toolkits::bind(&mut tx, source_id, spec).await? {
                         Ok(bound) => bindings = Some(bound),
                         Err(reason) => {
                             found.refused.push(Refusal {
