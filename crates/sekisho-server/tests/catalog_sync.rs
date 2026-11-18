@@ -725,3 +725,47 @@ async fn the_scheduler_syncs_due_sources() {
     scheduler.abort();
     assert!(synced, "the scheduler synced the due source");
 }
+
+#[tokio::test]
+async fn symlinks_and_submodules_in_git_are_refused() {
+    let app = app().await;
+    let git = GitServer::start().await;
+    let repo = git.repo("links");
+    repo.commit(
+        &[
+            ("pdf/SKILL.md", &skill_md("pdf", "Reads PDFs.")),
+            ("notes/SKILL.md", &skill_md("notes", "Notes.")),
+            ("sub/SKILL.md", &skill_md("sub", "Has a submodule.")),
+        ],
+        "skills",
+    );
+    // A symlink checked out with core.symlinks=false is a plain file
+    // holding the target: Sekisho must still see it as a symlink.
+    repo.commit_link("pdf/passwd", "/etc/passwd", false);
+    repo.commit_link("sub/vendored", &"a".repeat(40), true);
+    add_source(&app, "links", SourceKind::Skills, &git.url("links"), true).await;
+
+    let report = sync_source(&app.state, &source_name("links"), true)
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, SyncOutcomeKind::Ok, "{report:?}");
+    assert_eq!(names(&report.new), ["notes"], "{report:?}");
+    let refused: Vec<(String, String)> = report
+        .refused
+        .iter()
+        .map(|r| (r.name.clone().unwrap_or_default(), r.reason.clone()))
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(
+        refused
+            .iter()
+            .any(|(n, r)| n == "pdf" && r.contains("pdf/passwd") && r.contains("symlink")),
+        "{refused:?}"
+    );
+    assert!(
+        refused
+            .iter()
+            .any(|(n, r)| n == "sub" && r.contains("sub/vendored") && r.contains("submodule")),
+        "{refused:?}"
+    );
+}

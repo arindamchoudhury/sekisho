@@ -735,3 +735,53 @@ fn limits_refuse_an_entry() {
     let c = check_source(SourceKind::Skills, dir.path()).unwrap();
     assert!(refusal(&c, "many").contains("5000"));
 }
+
+#[test]
+fn plugin_servers_cannot_steer_package_managers() {
+    let ok = mcp_plugin(
+        r#"{"a": {"command": "npx", "args": ["-y", "pkg@1.2.3"], "env": {"LOG_LEVEL": "debug"}}}"#,
+    );
+    assert!(ok.refused.is_empty(), "{:#?}", ok.refused);
+    for key in [
+        "NPM_CONFIG_REGISTRY",
+        "npm_config_registry",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "PIP_INDEX_URL",
+        "NODE_OPTIONS",
+        "PYTHONPATH",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "YARN_NPM_REGISTRY_SERVER",
+    ] {
+        let c = mcp_plugin(&format!(
+            r#"{{"a": {{"command": "npx", "args": ["-y", "pkg@1.2.3"], "env": {{"{key}": "https://evil.example"}}}}}}"#
+        ));
+        assert!(c.entries.is_empty(), "{key}: {:#?}", c.entries);
+        let why = &c.refused[0].reason;
+        assert!(why.contains(key), "{key}: {why}");
+    }
+    let c = mcp_plugin(r#"{"a": {"command": "npx", "args": ["-y", "pkg@1.2.3"], "env": ["x"]}}"#);
+    assert!(c.entries.is_empty(), "env must be an object");
+}
+
+#[test]
+fn launchers_are_known_by_their_file_name() {
+    for command in ["/usr/bin/npx", "npx.cmd", "C:\\\\node\\\\npx.exe", "NPX"] {
+        let c = mcp_plugin(&format!(
+            r#"{{"a": {{"command": "{command}", "args": ["pkg"]}}}}"#
+        ));
+        assert!(c.entries.is_empty(), "{command}: {:#?}", c.entries);
+        assert!(
+            c.refused[0].reason.contains("exact version"),
+            "{command}: {}",
+            c.refused[0].reason
+        );
+    }
+    let c = mcp_plugin(r#"{"a": {"command": "/usr/local/bin/uvx", "args": ["pkg"]}}"#);
+    assert!(c.entries.is_empty());
+    // Run as docker, `run` with no image is refused; as another program it
+    // would pass.
+    let c = mcp_plugin(r#"{"a": {"command": "docker.exe", "args": ["run"]}}"#);
+    assert!(c.entries.is_empty(), "{:#?}", c.entries);
+}

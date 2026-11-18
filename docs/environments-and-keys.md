@@ -196,7 +196,9 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
 Every `PUT` replaces all the settings. Git mode reads the repository
 through a catalog source named `environments` (a name no other source
 can take), synced every minute; the admin who turns Git mode on owns the
-environments it creates. `GET /api/v1/git-mode` answers `{"enabled":
+environments it creates, until a `PUT` by another admin, or
+[offboarding](people-and-sign-in.md#offboarding), hands that to someone
+else. `GET /api/v1/git-mode` answers `{"enabled":
 false}` when it is off, and otherwise its settings (`source`, as a
 catalog source answers, without tokens), `github_api_url`,
 `has_github_token`, `enabled_by`, `enabled_at` and `latest_sync`.
@@ -236,7 +238,8 @@ The file is the one the environment was read from, or
 `<folder>/<name>.yaml` for a new one. Sekisho makes a branch
 `sekisho/<name>-<8 hex>` off the followed branch, commits the change
 there, and opens a pull request whose description names the admin who
-proposed it. The answer (201) is `{"number", "url"}`. When the pull
+proposed it by email, so keep the repository private if that matters.
+The answer (201) is `{"number", "url"}`. When the pull
 request is merged, the next sync applies it. GitHub's refusals, such as
 a token without the permissions above, answer 503 with GitHub's message.
 

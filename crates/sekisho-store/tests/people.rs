@@ -1025,3 +1025,50 @@ async fn offboarding_without_a_new_owner_is_refused_for_entry_owners() {
     assert_eq!(store.user(&ada.id).await.unwrap().disabled_at, None);
     assert_eq!(store.get_entry(&key).await.unwrap().owner, ada.id);
 }
+
+#[tokio::test]
+async fn offboarding_hands_over_sources_and_git_mode() {
+    let (store, sb) = common::store().await;
+    let ada = signed_in(&store, &github("gh|ada", "ada@example.com", &["eng"])).await;
+    let bob = signed_in(&store, &github("gh|bob", "bob@example.com", &["eng"])).await;
+    owned_skill(&store, &sb, ada.id).await;
+    store
+        .enable_git_mode(
+            &sb,
+            sekisho_store::GitModeSettings {
+                url: SourceUrl::parse("https://github.com/acme/envs.git", false).unwrap(),
+                git_ref: None,
+                folder: Folder::default(),
+                username: None,
+                token: None,
+                allow_private_network: false,
+                github_api_url: "https://api.github.com/".into(),
+                github_token: "ghp-token".into(),
+            },
+            ada.id,
+        )
+        .await
+        .unwrap();
+
+    let err = store.offboard(&ada.id, None, now()).await.unwrap_err();
+    let text = message(err);
+    // Git mode's own source is one ada added too.
+    assert!(
+        text.contains("catalog sources environments, team"),
+        "{text}"
+    );
+    assert!(text.contains("Git mode"), "{text}");
+
+    let out = store.offboard(&ada.id, Some(bob.id), now()).await.unwrap();
+    assert_eq!(
+        out.handed_over_sources,
+        [SourceName::git_mode(), SourceName::parse("team").unwrap()]
+    );
+    assert!(out.handed_over_git_mode);
+    let source = store
+        .get_source(&SourceName::parse("team").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(source.added_by, bob.id);
+    assert_eq!(store.git_mode().await.unwrap().unwrap().enabled_by, bob.id);
+}

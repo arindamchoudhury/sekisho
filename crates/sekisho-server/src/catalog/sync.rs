@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use sekisho_catalog::check::{CheckOptions, check_source_with};
+use sekisho_catalog::check::{CheckOptions, check_source_with, refuse_links};
 use sekisho_catalog::launch::Launch;
 use sekisho_catalog::model::{CheckedEntry, EntrySpec, McpRuntime, Refusal};
 use sekisho_catalog::names::{SourceKind, SourceName};
@@ -148,14 +148,30 @@ async fn read_source(state: &AppState, source: &Source) -> (Option<String>, Sync
         Ok(commit) => commit,
         Err(e) => return failed(e.to_string()),
     };
+    let links = match git.links(&src, checkout.path()).await {
+        Ok(links) => links,
+        Err(e) => return failed(e.to_string()),
+    };
+    // Relative to the source's folder, as the library reports paths.
+    let links: Vec<(String, bool)> = match source.folder.as_str() {
+        "" => links,
+        folder => links
+            .into_iter()
+            .filter_map(|(path, sub)| {
+                path.strip_prefix(&format!("{folder}/"))
+                    .map(|p| (p.to_owned(), sub))
+            })
+            .collect(),
+    };
     let root = source.folder.join(checkout.path());
     let options = CheckOptions {
         allow_plain_http: settings.allow_plain_http,
     };
-    let check = match check_source_with(source.kind, &root, &options) {
+    let mut check = match check_source_with(source.kind, &root, &options) {
         Ok(check) => check,
         Err(e) => return failed(e.to_string()),
     };
+    refuse_links(&mut check, &links);
     if source.kind == SourceKind::Environments {
         return match super::git_mode::apply(state, source, check).await {
             Ok(found) => (Some(commit), SyncOutcome::Ok(found)),

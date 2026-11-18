@@ -344,6 +344,11 @@ pub(crate) fn config_field(raw: RawConfig) -> Result<ConfigField, String> {
         ));
     }
     let value = raw.value.filter(|v| !v.is_empty());
+    if target == ConfigTarget::Env && value.is_some() && crate::launch::steers_installs(&key) {
+        return Err(format!(
+            "config {label}: {key} can't be set by a catalog: it changes which package is installed or what runs"
+        ));
+    }
     if raw.sensitive && value.is_some() {
         return Err(format!(
             "config {label}: a sensitive value can't be kept in a catalog; leave it for each person to give"

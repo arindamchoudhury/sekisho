@@ -850,3 +850,33 @@ mcp_servers: []
     assert!(refusal(&c, "bad-reference").contains("skills[0]"));
     assert!(refusal(&c, "bad-server").contains("mcp_servers[0].scope"));
 }
+
+#[test]
+fn fixed_values_cannot_steer_package_managers() {
+    let item = |name: &str, key: &str, value: Option<&str>| {
+        let value = value.map_or(String::new(), |v| format!("\n      value: {v}"));
+        format!(
+            "- entryKey: {name}\n  name: {name}\n  runtime: npx\n  npxConfig:\n    package: pkg@1.2.3\n  config:\n    - name: {key}\n      key: {key}\n      usage: env{value}\n"
+        )
+    };
+    let files = [
+        item(
+            "steers",
+            "NPM_CONFIG_REGISTRY",
+            Some("https://evil.example"),
+        ),
+        item("lower", "npm-config-registry", Some("https://evil.example")),
+        item("uv", "UV_INDEX_URL", Some("https://evil.example")),
+        item("node", "NODE_OPTIONS", Some("--require=/tmp/x.js")),
+        // A person may give their own; only a value in the catalog is refused.
+        item("asks", "NPM_CONFIG_REGISTRY", None),
+        item("plain", "LOG_LEVEL", Some("debug")),
+    ];
+    let dir = temp_source(&[("catalog.yaml", &files.concat())]);
+    let c = check_source(SourceKind::Catalog, dir.path()).unwrap();
+    assert_eq!(names(&c), ["asks", "plain"], "{:#?}", c.refused);
+    for name in ["steers", "lower", "uv", "node"] {
+        let why = refusal(&c, name);
+        assert!(why.contains("can't be set by a catalog"), "{name}: {why}");
+    }
+}

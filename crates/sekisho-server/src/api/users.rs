@@ -143,6 +143,10 @@ pub struct OffboardedBody {
     /// The catalog entries handed over, as `<kind>/<source>/<name>` with
     /// the kind's path segment, such as `skills/team/pdf`.
     handed_over_entries: Vec<String>,
+    /// The catalog sources they added, now the new owner's.
+    handed_over_sources: Vec<String>,
+    /// They turned Git mode on; it is now the new owner's.
+    handed_over_git_mode: bool,
     /// Whether Dex holds no sign-in of theirs any more. `false` when Dex
     /// couldn't be reached: Sekisho's part is done, and their refresh token
     /// at Dex dies at their next sign-in or by Dex's expiry.
@@ -207,6 +211,12 @@ pub async fn offboard(
             .iter()
             .map(|k| format!("{}/{}/{}", k.kind.path_segment(), k.source, k.name))
             .collect(),
+        handed_over_sources: done
+            .handed_over_sources
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        handed_over_git_mode: done.handed_over_git_mode,
         dex_refresh_revoked,
     }))
 }

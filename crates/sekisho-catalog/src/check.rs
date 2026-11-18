@@ -57,6 +57,52 @@ pub(crate) struct ItemRead {
     pub warnings: Vec<String>,
 }
 
+/// Refuses whatever holds one of `links`: paths, relative to the source's
+/// folder, that Git stores as a symlink or a submodule. A checkout with
+/// `core.symlinks=false` writes a symlink as a plain file holding its
+/// target, and a submodule as an empty folder, so the checkout alone can't
+/// show them (D166): an entry whose folder holds one, a catalog file, or an
+/// environment file that is one, is refused.
+pub fn refuse_links(check: &mut SourceCheck, links: &[(String, bool)]) {
+    let holds = |path: &str| {
+        links
+            .iter()
+            .find(|(link, _)| path == "." || link == path || link.starts_with(&format!("{path}/")))
+    };
+    let what = |submodule: bool| {
+        if submodule {
+            "a submodule"
+        } else {
+            "a symlink"
+        }
+    };
+    for entry in std::mem::take(&mut check.entries) {
+        match holds(&entry.path) {
+            Some((link, submodule)) => check.refused.push(Refusal {
+                reason: format!(
+                    "{link} is {} in Git; entries can't hold symlinks or submodules",
+                    what(*submodule)
+                ),
+                path: entry.path,
+                kind: Some(entry.kind),
+                name: Some(entry.name.to_string()),
+            }),
+            None => check.entries.push(entry),
+        }
+    }
+    for (path, doc) in std::mem::take(&mut check.environments) {
+        match links.iter().find(|(link, _)| *link == path) {
+            Some((_, submodule)) => check.refused.push(Refusal {
+                reason: format!("the file is {} in Git", what(*submodule)),
+                path,
+                kind: None,
+                name: Some(doc.name.to_string()),
+            }),
+            None => check.environments.push((path, doc)),
+        }
+    }
+}
+
 /// Checks the folder `root` of a source of `kind`.
 pub fn check_source(kind: SourceKind, root: &Path) -> Result<SourceCheck, CheckError> {
     check_source_with(kind, root, &CheckOptions::default())

@@ -178,6 +178,39 @@ impl Repo {
         git(&self.work, &["rev-parse", "HEAD"])
     }
 
+    /// Commits `path` as a symlink to `target` (mode 120000), or with
+    /// `submodule` as a gitlink to that commit (mode 160000), whatever the
+    /// work tree's file system can hold; pushes, and answers the commit.
+    pub fn commit_link(&self, path: &str, target: &str, submodule: bool) -> String {
+        self.sync_from_bare();
+        let (mode, object) = if submodule {
+            ("160000", target.to_owned())
+        } else {
+            let file = self.work.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, target).unwrap();
+            let blob = git(&self.work, &["hash-object", "-w", path]);
+            std::fs::remove_file(&file).unwrap();
+            ("120000", blob)
+        };
+        git(
+            &self.work,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("{mode},{object},{path}"),
+            ],
+        );
+        git(&self.work, &["commit", "-q", "-m", "link"]);
+        let bare = self.bare.to_string_lossy().into_owned();
+        git(
+            &self.work,
+            &["push", "-q", "-f", &bare, "HEAD:refs/heads/main"],
+        );
+        git(&self.work, &["rev-parse", "HEAD"])
+    }
+
     /// Removes `paths`, commits on `main` and pushes: answers the commit.
     /// The work tree first takes `main` as the bare repository has it, so
     /// commits made there (a merged pull request) stay.

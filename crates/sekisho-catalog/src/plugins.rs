@@ -390,6 +390,17 @@ fn servers_from(
         let def = def
             .as_object()
             .ok_or_else(|| format!("MCP server {name} must be an object"))?;
+        match def.get("env") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(env)) => {
+                if let Some(key) = env.keys().find(|k| crate::launch::steers_installs(k)) {
+                    return Err(format!(
+                        "MCP server {name}: env {key} can't be set by a plugin: it changes which package is installed or what runs"
+                    ));
+                }
+            }
+            Some(_) => return Err(format!("MCP server {name}: env must be an object")),
+        }
         let launch = if let Some(command) = def.get("command").and_then(Value::as_str) {
             let args = match def.get("args") {
                 None | Some(Value::Null) => Vec::new(),

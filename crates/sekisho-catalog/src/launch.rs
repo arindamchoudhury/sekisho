@@ -29,7 +29,7 @@ pub enum Launch {
 
 /// Reads a stdio server's launch.
 pub fn parse_stdio(command: &str, args: &[String]) -> Result<Launch, String> {
-    match command {
+    match launcher(command).as_str() {
         "npx" => npx(args),
         "uvx" => uvx(args),
         "docker" => docker(args),
@@ -37,6 +37,48 @@ pub fn parse_stdio(command: &str, args: &[String]) -> Result<Launch, String> {
             command: other.to_owned(),
         }),
     }
+}
+
+/// The program a command runs, as its file name: `/usr/bin/npx`,
+/// `npx.cmd` and `NPX.EXE` are all `npx`.
+fn launcher(command: &str) -> String {
+    let name = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    for suffix in [".cmd", ".exe", ".bat"] {
+        if let Some(stem) = name.strip_suffix(suffix) {
+            return stem.to_owned();
+        }
+    }
+    name
+}
+
+/// Environment variables that change which package a package manager
+/// installs, or what a runtime loads: a catalog can't fix their values,
+/// or an exact version (D171) would name whatever another registry serves.
+/// Matched case-insensitively.
+pub fn steers_installs(key: &str) -> bool {
+    let key = key.to_ascii_uppercase().replace('-', "_");
+    const PREFIXES: [&str; 9] = [
+        "NPM_CONFIG_",
+        "YARN_",
+        "PNPM_",
+        "BUN_",
+        "UV_",
+        "PIP_",
+        "PYTHON",
+        "LD_",
+        "DYLD_",
+    ];
+    const NAMES: [&str; 4] = [
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "COREPACK_NPM_REGISTRY",
+        "NPM_TOKEN",
+    ];
+    PREFIXES.iter().any(|p| key.starts_with(p)) || NAMES.contains(&key.as_str())
 }
 
 /// `--flag=value` split, or the flag alone.

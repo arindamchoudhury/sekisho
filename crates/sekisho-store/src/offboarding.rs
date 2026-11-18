@@ -1,7 +1,9 @@
 //! Offboarding: one transaction that disables a person, ends their
-//! sessions, revokes their keys and hands what they own (environments and
-//! catalog entries) to a new owner.
+//! sessions, revokes their keys and hands what they own (environments,
+//! catalog entries, the sources they added and Git mode if they turned it
+//! on) to a new owner.
 
+use sekisho_catalog::names::SourceName;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
 use time::OffsetDateTime;
@@ -26,6 +28,12 @@ pub struct Offboarded {
     /// The catalog entries handed to the new owner, by source, kind and
     /// name.
     pub handed_over_entries: Vec<EntryKey>,
+    /// The catalog sources they added: entries a later sync finds are the
+    /// new owner's.
+    pub handed_over_sources: Vec<SourceName>,
+    /// They turned Git mode on: environments it creates from now on are
+    /// the new owner's.
+    pub handed_over_git_mode: bool,
 }
 
 fn refuse(message: impl Into<String>) -> StoreError {
@@ -70,8 +78,25 @@ impl Store {
                 .fetch_all(&mut *tx)
                 .await?;
         // Users, then sources, then entries, as the catalog locks them.
+        let added_sources: Vec<String> = sqlx::query_scalar(
+            "select name from catalog_sources where added_by = $1 order by name for update",
+        )
+        .bind(user)
+        .fetch_all(&mut *tx)
+        .await?;
+        let added_sources = added_sources
+            .iter()
+            .map(|n| source_name(n))
+            .collect::<Result<Vec<_>>>()?;
+        let git_mode: bool =
+            sqlx::query_scalar("select exists (select 1 from git_mode where enabled_by = $1)")
+                .bind(user)
+                .fetch_one(&mut *tx)
+                .await?;
         let owned_entries: Vec<(String, String, String)> = sqlx::query_as(
-            "select e.kind, s.name, e.name from catalog_entries e              join catalog_sources s on s.id = e.source_id              where e.owner_id = $1 order by s.name, e.kind, e.name for update of e",
+            "select e.kind, s.name, e.name from catalog_entries e \
+             join catalog_sources s on s.id = e.source_id \
+             where e.owner_id = $1 order by s.name, e.kind, e.name for update of e",
         )
         .bind(user)
         .fetch_all(&mut *tx)
@@ -87,7 +112,11 @@ impl Store {
             })
             .collect::<Result<Vec<_>>>()?;
         match new_owner {
-            None if !owned.is_empty() || !handed_entries.is_empty() => {
+            None if !owned.is_empty()
+                || !handed_entries.is_empty()
+                || !added_sources.is_empty()
+                || git_mode =>
+            {
                 let mut what = Vec::new();
                 if !owned.is_empty() {
                     what.push(format!("environments {}", owned.join(", ")));
@@ -98,6 +127,13 @@ impl Store {
                         .map(|k| format!("{}/{}/{}", k.kind.path_segment(), k.source, k.name))
                         .collect();
                     what.push(format!("catalog entries {}", entries.join(", ")));
+                }
+                if !added_sources.is_empty() {
+                    let names: Vec<&str> = added_sources.iter().map(SourceName::as_str).collect();
+                    what.push(format!("catalog sources {}", names.join(", ")));
+                }
+                if git_mode {
+                    what.push("Git mode".to_owned());
                 }
                 return Err(refuse(format!(
                     "they own {}; name a new owner for them",
@@ -156,6 +192,21 @@ impl Store {
                 .await?;
             notify(&mut tx, ChangeKind::Catalog).await?;
         }
+        if let Some(n) = new_owner
+            && (!added_sources.is_empty() || git_mode)
+        {
+            sqlx::query("update catalog_sources set added_by = $2 where added_by = $1")
+                .bind(user)
+                .bind(n)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("update git_mode set enabled_by = $2 where enabled_by = $1")
+                .bind(user)
+                .bind(n)
+                .execute(&mut *tx)
+                .await?;
+            notify(&mut tx, ChangeKind::Catalog).await?;
+        }
         notify(&mut tx, ChangeKind::Users).await?;
         if !revoked.is_empty() {
             notify(&mut tx, ChangeKind::Keys).await?;
@@ -180,6 +231,12 @@ impl Store {
             } else {
                 Vec::new()
             },
+            handed_over_sources: if new_owner.is_some() {
+                added_sources
+            } else {
+                Vec::new()
+            },
+            handed_over_git_mode: new_owner.is_some() && git_mode,
         })
     }
 }

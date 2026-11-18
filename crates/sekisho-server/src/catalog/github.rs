@@ -44,6 +44,31 @@ impl RepoPath {
     }
 }
 
+/// A file's path for GitHub's contents API: each segment percent-encoded
+/// but for `A-Z a-z 0-9 - . _ ~`, so a repository's file names can't add a
+/// query, a fragment or a `..` that URL parsing would resolve, and leave
+/// `/contents/`. Empty, `.` and `..` segments are refused.
+pub fn contents_path(path: &str) -> Result<String, String> {
+    let mut out = Vec::new();
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(format!(
+                "the path {path:?} isn't a file inside the repository"
+            ));
+        }
+        let mut encoded = String::new();
+        for b in segment.bytes() {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                encoded.push(b as char);
+            } else {
+                encoded.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out.push(encoded);
+    }
+    Ok(out.join("/"))
+}
+
 /// A pull request GitHub opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullRequest {
@@ -174,12 +199,13 @@ impl GitHub {
             .as_str()
             .ok_or("the base branch has no commit")?
             .to_owned();
+        let file = contents_path(proposal.path)?;
         // The file as the base has it: its blob, or none when it's new.
         let what = "reading the file";
         let (status, json) = self
             .call(
                 Method::GET,
-                &format!("{r}/contents/{}?ref={base}", proposal.path),
+                &format!("{r}/contents/{file}?ref={base}"),
                 None,
                 what,
             )
@@ -215,7 +241,7 @@ impl GitHub {
         )?;
 
         let what = "committing the change";
-        let path = format!("{r}/contents/{}", proposal.path);
+        let path = format!("{r}/contents/{file}");
         let answer = match &proposal.content {
             Some(text) => {
                 let mut body = json!({
@@ -263,6 +289,25 @@ impl GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contents_paths_stay_under_contents() {
+        let path = contents_path("environments/%2e%2e/%2e%2e/a b?#.yaml").unwrap();
+        assert_eq!(path, "environments/%252e%252e/%252e%252e/a%20b%3F%23.yaml");
+        let url = Url::parse(&format!("https://api.github.com/repos/o/r/contents/{path}")).unwrap();
+        assert!(
+            url.path().starts_with("/repos/o/r/contents/environments/"),
+            "{url}"
+        );
+        assert_eq!(url.query(), None);
+        assert_eq!(
+            contents_path("environments/team.yaml").unwrap(),
+            "environments/team.yaml"
+        );
+        for bad in ["../x.yaml", "a/./b.yaml", "a//b.yaml", ""] {
+            assert!(contents_path(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn repositories_are_the_urls_last_two_segments() {

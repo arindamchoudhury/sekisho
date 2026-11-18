@@ -351,6 +351,38 @@ impl Git {
     }
 }
 
+impl Git {
+    /// The checkout's paths that Git stores as symlinks (`false`) or
+    /// submodules (`true`), relative to the repository's root. The
+    /// checkout writes neither as such (`core.symlinks=false`), so only
+    /// Git's own record shows them.
+    pub async fn links(
+        &self,
+        src: &GitSource<'_>,
+        dest: &Path,
+    ) -> Result<Vec<(String, bool)>, GitError> {
+        let listing = self
+            .run(
+                src,
+                Some(dest),
+                &["ls-tree", "-r", "-z", "--full-tree", "FETCH_HEAD"],
+                None,
+            )
+            .await?;
+        Ok(listing
+            .split('\0')
+            .filter_map(|record| {
+                let (meta, path) = record.split_once('\t')?;
+                match meta.split(' ').next()? {
+                    "120000" => Some((path.to_owned(), false)),
+                    "160000" => Some((path.to_owned(), true)),
+                    _ => None,
+                }
+            })
+            .collect())
+    }
+}
+
 /// The bytes under `folder`, symlinks not followed.
 fn folder_size(folder: &Path) -> u64 {
     let mut total = 0;

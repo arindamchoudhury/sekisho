@@ -204,11 +204,15 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"new_owner": "NEW_OWNER_ID"}'
 ```
 
-`new_owner` is needed when they own environments or catalog entries (the
-refusal names them), and must be someone else who isn't disabled. The
-answer lists `ended_sessions`, `revoked_keys`, `handed_over` (the
-environments), `handed_over_entries` (the entries, as
-`<kind>/<source>/<name>`, such as `skills/team/pdf`), and
+`new_owner` is needed when they own environments or catalog entries, added
+catalog sources, or turned [Git mode](environments-and-keys.md#git-mode)
+on (the refusal names them all), and must be someone else who isn't
+disabled. The answer lists `ended_sessions`, `revoked_keys`,
+`handed_over` (the environments), `handed_over_entries` (the entries, as
+`<kind>/<source>/<name>`, such as `skills/team/pdf`),
+`handed_over_sources` (the sources whose new entries are now the new
+owner's), `handed_over_git_mode` (environments Git mode creates are now
+theirs), and
 `dex_refresh_revoked`: whether Dex
 dropped their sign-in too. It is `false` when Dex couldn't be reached;
 Sekisho's part is done anyway. Nobody can offboard themselves.

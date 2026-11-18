@@ -122,9 +122,12 @@ apply.
 Sekisho runs the system `git` (2.37 or later; [Running](running.md)),
 hardened:
 
-- `https://` only, no redirects, no submodules, no hooks, no symlinks, and
-  no system, global or user Git configuration; the server's proxy and
-  `GIT_*` settings never reach it;
+- `https://` only, no redirects, no submodules fetched, no hooks, symlinks
+  written as plain files, and no system, global or user Git configuration;
+  the server's proxy and `GIT_*` settings never reach it;
+- symlinks and submodules are found in Git's own record of the commit,
+  since the checkout holds neither as such, and refuse what holds them
+  ([below](#what-each-kind-reads));
 - the host's addresses are checked first and Git is pinned to them, so DNS
   can't move it. Private, local and metadata addresses are refused unless
   `allow_private_network` is set;
@@ -136,8 +139,9 @@ hardened:
 ## What each kind reads
 
 Whatever the kind, an entry's files are read only from inside its folder:
-a symlink anywhere in an entry, or a path that leaves the repository,
-refuses it. `catalog`, `plugins` and `prompts` sources skip hidden folders
+a symlink or a submodule anywhere in an entry, or a path that leaves the
+repository, refuses it, and so does a catalog or environment file that is
+a symlink. `catalog`, `plugins` and `prompts` sources skip hidden folders
 (starting with `.`); a `skills` source searches every folder but `.git`,
 so skills under `.claude/skills` are found.
 
@@ -173,7 +177,13 @@ into `-`, at most 64 characters. Its runtime is one of:
 
 Configuration fields (`config`) keep their name, description, key, whether they are required, and a prefix;
 each needs a `usage` of `env` or `header`. A **sensitive value** written
-in the catalog is refused, since delivered files hold no secrets.
+in the catalog is refused, since delivered files hold no secrets. So is a
+**fixed value for a variable that changes which package is installed or
+what runs**, as it would undo exact versions: names starting with
+`NPM_CONFIG_`, `YARN_`, `PNPM_`, `BUN_`, `UV_`, `PIP_`, `PYTHON`, `LD_`
+or `DYLD_`, and `NODE_OPTIONS`, `NODE_PATH`, `COREPACK_NPM_REGISTRY` and
+`NPM_TOKEN`, in any case. A person may still give such a variable their
+own value.
 `userAllowed` is refused; `options` and `secretBinding` are ignored with a
 warning. Fields only Obot's hosting uses are ignored with a warning:
 `resources`, `minObotVersion`, `maxObotVersion`, `injectObotHeaders`, and
@@ -247,10 +257,24 @@ repository as a source of its own. Without a marketplace, the root or each
 top-level folder with a manifest (`.claude-plugin/plugin.json`, or
 `plugin.json` as APM writes it) is a plugin.
 
-A plugin's MCP servers (its manifest's `mcpServers`, or `.mcp.json`) must
-start the way catalog servers do: `npx` and `uvx` with one exact package,
-`docker run` with one image and no option that changes what runs or how;
-otherwise the plugin is refused.
+A plugin's MCP servers (its manifest's `mcpServers`, or `.mcp.json`) are
+checked by the program they start, known by its file name (so
+`/usr/bin/npx` and `npx.cmd` are `npx`):
+
+- `npx` and `uvx` must name one exact package, with no option that
+  changes where it comes from;
+- `docker` must be `docker run` with one image (pinned to its digest at
+  sync) and only these options: `-i`, `-t`, `--rm`, `-d`, `-e`/`--env`,
+  `--env-file`, `-v`/`--volume`, `--mount`, `--name`, `--network`,
+  `-p`/`--publish`, `-w`/`--workdir`, `--entrypoint`, `-u`/`--user`,
+  `--platform` and `-l`/`--label`. These can mount the developer's files
+  or use the host's network: review them as you would the plugin's code;
+- any other program (`node`, `python`, `bunx`, a shell) isn't checked: it
+  runs what the plugin holds, or whatever it fetches itself. Review such
+  plugins before you add them.
+
+A server's `env` can't set the variables above that change which package
+is installed. Otherwise the plugin is refused.
 
 **APM bundles** are checked as `apm install` checks them: every file that
 `apm.lock.yaml`'s `pack.bundle_files` lists is present with its SHA-256,
@@ -342,8 +366,9 @@ that found the same thing share one revision.
 An entry's owner is, at first, the admin who added its source.
 `PATCH` with `{"owner": "<user ID>"}` hands it to someone else, who must
 exist and not be disabled (else 422). [Offboarding](people-and-sign-in.md#offboarding)
-hands a person's entries to their new owner. An entry a later sync finds
-is owned by whoever added the source.
+hands a person's entries to their new owner, with the sources they added.
+An entry a later sync finds is owned by whoever added its source, or
+whoever it was handed to.
 
 ### Quarantine
 
