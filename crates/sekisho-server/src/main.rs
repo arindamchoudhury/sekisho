@@ -13,6 +13,7 @@ use sekisho_core::keys::hash_secret;
 use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
 use sekisho_hooks::cache::AuthCache;
+use sekisho_hooks::drain::Drain;
 use sekisho_hooks::extproc::StreamGuard;
 use sekisho_hooks::ratelimit::{Charger, TALLY_WAIT};
 use sekisho_hooks::tally::Tallies;
@@ -28,7 +29,6 @@ use sekisho_server::config::ServerConfig;
 use sekisho_store::{Store, StoreOptions};
 use time::OffsetDateTime;
 use tokio::net::TcpStream;
-use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 
@@ -127,6 +127,8 @@ async fn serve() -> anyhow::Result<()> {
     // What each stream relayed, for the estimate when one ends early: the
     // stream hook tallies, the rate-limit service reads.
     let tallies = Tallies::new();
+    // Running streams and charges, which a stop waits for (D189).
+    let drain = Drain::new();
     let charger = Charger {
         cache: Arc::clone(&cache),
         store: store.clone(),
@@ -134,12 +136,14 @@ async fn serve() -> anyhow::Result<()> {
         charge_secret_sha256: hash_secret(&config.settings.hooks.charge_secret),
         tallies: tallies.clone(),
         tally_wait: TALLY_WAIT,
+        drain: drain.clone(),
     };
     let guard = StreamGuard {
         cache,
         store: store.clone(),
         clock,
         tallies,
+        drain: drain.clone(),
     };
     if config.settings.render.bare_route {
         tracing::warn!(
@@ -208,35 +212,54 @@ async fn serve() -> anyhow::Result<()> {
         "listening"
     );
 
-    // One signal stops every server.
-    let (stop, stopped) = watch::channel(false);
+    // One signal stops every server, and ends waiting long polls.
+    let stopping = state.clone();
     tokio::spawn(async move {
         shutdown().await;
-        let _ = stop.send(true);
+        stopping.stop();
     });
-    let until_stopped = |mut stopped: watch::Receiver<bool>| async move {
-        let _ = stopped.wait_for(|s| *s).await;
-    };
+    let stopped = state.clone();
     // TCP_NODELAY on every connection: with Nagle's algorithm, a small answer
     // written in two parts waits for agentgateway's delayed ACK, about 40 ms
     // per hook call.
     let admin = axum::serve(admin_listener.tap_io(|tcp| no_delay(tcp)), router(state))
-        .with_graceful_shutdown(until_stopped(stopped.clone()));
+        .with_graceful_shutdown(stopped.stopped());
     let hooks = axum::serve(
         hooks_listener.tap_io(|tcp| no_delay(tcp)),
         authz::router(hooks),
     )
-    .with_graceful_shutdown(until_stopped(stopped.clone()));
+    .with_graceful_shutdown(stopped.stopped());
     let grpc_incoming = TcpListenerStream::new(grpc_listener).map(|conn| {
         if let Ok(tcp) = &conn {
             no_delay(tcp);
         }
         conn
     });
+    // The gRPC hooks keep serving through the drain: running streams relay
+    // their answers, and those that finish report their usage here. Only
+    // then do they stop.
+    let grace = config.shutdown_grace;
+    let drained = async move {
+        stopped.stopped().await;
+        tracing::info!(?grace, "waiting for running streams");
+        let left = drain.run(grace, CHARGE_WAIT).await;
+        if left.streams_ended > 0 {
+            tracing::warn!(
+                streams = left.streams_ended,
+                "ended streams still running after SEKISHO_SHUTDOWN_GRACE"
+            );
+        }
+        if left.charges_left > 0 {
+            tracing::warn!(
+                charges = left.charges_left,
+                "stopped with spend still being recorded"
+            );
+        }
+    };
     let grpc = tonic::transport::Server::builder()
         .add_service(RateLimitServiceServer::new(charger))
         .add_service(ExternalProcessorServer::new(guard))
-        .serve_with_incoming_shutdown(grpc_incoming, until_stopped(stopped));
+        .serve_with_incoming_shutdown(grpc_incoming, drained);
     tokio::try_join!(
         async { admin.await.context("admin API") },
         async { hooks.await.context("extAuthz hook") },
@@ -244,6 +267,11 @@ async fn serve() -> anyhow::Result<()> {
     )?;
     Ok(())
 }
+
+/// How long a stop waits, after the streams, for spend still being
+/// recorded: a stream ended at the grace's end is charged its estimate
+/// after [`TALLY_WAIT`].
+const CHARGE_WAIT: Duration = TALLY_WAIT.saturating_add(Duration::from_secs(2));
 
 fn no_delay(tcp: &TcpStream) {
     if let Err(error) = tcp.set_nodelay(true) {

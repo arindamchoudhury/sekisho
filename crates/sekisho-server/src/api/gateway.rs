@@ -31,7 +31,9 @@ fn after(query: Option<&str>) -> Result<i64, ApiError> {
 
 /// `200 {version, yaml}` with the newest config once it is not `after`, the
 /// version the agent has (it is older after the database was re-created);
-/// `204` when none appears within the long-poll time.
+/// `204` when none appears within the long-poll time, or once Sekisho
+/// starts shutting down: a graceful shutdown waits for every request, so a
+/// poll left waiting would hold it up to the long-poll time.
 pub async fn config(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -39,6 +41,8 @@ pub async fn config(
     let after = after(query.as_deref())?;
     let deadline = Instant::now() + state.long_poll();
     let mut published = state.published();
+    let stopped = state.stopped();
+    tokio::pin!(stopped);
     loop {
         published.borrow_and_update();
         if let Some((version, yaml)) = state
@@ -52,7 +56,12 @@ pub async fn config(
         if now >= deadline {
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
-        // Wakes on this replica's next publish, or re-checks after a while.
-        let _ = tokio::time::timeout((deadline - now).min(RECHECK), published.changed()).await;
+        // Wakes on this replica's next publish, or re-checks after a while,
+        // or answers now if shutdown has begun.
+        tokio::select! {
+            biased;
+            () = &mut stopped => return Ok(StatusCode::NO_CONTENT.into_response()),
+            _ = tokio::time::timeout((deadline - now).min(RECHECK), published.changed()) => {}
+        }
     }
 }

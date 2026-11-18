@@ -8,6 +8,7 @@ use sekisho_core::names::{EnvName, ModelName, ProviderName};
 use sekisho_core::pricing::Usage;
 use sekisho_core::window::{BudgetWindow, WindowKind};
 use sekisho_hooks::cache::AuthCache;
+use sekisho_hooks::drain::Drain;
 use sekisho_hooks::ratelimit::Charger;
 use sekisho_hooks::tally::{ProviderUsage, Tallies};
 use sekisho_proto::ratelimit::RateLimitDescriptor;
@@ -35,6 +36,8 @@ struct Rig {
     budgets: Vec<Budget>,
     /// The stream hook's tallies, shared with the charger.
     tallies: Tallies,
+    /// The charger's charges, for a shutdown.
+    drain: Drain,
 }
 
 async fn rig() -> Rig {
@@ -139,6 +142,7 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
         .unwrap();
     cache.spawn_refresh(store.clone());
     let tallies = Tallies::new();
+    let drain = Drain::new();
     let charger = Charger {
         cache,
         store: store.clone(),
@@ -146,6 +150,7 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
         charge_secret_sha256: sekisho_core::keys::hash_secret(CHARGE_SECRET),
         tallies: tallies.clone(),
         tally_wait,
+        drain: drain.clone(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -165,6 +170,7 @@ async fn rig_waiting(tally_wait: Duration) -> Rig {
         key: key.id,
         budgets,
         tallies,
+        drain,
     }
 }
 
@@ -607,6 +613,56 @@ async fn a_stream_that_ends_early_is_charged_an_estimate() {
     // 1,000 × 3 + 40 × 15 USD per million.
     spent_becomes(&rig, MicroUsd(3_600)).await;
     assert_eq!(settled(&rig).await, [MicroUsd(3_600); 3]);
+}
+
+/// When `sekisho serve` stops (D189), it waits for the spend still being
+/// recorded: a stream ended at shutdown is charged its estimate before the
+/// drain returns, not lost with the process.
+#[tokio::test]
+async fn the_drain_waits_for_an_estimate() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 40);
+    rig.rls
+        .should_rate_limit(start(
+            (rig.key.as_str(), rig.person.as_str()),
+            "gpt-priced",
+            &id,
+            1_000,
+        ))
+        .await
+        .unwrap();
+    rig.tallies.finish(&id); // the stream was ended
+    let drained = rig.drain.run(Duration::ZERO, Duration::from_secs(5)).await;
+    assert_eq!(drained.charges_left, 0);
+    assert_eq!(
+        spent(&rig).await,
+        [MicroUsd(3_600); 3],
+        "charged before the drain returned"
+    );
+}
+
+/// The wait for charges is bounded too: a watch for a stream this Sekisho
+/// never sees end doesn't hold the shutdown.
+#[tokio::test]
+async fn the_drain_stops_waiting_for_charges_after_its_bound() {
+    let mut rig = rig().await;
+    let id = tally(&rig, 200, 40); // never finished
+    rig.rls
+        .should_rate_limit(start(
+            (rig.key.as_str(), rig.person.as_str()),
+            "gpt-priced",
+            &id,
+            1_000,
+        ))
+        .await
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    let drained = rig
+        .drain
+        .run(Duration::ZERO, Duration::from_millis(300))
+        .await;
+    assert_eq!(drained.charges_left, 1);
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 /// A stream that ends early on `model`, with a 1,000-token prompt and

@@ -7,6 +7,7 @@ use sekisho_core::names::EnvName;
 use sekisho_core::pricing::Usage;
 use sekisho_core::secret_box::SecretBox;
 use sekisho_hooks::cache::AuthCache;
+use sekisho_hooks::drain::Drain;
 use sekisho_hooks::extproc::StreamGuard;
 use sekisho_hooks::tally::{ProviderUsage, Tallies, Tally};
 use sekisho_hooks::tokens::count_text;
@@ -46,6 +47,8 @@ struct Rig {
     key: EnvKeyId,
     /// What the guard tallied for each request.
     tallies: Tallies,
+    /// The guard's streams, for a shutdown.
+    drain: Drain,
 }
 
 async fn rig() -> Rig {
@@ -82,11 +85,13 @@ async fn rig() -> Rig {
     let now = Arc::new(Mutex::new(OffsetDateTime::now_utc()));
     let clock_now = Arc::clone(&now);
     let tallies = Tallies::new();
+    let drain = Drain::new();
     let guard = StreamGuard {
         cache: Arc::clone(&cache),
         store: store.clone(),
         clock: Arc::new(move || *clock_now.lock().unwrap()),
         tallies: tallies.clone(),
+        drain: drain.clone(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -108,6 +113,7 @@ async fn rig() -> Rig {
         token,
         key: key.id,
         tallies,
+        drain,
     }
 }
 
@@ -500,6 +506,87 @@ async fn the_providers_counts_are_tallied() {
             },
         })
     );
+}
+
+/// When `sekisho serve` stops (D189), a running stream may finish within
+/// the grace; one still running then is ended, as a revocation ends one,
+/// without waiting for another chunk, and its tally finishes so its
+/// estimate can be charged.
+#[tokio::test]
+async fn a_stream_still_running_after_the_grace_is_ended() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let id = request_id(&next(&mut out).await.unwrap());
+    send_response_status(&tx, "200").await;
+    next(&mut out).await.unwrap();
+    let drain = rig.drain.clone();
+    let drained = tokio::spawn(async move {
+        drain
+            .run(Duration::from_millis(500), Duration::from_secs(1))
+            .await
+    });
+    // Within the grace it still relays.
+    send_body_chunk(&tx, &openai_chunk("relayed")).await;
+    assert_eq!(
+        next(&mut out).await.unwrap().body(),
+        openai_chunk("relayed")
+    );
+    let ended = next(&mut out).await.unwrap();
+    assert_eq!(ended.immediate_status(), 503);
+    assert_eq!(
+        ended.immediate_body(),
+        serde_json::json!({ "error": "unavailable", "reason": "shutting_down" })
+    );
+    assert!(next(&mut out).await.is_none(), "the guard ends the stream");
+    assert_eq!(
+        rig.tallies.wait(&id, Duration::from_secs(1)).await,
+        Some(Tally {
+            status: Some(200),
+            answer_o200k: count_text("relayed"),
+            ..Tally::default()
+        })
+    );
+    assert_eq!(drained.await.unwrap().streams_ended, 1);
+    drop(tx);
+}
+
+/// The drain ends as soon as the last stream does, long before its grace.
+#[tokio::test]
+async fn the_drain_ends_with_the_last_stream() {
+    let rig = rig().await;
+    let token = format!("Bearer {}", rig.token);
+    let (tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    next(&mut out).await.unwrap();
+    let started = Instant::now();
+    let drain = rig.drain.clone();
+    let drained = tokio::spawn(async move {
+        drain
+            .run(Duration::from_secs(30), Duration::from_secs(1))
+            .await
+    });
+    sleep(Duration::from_millis(100)).await;
+    assert!(!drained.is_finished(), "waits while a stream runs");
+    drop(tx); // the stream finishes
+    let drained = timeout(Duration::from_secs(2), drained)
+        .await
+        .expect("the drain ends with the stream")
+        .unwrap();
+    assert_eq!(drained.streams_ended, 0);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// Once running streams were ended, a new one is refused at its headers
+/// rather than relayed unguarded.
+#[tokio::test]
+async fn new_streams_are_refused_once_streams_were_ended() {
+    let rig = rig().await;
+    rig.drain.run(Duration::ZERO, Duration::ZERO).await;
+    let token = format!("Bearer {}", rig.token);
+    let (_tx, mut out) = open_stream(&rig, Some(&token), true).await;
+    let refused = next(&mut out).await.unwrap();
+    assert_eq!(refused.immediate_status(), 503);
+    assert!(next(&mut out).await.is_none());
 }
 
 /// A session for `user` and its bearer header, with the cache reloaded so

@@ -5,6 +5,7 @@
 pub mod authz;
 pub mod cache;
 pub mod credential;
+pub mod drain;
 pub mod extproc;
 pub mod ratelimit;
 pub mod tally;

@@ -8,7 +8,9 @@
 //! ends or its user is disabled, it answers the next message with a 403
 //! `ImmediateResponse` and ends the stream; the client keeps its 200 but gets
 //! no more data, and the upstream connection closes. A session token that
-//! merely expires mid-stream doesn't end it.
+//! merely expires mid-stream doesn't end it. When Sekisho stops, a stream
+//! still running after the shutdown grace is ended the same way, with a
+//! 503 (see [`crate::drain`]).
 //!
 //! It also gives each request a [`Tallies`] ID, answered as dynamic metadata
 //! (`extproc.sekisho_request` in agentgateway's CEL), and counts the answer
@@ -40,6 +42,7 @@ use uuid::Uuid;
 
 use crate::cache::AuthCache;
 use crate::credential::{Authenticated, Refusal, authenticate, refusal};
+use crate::drain::Drain;
 use crate::tally::{AnswerText, Tallies};
 
 /// The dynamic-metadata field holding the request's tally ID.
@@ -52,6 +55,8 @@ pub struct StreamGuard {
     pub clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     /// Shared with the rate-limit service, which reads each finished tally.
     pub tallies: Tallies,
+    /// Running streams, for a shutdown.
+    pub drain: Drain,
 }
 
 #[tonic::async_trait]
@@ -64,13 +69,14 @@ impl ExternalProcessor for StreamGuard {
     ) -> Result<Response<Self::ProcessStream>, Status> {
         let inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(16);
-        tokio::spawn(guard(
+        self.drain.spawn_stream(guard(
             inbound,
             tx,
             Arc::clone(&self.cache),
             self.store.clone(),
             Arc::clone(&self.clock),
             self.tallies.clone(),
+            self.drain.streams_ending(),
         ));
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -116,12 +122,28 @@ async fn guard(
     store: Store,
     clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     tallies: Tallies,
+    ending: impl Future<Output = ()>,
 ) {
     let mut caller: Option<Caller> = None;
     // Finished when this function ends, however it ends.
     let mut tally: Option<OpenTally> = None;
     let mut text = AnswerText::default();
-    while let Some(Ok(message)) = inbound.next().await {
+    tokio::pin!(ending);
+    loop {
+        let next = tokio::select! {
+            biased;
+            // Sekisho is stopping and the grace is over (D189): end the
+            // stream as a revocation does, or refuse a new one. Never
+            // waits, so a client that stopped reading can't hold it.
+            () = &mut ending => {
+                let _ = tx.try_send(Ok(immediate(503, "unavailable", "shutting_down")));
+                return;
+            }
+            next = inbound.next() => next,
+        };
+        let Some(Ok(message)) = next else {
+            return;
+        };
         let Some(message) = message.request else {
             continue;
         };
@@ -269,10 +291,15 @@ fn answer(message: Message) -> ProcessingResponse {
 }
 
 fn refuse(reason: &'static str) -> ProcessingResponse {
-    let body = serde_json::json!({ "error": "forbidden", "reason": reason }).to_string();
+    immediate(403, "forbidden", reason)
+}
+
+/// Ends the request or stream with `code` and a JSON error.
+fn immediate(code: i32, error: &str, reason: &'static str) -> ProcessingResponse {
+    let body = serde_json::json!({ "error": error, "reason": reason }).to_string();
     ProcessingResponse {
         response: Some(Answer::ImmediateResponse(ImmediateResponse {
-            status: Some(HttpStatus { code: 403 }),
+            status: Some(HttpStatus { code }),
             headers: Some(HeaderMutation {
                 set_headers: vec![HeaderValueOption {
                     header: Some(HeaderValue {

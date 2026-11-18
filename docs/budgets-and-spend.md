@@ -49,8 +49,8 @@ against:
    provider reports a dated name such as `claude-sonnet-4-5-20250929`.
 2. When the provider reports and the model has no prices of its own, the
    cost agentgateway's model catalog gives.
-3. When a stream ends before the provider reports (the tool hung up, or a
-   revoked key cut it), an estimate, at the model's prices or else at
+3. When a stream ends before the provider reports (the tool hung up, a
+   revoked key cut it, or Sekisho stopped), an estimate, at the model's prices or else at
    agentgateway's catalog prices:
    - input: the provider's count if it sent one, else agentgateway's own
      count of the prompt;

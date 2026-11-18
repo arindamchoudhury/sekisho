@@ -47,6 +47,7 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::cache::AuthCache;
+use crate::drain::Drain;
 use crate::tally::{Recorded, STALLED, Start, Tallies, Tally};
 use crate::tokens::answer_tokens;
 
@@ -100,6 +101,8 @@ pub struct Charger {
     /// How long to wait after a stream ends for agentgateway's report
     /// ([`TALLY_WAIT`] in `sekisho serve`).
     pub tally_wait: Duration,
+    /// Charges still running, for a shutdown.
+    pub drain: Drain,
 }
 
 #[tonic::async_trait]
@@ -115,7 +118,8 @@ impl RateLimitService for Charger {
         // database, the retries or a watch can't cut a charge short and its
         // errors are always logged.
         let charger = self.clone();
-        tokio::spawn(async move { charger.handle(&request).await });
+        self.drain
+            .spawn_charge(async move { charger.handle(&request).await });
         Ok(Response::new(RateLimitResponse {
             overall_code: Code::Ok as i32,
             ..Default::default()
@@ -230,7 +234,8 @@ impl Charger {
         {
             Recorded::First => {
                 let (charger, id) = (self.clone(), report.request.clone());
-                tokio::spawn(async move { charger.charge_unreported(&id).await });
+                self.drain
+                    .spawn_charge(async move { charger.charge_unreported(&id).await });
                 true
             }
             Recorded::Again | Recorded::Estimated => true,

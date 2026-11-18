@@ -86,6 +86,8 @@ struct Inner {
     republish: Duration,
     /// The newest gateway config version this replica has seen saved.
     published: watch::Sender<i64>,
+    /// Whether shutdown has begun.
+    stopping: watch::Sender<bool>,
     catalog: CatalogSettings,
 }
 
@@ -122,6 +124,7 @@ impl AppState {
                 long_poll: settings.long_poll,
                 republish: settings.republish,
                 published: watch::channel(0).0,
+                stopping: watch::channel(false).0,
                 catalog: settings.catalog,
             }),
         }
@@ -149,6 +152,20 @@ impl AppState {
 
     pub(crate) fn published(&self) -> watch::Receiver<i64> {
         self.inner.published.subscribe()
+    }
+
+    /// Begins shutdown: every server's graceful shutdown starts, and
+    /// waiting long polls answer at once.
+    pub fn stop(&self) {
+        self.inner.stopping.send_replace(true);
+    }
+
+    /// Resolves once shutdown has begun.
+    pub fn stopped(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut stopping = self.inner.stopping.subscribe();
+        async move {
+            let _ = stopping.wait_for(|s| *s).await;
+        }
     }
 
     /// The sign-in routes' state.

@@ -568,6 +568,42 @@ async fn long_poll_wakes_when_config_changes() {
     assert_eq!(sekisho_gateway::validate(yaml), Ok(()));
 }
 
+/// A waiting poll ends as soon as Sekisho starts shutting down, so a
+/// graceful shutdown doesn't wait out the long poll (up to 30 s, past
+/// Docker's 10 s stop timeout); polls that arrive while it drains answer at
+/// once.
+#[tokio::test]
+async fn long_poll_ends_when_shutdown_begins() {
+    let app = app().await;
+    let latest = app.latest_version().await;
+    let url = format!("{}/internal/gateway/config?after={latest}", app.base);
+    let http = app.http.clone();
+    let started = Instant::now();
+    let poll = tokio::spawn(async move {
+        let resp = http.get(url).bearer_auth(GATEWAY).send().await.unwrap();
+        (resp.status().as_u16(), started.elapsed())
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    app.state.stop();
+    let (status, waited) = poll.await.unwrap();
+    assert_eq!(status, 204);
+    assert!(
+        waited < Duration::from_millis(700),
+        "answered after {waited:?}, not when shutdown began"
+    );
+    let started = Instant::now();
+    let r = app
+        .call(
+            "GET",
+            &format!("/internal/gateway/config?after={latest}"),
+            Some(GATEWAY),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, 204);
+    assert!(started.elapsed() < Duration::from_millis(500));
+}
+
 /// A change whose notification was lost (or whose publish failed) still
 /// reaches the gateway: the publisher also re-renders on a timer.
 #[tokio::test]

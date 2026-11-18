@@ -44,6 +44,10 @@ const MIN_TOKEN_CHARS: usize = 16;
 pub const LONG_POLL: Duration = Duration::from_secs(30);
 /// How often the publisher re-renders without a change.
 pub const REPUBLISH: Duration = Duration::from_secs(30);
+/// `SEKISHO_SHUTDOWN_GRACE`'s default: with the wait for charges after it,
+/// a stop fits Kubernetes' default 30 s termination grace (D189).
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
+const SHUTDOWN_GRACE_MAX: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -77,6 +81,9 @@ pub struct ServerConfig {
     pub hooks_grpc_listen: SocketAddr,
     pub dex: DexSettings,
     pub settings: Settings,
+    /// `SEKISHO_SHUTDOWN_GRACE`: how long running streams get to finish
+    /// when `serve` stops (D189); 0s to 1h, default 20s.
+    pub shutdown_grace: Duration,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -87,6 +94,7 @@ impl fmt::Debug for ServerConfig {
             .field("hooks_grpc_listen", &self.hooks_grpc_listen)
             .field("dex", &self.dex)
             .field("settings", &self.settings)
+            .field("shutdown_grace", &self.shutdown_grace)
             .finish_non_exhaustive()
     }
 }
@@ -290,7 +298,19 @@ impl ServerConfig {
             }
         };
 
+        let shutdown_grace = match var("SEKISHO_SHUTDOWN_GRACE") {
+            None => SHUTDOWN_GRACE,
+            Some(value) => {
+                let grace = duration(&value).map_err(|r| invalid("SEKISHO_SHUTDOWN_GRACE", r))?;
+                if grace > SHUTDOWN_GRACE_MAX {
+                    return Err(invalid("SEKISHO_SHUTDOWN_GRACE", "use 0s to 1h".to_owned()));
+                }
+                grace
+            }
+        };
+
         Ok(Self {
+            shutdown_grace,
             database_url,
             database_max_connections,
             secret_box,
@@ -452,6 +472,24 @@ mod tests {
         let mut vars = required();
         vars.insert("SEKISHO_E2E_PLAIN_HTTP", "1");
         assert!(load(&vars).unwrap().settings.catalog.allow_plain_http);
+    }
+
+    #[test]
+    fn the_shutdown_grace_is_read_and_bounded() {
+        let mut vars = required();
+        assert_eq!(load(&vars).unwrap().shutdown_grace, Duration::from_secs(20));
+        for (value, seconds) in [("0s", 0), ("45s", 45), ("5m", 300), ("1h", 3600)] {
+            vars.insert("SEKISHO_SHUTDOWN_GRACE", value);
+            assert_eq!(
+                load(&vars).unwrap().shutdown_grace,
+                Duration::from_secs(seconds),
+                "{value}"
+            );
+        }
+        for bad in ["61m", "2h", "20", "1x", "-1s"] {
+            vars.insert("SEKISHO_SHUTDOWN_GRACE", bad);
+            assert!(error(&vars).contains("SEKISHO_SHUTDOWN_GRACE"), "{bad}");
+        }
     }
 
     #[test]

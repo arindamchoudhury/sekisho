@@ -36,6 +36,31 @@ The `sekisho` binary (the image's entry point) has four commands:
 | `sekisho gateway-agent --server <url> --config-path <file>` | Runs beside agentgateway, fetches its configuration from Sekisho and writes the file agentgateway reads (needs `SEKISHO_GATEWAY_TOKEN`) |
 | `sekisho admin-link --email <email>` | Prints a one-time link that makes a local admin, for an operator who has lost every admin (needs `SEKISHO_DATABASE_URL` and `SEKISHO_PUBLIC_URL`) |
 
+`sekisho serve` stops on SIGTERM (what Docker and Kubernetes send; on Unix
+only) or Ctrl-C, and logs `shutting down`:
+
+1. The API and the `extAuthz` hook stop taking connections and finish the
+   requests already running. Gateway agents' waiting polls answer at
+   once; each agent asks again, reaching another replica or the restarted
+   server.
+2. Answers still streaming through agentgateway get
+   `SEKISHO_SHUTDOWN_GRACE` (default `20s`) to finish. They pass through
+   Sekisho's stream guard, so the gRPC hooks keep serving meanwhile, and
+   a stream that finishes still reports its usage.
+3. Streams still running after the grace are ended, as a
+   [revoked key](gateway.md#while-a-request-runs) ends one, and new ones
+   are refused with 503: the tool keeps what it already got. Each is
+   charged an [estimate](budgets-and-spend.md#how-a-request-is-charged).
+4. Sekisho waits up to 7 seconds for spend still being recorded, then
+   exits.
+
+So a stop takes at most the grace plus about 8 seconds: 28 seconds by
+default, inside Kubernetes' default 30-second termination grace. If your
+tools' answers often run longer, raise `SEKISHO_SHUTDOWN_GRACE`, and the
+termination grace (`terminationGracePeriodSeconds`, or Compose's
+`stop_grace_period`) to at least 10 seconds more; whatever the orchestrator
+kills first is cut without its estimate.
+
 ## Settings
 
 `sekisho serve` reads `SEKISHO_*` environment variables. An empty value
@@ -60,6 +85,7 @@ but never quoting a secret.
 | `SEKISHO_LISTEN` | no | The API and sign-in listener; default `0.0.0.0:8080` |
 | `SEKISHO_HOOKS_HTTP_LISTEN` | no | The HTTP hook (agentgateway's `extAuthz`); default `0.0.0.0:9080` |
 | `SEKISHO_HOOKS_GRPC_LISTEN` | no | The gRPC hooks (spend recording and the stream guard); default `0.0.0.0:9081` |
+| `SEKISHO_SHUTDOWN_GRACE` | no | How long answers still streaming get to finish when Sekisho stops ([Commands](#commands)): a whole number and a unit, such as `45s` or `2m`; from `0s` to `1h`; default `20s` |
 | `SEKISHO_CATALOG_SYNC_INTERVAL` | no | How long after a catalog source's sync the next is due: a whole number and a unit, `s`, `m`, `h` or `d`, such as `30m`; from `1m` to `7d`; default `1h`. Sekisho looks for due sources every 30 seconds, and syncs one at a time |
 
 `SEKISHO_E2E_PLAIN_HTTP=1` lets catalog sources, registries and agents be
