@@ -66,6 +66,8 @@ struct Data {
     ended_sessions: HashSet<Uuid>,
     /// Sekisho's published signing keys, by `kid`.
     public_keys: HashMap<String, PublicKey>,
+    /// The reload this was read by ([`ReloadStart`]); 0 before the first.
+    start: u64,
 }
 
 /// When a reload began, from [`AuthCache::begin_reload`].
@@ -180,8 +182,18 @@ impl AuthCache {
                 .into_iter()
                 .map(|k| (k.kid.clone(), k))
                 .collect(),
+            start,
         });
-        *self.data.write().unwrap_or_else(PoisonError::into_inner) = data;
+        {
+            let mut current = self.data.write().unwrap_or_else(PoisonError::into_inner);
+            // Reloads overlap (a notification during another reload): one
+            // whose read began earlier but finishes later must not undo the
+            // newer one, such as a user's disabling.
+            if current.start > start {
+                return;
+            }
+            *current = data;
+        }
         // The snapshot has everyone whose read began before it; those whose
         // read began later may be newer than it.
         self.loaded

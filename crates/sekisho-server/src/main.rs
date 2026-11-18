@@ -176,7 +176,8 @@ async fn serve() -> anyhow::Result<()> {
     start_sign_in_upkeep(&state, KEY_ROTATION_CHECK, IDP_SWEEP_EVERY);
     if state.catalog().allow_plain_http {
         tracing::warn!(
-            "SEKISHO_E2E_PLAIN_HTTP is on: catalog sources, registries and agents may be              reached over plain HTTP"
+            "SEKISHO_E2E_PLAIN_HTTP is on: catalog sources, registries and agents may be \
+             reached over plain HTTP"
         );
     }
     start_scheduler(state.clone(), state.catalog().sync_every);

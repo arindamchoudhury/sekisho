@@ -111,8 +111,8 @@ impl Store {
     ) -> Result<SyncReport> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "select id, kind, username, sealed_token, applied_commit from catalog_sources \
-             where name = $1 for update",
+            "select id, kind, username, sealed_token, applied_commit, updated_at \
+             from catalog_sources where name = $1 for update",
         )
         .bind(name.as_str())
         .fetch_optional(&mut *tx)
@@ -126,7 +126,20 @@ impl Store {
             .is_none();
         let redact = Redactor::new(username.as_deref(), token.as_deref());
 
-        let (outcome, error, found) = match record.outcome {
+        // A sync that read the source's settings before they last changed
+        // read another URL, ref or folder: kept as failed, never applied.
+        // Both times are the database's, so clocks can't disagree.
+        let changed: OffsetDateTime = row.try_get("updated_at")?;
+        let stale = record.settings_at.is_some_and(|read| read != changed);
+        let outcome = match record.outcome {
+            SyncOutcome::Ok(_) | SyncOutcome::Unchanged if stale => SyncOutcome::Failed(
+                "the source's settings changed during the sync; the next sync reads it as \
+                     it is now"
+                    .to_owned(),
+            ),
+            other => other,
+        };
+        let (outcome, error, found) = match outcome {
             SyncOutcome::Ok(found) => (SyncOutcomeKind::Ok, None, Some(found)),
             SyncOutcome::Unchanged => (SyncOutcomeKind::Unchanged, None, None),
             SyncOutcome::Failed(message) => (
@@ -209,7 +222,8 @@ impl Store {
                 .map(|r| r.path.as_str())
                 .collect();
             let rows = sqlx::query(
-                "select kind, name, path from catalog_entries where source_id = $1                  order by kind, name",
+                "select kind, name, path from catalog_entries where source_id = $1 \
+                 order by kind, name",
             )
             .bind(source_id)
             .fetch_all(&mut *tx)
@@ -281,7 +295,9 @@ impl Store {
     /// environments may be made from. Empty before the first apply.
     pub async fn applied_vmcps(&self, name: &SourceName) -> Result<Vec<ObotVmcp>> {
         let row: Option<(Uuid, Option<serde_json::Value>)> = sqlx::query_as(
-            "select s.id, (select y.report from catalog_syncs y where y.source_id = s.id              and y.applied_at is not null order by y.seq desc limit 1)              from catalog_sources s where s.name = $1",
+            "select s.id, (select y.report from catalog_syncs y where y.source_id = s.id \
+             and y.applied_at is not null order by y.seq desc limit 1) \
+             from catalog_sources s where s.name = $1",
         )
         .bind(name.as_str())
         .fetch_optional(&self.pool)
@@ -299,7 +315,9 @@ impl Store {
     /// is unknown or has never synced.
     pub async fn latest_sync_report(&self, name: &SourceName) -> Result<SyncReport> {
         let row = sqlx::query(
-            "select y.id, y.started_at, y.finished_at, y.commit, y.outcome, y.error, y.report,              y.applied_at from catalog_syncs y join catalog_sources s on s.id = y.source_id              where s.name = $1 order by y.seq desc limit 1",
+            "select y.id, y.started_at, y.finished_at, y.commit, y.outcome, y.error, y.report, \
+             y.applied_at from catalog_syncs y join catalog_sources s on s.id = y.source_id \
+             where s.name = $1 order by y.seq desc limit 1",
         )
         .bind(name.as_str())
         .fetch_optional(&self.pool)

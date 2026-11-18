@@ -160,6 +160,10 @@ pub enum SyncOutcome {
 
 #[derive(Clone, Debug)]
 pub struct SyncRecord {
+    /// The source's `updated_at` when the sync read its settings: if they
+    /// changed since, the sync read something else and is kept as failed.
+    /// `None` doesn't check.
+    pub settings_at: Option<OffsetDateTime>,
     pub commit: Option<String>,
     pub started_at: OffsetDateTime,
     pub finished_at: OffsetDateTime,

@@ -371,3 +371,32 @@ async fn the_cache_holds_each_environments_models() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn an_older_snapshot_never_replaces_a_newer_one() {
+    let (store, _) = sekisho_testkit::store().await;
+    let ada = sekisho_testkit::people::person(&store, "ada@example.com", &["eng"]).await;
+    let cache = AuthCache::load(&store, ISSUER.into()).await.unwrap();
+    // Two reloads overlap: the first reads before ada is disabled, the
+    // second after, and the first finishes last.
+    let first = cache.begin_reload();
+    let before = store
+        .auth_snapshot(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    store
+        .set_disabled(&ada, true, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let second = cache.begin_reload();
+    let after = store
+        .auth_snapshot(OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    cache.finish_reload(second, after);
+    cache.finish_reload(first, before);
+    assert!(
+        cache.user(&ada).unwrap().access.disabled,
+        "the older snapshot undid the newer one"
+    );
+}

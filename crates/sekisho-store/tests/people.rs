@@ -970,6 +970,7 @@ async fn owned_skill(
         }],
     };
     let record = SyncRecord {
+        settings_at: None,
         commit: Some("a".repeat(40)),
         started_at: now(),
         finished_at: now(),

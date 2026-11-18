@@ -78,6 +78,9 @@ its entries name ([Exact versions](#exact-versions-and-image-digests),
 When the ref hasn't moved, a `skills`, `prompts` or `environments` source
 records `unchanged` without reading anything; `catalog` and `plugins`
 sources are read again, since their images and cards live outside Git.
+A sync running when an admin changes the source's settings read the old
+URL, ref or folder: it is recorded as failed, and the next sync, due at
+once, reads the source as it is now.
 
 `GET /api/v1/catalog-sources/{name}/syncs/latest` is the latest sync's
 report (404 before the first):
@@ -431,9 +434,12 @@ the toolkit, from any source, this sync's entries included. **A version
 keeps its bindings**: a source added later with an entry of the same name
 changes nothing until the toolkit itself changes. A version is refused
 when a reference names no entry, names a name several other sources hold,
-or names an entry another reference names too; the report says which,
-such as `skills[0]: pdf is in sources a, b: write pdf@a or pdf@b`. As
-with any refused entry, environments keep the version they use.
+names an entry another reference names too, or names a quarantined entry
+or one removed from its source (as an environment can't newly list one);
+the report says which, such as
+`skills[0]: pdf is in sources a, b: write pdf@a or pdf@b`. An entry its
+source hasn't applied yet may be named: it is applied with its source.
+As with any refused entry, environments keep the version they use.
 
 A changed toolkit is a new version that waits for an [apply](#apply) of
 its source, like any entry. One toolkit's answer gives, for its `applied`

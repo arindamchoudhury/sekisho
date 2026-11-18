@@ -855,6 +855,7 @@ fn kit(name: &str, servers: &[(&str, Option<&[&str]>)], skills: &[&str]) -> Chec
 fn record(commit: &str, entries: Vec<CheckedEntry>) -> SyncRecord {
     let now = OffsetDateTime::now_utc();
     SyncRecord {
+        settings_at: None,
         commit: Some(commit.into()),
         started_at: now,
         finished_at: now,

@@ -277,7 +277,8 @@ impl ServerConfig {
             Some("1") => {
                 return Err(invalid(
                     "SEKISHO_E2E_PLAIN_HTTP",
-                    "plain HTTP to Git hosts, registries and agents is only for the                      end-to-end tests' mock, so only a build with the e2e feature can turn it on"
+                    "plain HTTP to Git hosts, registries and agents is only for the \
+                     end-to-end tests' mock, so only a build with the e2e feature can turn it on"
                         .to_owned(),
                 ));
             }

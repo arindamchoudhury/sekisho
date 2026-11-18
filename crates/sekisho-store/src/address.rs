@@ -125,7 +125,8 @@ pub async fn check_destination(url: &BaseUrl, allow_private: bool) -> Result<(),
             Ok(())
         } else {
             Err(
-                "the host doesn't resolve from the Sekisho server; if it resolves only on                  the gateway's network, turn on allow_private_network"
+                "the host doesn't resolve from the Sekisho server; if it resolves only on \
+                 the gateway's network, turn on allow_private_network"
                     .to_owned(),
             )
         };
@@ -283,6 +284,14 @@ fn classify(ip: IpAddr) -> Class {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_unresolvable_host_is_explained_in_one_sentence() {
+        let url = parse_base_url("https://nowhere.invalid/v1").unwrap();
+        let why = check_destination(&url, false).await.unwrap_err();
+        assert!(!why.contains("  "), "{why:?}");
+        assert!(why.contains("only on the gateway's network"), "{why}");
+    }
 
     #[tokio::test]
     async fn resolving_answers_only_checked_addresses() {

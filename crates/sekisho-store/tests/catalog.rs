@@ -76,6 +76,7 @@ fn skill(name: &str, body: &str, extra: &[(&str, &[u8])]) -> CheckedEntry {
 fn ok_sync(commit: &str, entries: Vec<CheckedEntry>, refused: Vec<Refusal>) -> SyncRecord {
     let now = OffsetDateTime::now_utc();
     SyncRecord {
+        settings_at: None,
         commit: Some(commit.into()),
         started_at: now,
         finished_at: now,
@@ -598,6 +599,7 @@ async fn a_failed_sync_changes_no_entry() {
         .unwrap();
     let now = OffsetDateTime::now_utc();
     let failed = SyncRecord {
+        settings_at: None,
         commit: None,
         started_at: now,
         finished_at: now,
@@ -615,6 +617,7 @@ async fn a_failed_sync_changes_no_entry() {
     assert!(pdf.pending.is_none());
 
     let unchanged = SyncRecord {
+        settings_at: None,
         commit: Some("c1".into()),
         started_at: now,
         finished_at: now,
@@ -858,6 +861,7 @@ async fn sync_reports_never_hold_the_token() {
         "fatal: could not read from https://oauth2:{token}@git.example.com/x.git (Authorization: Basic {basic})"
     );
     let failed = SyncRecord {
+        settings_at: None,
         commit: None,
         started_at: now,
         finished_at: now,
@@ -1436,4 +1440,194 @@ async fn a_toolkits_bare_reference_prefers_its_own_source() {
         report.refused[0].reason,
         "skills[0]: pdf is in sources a, b, kits: write pdf@a or pdf@b or pdf@kits"
     );
+}
+
+// ------------------------------------------------------------ review minors
+
+/// The kinds of change announced within `within`, as their names.
+async fn changes(
+    rx: &mut (impl tokio_stream::Stream<Item = sekisho_store::ChangeKind> + Unpin),
+    within: std::time::Duration,
+) -> std::collections::BTreeSet<String> {
+    use tokio_stream::StreamExt;
+    let mut seen = std::collections::BTreeSet::new();
+    while let Ok(Some(kind)) = tokio::time::timeout(within, rx.next()).await {
+        seen.insert(format!("{kind:?}"));
+    }
+    seen
+}
+
+#[tokio::test]
+async fn quarantine_tells_environments_too() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    let mut rx = store.listen().await.unwrap();
+    store
+        .quarantine(&key("a", "pdf"), "Bad.", admin, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let seen = changes(&mut rx, std::time::Duration::from_millis(500)).await;
+    assert!(seen.contains("Environments"), "{seen:?}");
+    store
+        .lift_quarantine(&key("a", "pdf"), admin, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let seen = changes(&mut rx, std::time::Duration::from_millis(500)).await;
+    assert!(seen.contains("Environments"), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_toolkit_cannot_bind_a_quarantined_or_removed_entry() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[]), skill("notes", "notes", &[])],
+    )
+    .await;
+    store
+        .quarantine(&key("a", "pdf"), "Bad.", admin, OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    // notes leaves its source, applied.
+    sync(&store, &sb, "a", "c2", vec![skill("pdf", "pdf", &[])]).await;
+    store
+        .apply_source(&source_name("a"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let report = source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![toolkit("kit", "v1", &[], &["pdf@a", "notes@a"])],
+    )
+    .await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    assert_eq!(
+        report.refused[0].reason,
+        "skills[0]: pdf@a is quarantined; skills[1]: notes@a was removed from its source"
+    );
+}
+
+#[tokio::test]
+async fn old_toolkit_versions_never_keep_a_source() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("pdf", "pdf", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("calc", "calc", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "kits",
+        admin,
+        "k1",
+        vec![toolkit("kit", "v1", &[], &["pdf@a"])],
+    )
+    .await;
+    // The next version names b instead, and is applied: v1, which named
+    // a, is history.
+    sync(
+        &store,
+        &sb,
+        "kits",
+        "k2",
+        vec![toolkit("kit", "v2", &[], &["calc@b"])],
+    )
+    .await;
+    store
+        .apply_source(&source_name("kits"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    store.delete_source(&source_name("a")).await.unwrap();
+    assert!(matches!(
+        store.delete_source(&source_name("b")).await,
+        Err(StoreError::InUse(_))
+    ));
+    // A binding left to a deleted entry can't exist: the database refuses
+    // what the in_use check might miss in a race.
+    let cascades: bool = sqlx::query_scalar(
+        "select confdeltype = 'c' from pg_constraint \
+         where conrelid = 'catalog_toolkit_members'::regclass and contype = 'f' \
+         and conkey = array[(select attnum from pg_attribute \
+           where attrelid = 'catalog_toolkit_members'::regclass and attname = 'entry_id')]",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert!(
+        !cascades,
+        "deleting an entry must not silently drop toolkit bindings"
+    );
+}
+
+#[tokio::test]
+async fn a_sync_of_settings_changed_meanwhile_is_not_kept() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    add(&store, &sb, "a", admin).await;
+    // The sync began, then an admin moved the source's folder.
+    let mut record = ok_sync("c1", vec![skill("pdf", "pdf", &[])], Vec::new());
+    record.settings_at = Some(
+        store
+            .get_source(&source_name("a"))
+            .await
+            .unwrap()
+            .updated_at,
+    );
+    store
+        .update_source(
+            &sb,
+            &source_name("a"),
+            SourcePatch {
+                folder: Some(Folder::parse("other").unwrap()),
+                ..SourcePatch::default()
+            },
+        )
+        .await
+        .unwrap();
+    let report = store
+        .record_sync(&sb, &source_name("a"), record, next())
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, SyncOutcomeKind::Failed, "{report:?}");
+    assert!(
+        report
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("changed during the sync"),
+        "{report:?}"
+    );
+    assert!(store.list_entries(None).await.unwrap().is_empty());
 }

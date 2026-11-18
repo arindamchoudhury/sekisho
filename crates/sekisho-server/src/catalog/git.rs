@@ -351,7 +351,51 @@ impl Git {
     }
 }
 
+/// Whether `git --version`'s answer names 2.37 or later: older git ignores
+/// `http.curloptResolve` without a word, so the checked address wouldn't
+/// be the one reached.
+pub fn pins_addresses(version: &str) -> bool {
+    let Some(number) = version.trim().strip_prefix("git version ") else {
+        return false;
+    };
+    let mut parts = number.split('.').map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) >= (2, 37),
+        _ => false,
+    }
+}
+
 impl Git {
+    /// Fails unless this `git` is 2.37 or later; asked once per program.
+    pub async fn check_version(&self) -> Result<(), GitError> {
+        static CHECKED: tokio::sync::OnceCell<Result<(), String>> =
+            tokio::sync::OnceCell::const_new();
+        let program = self.program.clone();
+        CHECKED
+            .get_or_init(|| async move {
+                let out = tokio::process::Command::new(&program)
+                    .arg("--version")
+                    .env_clear()
+                    .stdin(Stdio::null())
+                    .output()
+                    .await
+                    .map_err(|e| format!("can't run git: {e}"))?;
+                let said = String::from_utf8_lossy(&out.stdout);
+                if pins_addresses(&said) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "git 2.37 or later is needed to pin each Git host to its checked \
+                         addresses; this one says {:?}",
+                        said.trim()
+                    ))
+                }
+            })
+            .await
+            .clone()
+            .map_err(GitError)
+    }
+
     /// The checkout's paths that Git stores as symlinks (`false`) or
     /// submodules (`true`), relative to the repository's root. The
     /// checkout writes neither as such (`core.symlinks=false`), so only
@@ -406,6 +450,22 @@ fn folder_size(folder: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_git_that_honours_the_pin_is_used() {
+        for (said, ok) in [
+            ("git version 2.37.0", true),
+            ("git version 2.47.3\n", true),
+            ("git version 2.56.1.windows.1", true),
+            ("git version 3.0.0", true),
+            ("git version 2.36.6", false),
+            ("git version 2.34.1", false),
+            ("git version 1.9.5", false),
+            ("not git", false),
+        ] {
+            assert_eq!(pins_addresses(said), ok, "{said}");
+        }
+    }
 
     #[test]
     fn every_git_call_is_hardened() {

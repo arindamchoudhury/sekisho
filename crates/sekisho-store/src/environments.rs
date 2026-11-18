@@ -724,7 +724,9 @@ impl Store {
         let found: Vec<&str> = found.iter().map(EnvName::as_str).collect();
         let mut tx = self.pool.begin().await?;
         let names: Vec<String> = sqlx::query_scalar(
-            "update environments set git_path = null, updated_at = now()              where git_path is not null and not (name = any($1))              and not (git_path = any($2)) returning name",
+            "update environments set git_path = null, updated_at = now() \
+             where git_path is not null and not (name = any($1)) \
+             and not (git_path = any($2)) returning name",
         )
         .bind(&found)
         .bind(kept_paths)

@@ -127,7 +127,9 @@ impl Store {
     /// The environments that list entry `id` themselves, by name.
     async fn environments_listing(&self, id: Uuid) -> Result<Vec<sekisho_core::names::EnvName>> {
         let names: Vec<String> = sqlx::query_scalar(
-            "select e.name from environment_entries ee              join environments e on e.id = ee.environment_id              where ee.entry_id = $1 order by e.name",
+            "select e.name from environment_entries ee \
+             join environments e on e.id = ee.environment_id \
+             where ee.entry_id = $1 order by e.name",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -311,6 +313,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         notify(&mut tx, ChangeKind::Catalog).await?;
+        // What environments deliver changes (D186).
+        notify(&mut tx, ChangeKind::Environments).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -356,6 +360,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         notify(&mut tx, ChangeKind::Catalog).await?;
+        // What environments deliver changes (D186).
+        notify(&mut tx, ChangeKind::Environments).await?;
         tx.commit().await?;
         Ok(())
     }

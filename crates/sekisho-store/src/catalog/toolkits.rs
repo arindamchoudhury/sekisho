@@ -136,6 +136,25 @@ async fn resolve_for_toolkit(
     resolve_in(conn, kind, reference).await
 }
 
+/// Why a new toolkit version can't bind entry `id`: quarantined or removed,
+/// as an environment can't newly list it. An entry not yet applied may be
+/// bound: it is applied with its source, as the toolkit is.
+async fn unusable(conn: &mut PgConnection, id: Uuid, written: &str) -> Result<Option<String>> {
+    let (quarantined, removed): (bool, bool) = sqlx::query_as(
+        "select quarantined_at is not null, removed_at is not null          from catalog_entries where id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(if quarantined {
+        Some(format!("{written} is quarantined"))
+    } else if removed {
+        Some(format!("{written} was removed from its source"))
+    } else {
+        None
+    })
+}
+
 /// Binds every reference of `spec`, a toolkit of `source_id`, or answers
 /// why the toolkit is refused: each problem as `field: message`, joined by
 /// `; `.
@@ -160,6 +179,9 @@ pub(super) async fn bind(
         let written = reference.to_string();
         match resolve_for_toolkit(conn, source_id, kind, reference).await {
             Ok(entry_id) => match named.get(&(kind, entry_id)) {
+                _ if let Some(refusal) = unusable(conn, entry_id, &written).await? => {
+                    problems.push(format!("{field}: {refusal}"));
+                }
                 Some(first) => problems.push(format!(
                     "{field}: {written} names the same {} as {first}",
                     kind_words(kind)

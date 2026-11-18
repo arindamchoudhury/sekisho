@@ -72,6 +72,7 @@ pub async fn sync_source(
     };
     let finished_at = OffsetDateTime::now_utc();
     let record = SyncRecord {
+        settings_at: Some(source.updated_at),
         commit,
         started_at,
         finished_at,
@@ -122,6 +123,9 @@ async fn read_source(state: &AppState, source: &Source) -> (Option<String>, Sync
         token: token.as_deref(),
         pins: &pins,
     };
+    if let Err(e) = git.check_version().await {
+        return failed(e.to_string());
+    }
     let commit = match git.ls_remote(&src).await {
         Ok(commit) => commit,
         Err(e) => return failed(e.to_string()),

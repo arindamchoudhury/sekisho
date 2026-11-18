@@ -246,7 +246,10 @@ impl Store {
         // Environments that list one of its entries, and toolkits elsewhere
         // that do, keep it (D186).
         let environments: Vec<String> = sqlx::query_scalar(
-            "select distinct e.name from environment_entries ee              join environments e on e.id = ee.environment_id              join catalog_entries c on c.id = ee.entry_id              where c.source_id = $1 order by e.name",
+            "select distinct e.name from environment_entries ee \
+             join environments e on e.id = ee.environment_id \
+             join catalog_entries c on c.id = ee.entry_id \
+             where c.source_id = $1 order by e.name",
         )
         .bind(id)
         .fetch_all(&mut *tx)
@@ -259,6 +262,22 @@ impl Store {
         if !users.is_empty() {
             return Err(StoreError::InUse(users.join(", ")));
         }
+        // The source's own toolkits go with it, their bindings first.
+        sqlx::query(
+            "delete from catalog_toolkit_members m using catalog_revisions r,              catalog_entries t where r.id = m.revision_id and t.id = r.entry_id              and t.source_id = $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        // Toolkit versions no longer applied or waiting keep no source;
+        // their bindings to its entries go. A binding a sync makes
+        // meanwhile still blocks the delete (migration 0013).
+        sqlx::query(
+            "delete from catalog_toolkit_members m using catalog_entries member              where member.id = m.entry_id and member.source_id = $1              and not exists (select 1 from catalog_entries t                where t.applied_revision_id = m.revision_id                   or t.latest_revision_id = m.revision_id)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         // Revisions reference their entry and entries reference revisions:
         // the links go first.
         sqlx::query(

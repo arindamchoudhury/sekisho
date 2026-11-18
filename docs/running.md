@@ -13,7 +13,7 @@ route and a mock model), so copy its shape, not its secrets.
 | PostgreSQL | 18 | Sekisho's only state. Run `sekisho migrate` before `serve`, and after each upgrade |
 | [Dex](https://github.com/dexidp/dex) | v2.46.1 | Run it with `DEX_API_CONNECTORS_CRUD=true`, or Sekisho can't manage identity providers. Its gRPC API must be on, and `enablePasswordDB: true` for local accounts. Use PostgreSQL storage: with Dex's in-memory storage, a local account's refresh hangs. Sekisho registers its own client with Dex (`sekisho`), so Dex's config needs none |
 | [agentgateway](https://github.com/agentgateway/agentgateway) | v1.7.0 | Unmodified. Run it with `-f <config file>` and `SESSION_KEY` set, beside a gateway agent that writes the file |
-| `git` | 2.37 or later | On the server, which runs it to read catalog sources; the image has it. 2.37 brought `http.curloptResolve`, which Sekisho uses to pin each Git host to the addresses it checked: an older `git` ignores it |
+| `git` | 2.37 or later | On the server, which runs it to read catalog sources; the image has it. 2.37 brought `http.curloptResolve`, which Sekisho uses to pin each Git host to the addresses it checked: an older `git` ignores it, so with one every sync fails, saying so |
 
 Sekisho reaches some places itself, so the server needs outbound HTTPS to
 them: the Git hosts of catalog sources, the container registries of their
