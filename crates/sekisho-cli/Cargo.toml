@@ -1,0 +1,52 @@
+[package]
+name = "sekisho-cli"
+description = "The developer commands of the sekisho binary: sign-in, tokens and, later, delivery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Lets SEKISHO_E2E_PLAIN_HTTP=1 accept a plain http:// server that isn't
+# loopback, for the e2e stack's network (D197). Only the e2e image has it.
+e2e = []
+
+[dependencies]
+axum = { workspace = true }
+base64 = { workspace = true }
+etcetera = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+keyring = { workspace = true }
+keyring-core = { workspace = true }
+open = { workspace = true }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+sekisho-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true, features = ["serde", "formatting", "parsing"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+url = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["form", "json"] }
+sekisho-auth = { workspace = true }
+sekisho-gateway = { workspace = true }
+sekisho-hooks = { workspace = true }
+# The real server on a loopback listener; it depends on this crate in turn,
+# which Cargo allows for a dev-dependency.
+sekisho-server = { path = "../sekisho-server" }
+sekisho-store = { workspace = true }
+sekisho-testkit = { workspace = true }
+uuid = { workspace = true }

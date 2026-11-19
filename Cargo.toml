@@ -12,6 +12,7 @@ repository = "https://github.com/arindamchoudhury/sekisho"
 [workspace.dependencies]
 sekisho-auth = { path = "crates/sekisho-auth" }
 sekisho-catalog = { path = "crates/sekisho-catalog" }
+sekisho-cli = { path = "crates/sekisho-cli" }
 sekisho-core = { path = "crates/sekisho-core" }
 sekisho-gateway = { path = "crates/sekisho-gateway" }
 sekisho-hooks = { path = "crates/sekisho-hooks" }
@@ -27,6 +28,7 @@ bcrypt = "0.19.3"
 clap = { version = "4.6.7", features = ["derive"] }
 crc = "3.4.0"
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
+etcetera = "0.11.0"
 glob = "0.3.4"
 http = "1.5.0"
 http-body-util = "0.1.5"
@@ -35,6 +37,13 @@ hyper-rustls = { version = "0.27.10", default-features = false, features = ["htt
 hyper-util = { version = "0.1.21", default-features = false }
 jsonschema = { version = "0.60.1", default-features = false }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+# The CLI's credential store (plan 4, D195, D213): the platform's keyring
+# through keyring's v1 stores, keyring-core for entries with modifiers, and
+# the kernel's keyutils on Linux without Secret Service.
+keyring = { version = "4.2.0", default-features = false, features = ["v1"] }
+keyring-core = "1.0.1"
+linux-keyutils-keyring-store = "1.0.0"
+open = "5.4.5"
 prost = "0.14.4"
 prost-types = "0.14.4"
 protox = "0.10.0"

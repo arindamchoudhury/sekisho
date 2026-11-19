@@ -27,7 +27,7 @@ against the system's certificate store (the image's `ca-certificates`).
 
 ## Commands
 
-The `sekisho` binary (the image's entry point) has four commands:
+The `sekisho` binary (the image's entry point) has these commands:
 
 | Command | What it does |
 |---|---|
@@ -35,6 +35,7 @@ The `sekisho` binary (the image's entry point) has four commands:
 | `sekisho migrate` | Applies database migrations (needs `SEKISHO_DATABASE_URL`) |
 | `sekisho gateway-agent --server <url> --config-path <file>` | Runs beside agentgateway, fetches its configuration from Sekisho and writes the file agentgateway reads (needs `SEKISHO_GATEWAY_TOKEN`) |
 | `sekisho admin-link --email <email>` | Prints a one-time link that makes a local admin, for an operator who has lost every admin (needs `SEKISHO_DATABASE_URL` and `SEKISHO_PUBLIC_URL`) |
+| `sekisho login`, `sekisho token`, `sekisho logout` | For developers: sign in to a Sekisho server, print a fresh token, sign out. See [The `sekisho` CLI](cli.md) |
 
 `sekisho serve` stops on SIGTERM (what Docker and Kubernetes send; on Unix
 only) or Ctrl-C, and logs `shutting down`:

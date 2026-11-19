@@ -14,9 +14,11 @@ path = "src/main.rs"
 [features]
 # Lets SEKISHO_E2E_BARE_ROUTE=1 add the hook-free /bare/openai route that the
 # end-to-end latency test compares against, and lets cloud credentials reach
-# the mock model (sekisho-store/e2e). Only the e2e image is built with it:
-# that route serves a provider with its key and no checks.
-e2e = ["sekisho-store/e2e"]
+# the mock model (sekisho-store/e2e), and lets the CLI reach a plain http://
+# server on the stack's network (sekisho-cli/e2e, SEKISHO_E2E_PLAIN_HTTP=1).
+# Only the e2e image is built with it: that route serves a provider with its
+# key and no checks.
+e2e = ["sekisho-store/e2e", "sekisho-cli/e2e"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -32,6 +34,7 @@ rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
 sekisho-auth = { workspace = true }
 sekisho-catalog = { workspace = true }
+sekisho-cli = { workspace = true }
 sekisho-core = { workspace = true }
 sekisho-gateway = { workspace = true }
 sekisho-hooks = { workspace = true }

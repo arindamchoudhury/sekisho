@@ -7,7 +7,7 @@ stops at the first that fails:
 | Target | What it proves |
 |---|---|
 | `make prereqs` | cargo, git 2.37 or later, Docker and Compose v2 are there |
-| `make build` | The workspace and the release binaries build with the locked dependencies; `sekisho --help` lists `serve`, `migrate`, `admin-link` and `gateway-agent` |
+| `make build` | The workspace and the release binaries build with the locked dependencies; `sekisho --help` lists `serve`, `migrate`, `admin-link`, `gateway-agent`, `login`, `logout` and `token` |
 | `make lint` | `cargo fmt --check` and `cargo clippy -D warnings` are clean |
 | `make test` | Every workspace test passes (about 614); database tests start their own `postgres:18` through Docker |
 | `make unix` | What only Linux and other Unix systems exercise, [below](#what-make-unix-checks) |

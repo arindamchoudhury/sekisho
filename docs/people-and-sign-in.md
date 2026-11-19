@@ -8,9 +8,10 @@ never edit Dex's files.
 
 ## Signing in
 
-The `sekisho` CLI, which will do this for people, isn't built yet. Until
-then, a token comes from the **device flow** (RFC 8628), which needs only
-`curl` and a browser:
+People sign in with `sekisho login` ([The `sekisho` CLI](cli.md)), which
+keeps the tokens in the operating system's credential store and refreshes
+them. Without the CLI, a token comes from the **device flow** (RFC 8628),
+which needs only `curl` and a browser:
 
 ```bash
 curl -s -d client_id=sekisho-cli https://sekisho.example.com/oauth/device_authorization

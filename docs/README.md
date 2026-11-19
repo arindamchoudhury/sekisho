@@ -2,8 +2,9 @@
 
 These pages describe what Sekisho does **today**, while release 1 is being
 built. The [README](../README.md) describes the whole of release 1, much of
-which doesn't exist yet: the web UI, the `sekisho` CLI for developers, and
-delivering catalog entries to coding tools and calling MCP servers and A2A
+which doesn't exist yet: the web UI, most of the `sekisho` CLI for
+developers (it signs in, so far), and delivering catalog entries to coding
+tools and calling MCP servers and A2A
 agents through Sekisho (catalogs exist, and environments list their
 entries). What these pages describe is built and tested, most of it end
 to end against agentgateway v1.7.0 and Dex v2.46.1. Catalogs are proven
@@ -32,6 +33,7 @@ documentation.
 | [Budgets and spend](budgets-and-spend.md) | Dollar budgets, and how each request is charged |
 | [The gateway](gateway.md) | Calling models through an environment's routes, which client API reaches which model, and every refusal |
 | [Catalogs](catalogs.md) | Catalog sources (MCP servers, A2A agents, skills, plugins, prompts), syncs, entries, owners, quarantine, registry credentials and importing Obot catalogs |
+| [The `sekisho` CLI](cli.md) | Installing it, signing in with `sekisho login`, where tokens are kept on each system, `sekisho token` and `logout`, `SEKISHO_URL` and `SEKISHO_KEY`, exit codes |
 | [People and sign-in](people-and-sign-in.md) | Signing in, tokens, the first admin, local accounts, identity providers, groups, admins and offboarding |
 | [Testing on Linux](testing-on-linux.md) | `make check`: building Sekisho and running every test, the images and the end-to-end suite on a Linux machine |
 | [Testing on Linux by hand](testing-on-linux-by-hand.md) | The same checks as commands to run one at a time, with a results checklist |

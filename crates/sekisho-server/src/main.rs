@@ -63,17 +63,52 @@ enum Command {
         #[arg(long)]
         config_path: PathBuf,
     },
+    /// Sign in to a Sekisho server from this machine; the tokens go to the
+    /// OS keyring.
+    Login {
+        /// Sekisho's URL, such as https://sekisho.example.com (default: the
+        /// server already set, or SEKISHO_URL).
+        server: Option<String>,
+        /// Sign in with a code typed into a browser anywhere, for a machine
+        /// without one.
+        #[arg(long)]
+        device: bool,
+        /// Print the sign-in link without opening a browser.
+        #[arg(long, conflicts_with = "device")]
+        no_browser: bool,
+    },
+    /// End this machine's session and forget its tokens.
+    Logout,
+    /// Print a fresh token on stdout, for coding tools' credential helpers.
+    Token,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    // The developer commands: no log lines, since stdout carries only
+    // results (`sekisho token` prints the token alone).
+    let result = match cli.command {
+        Command::Login {
+            server,
+            device,
+            no_browser,
+        } => sekisho_cli::commands::login(server, device, no_browser).await,
+        Command::Logout => sekisho_cli::commands::logout().await,
+        Command::Token => sekisho_cli::commands::token().await,
+        service => return run_service(service).await,
+    };
+    sekisho_cli::output::finish(result)
+}
+
+async fn run_service(command: Command) -> ExitCode {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
     // rustls' crypto for what Sekisho fetches itself: ring, not aws-lc-rs
     // (D178).
     install_crypto();
-    let result = match Cli::parse().command {
+    let result = match command {
         Command::Serve => serve().await,
         Command::Migrate => migrate().await,
         Command::AdminLink { email } => admin_link(&email).await,
@@ -81,6 +116,7 @@ async fn main() -> ExitCode {
             server,
             config_path,
         } => gateway_agent(server, config_path).await,
+        Command::Login { .. } | Command::Logout | Command::Token => unreachable!("run above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
