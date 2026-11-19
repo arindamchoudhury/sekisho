@@ -193,7 +193,7 @@ D191	sekisho run <tool> starts a coding tool behind a loopback proxy that swaps 
 D192	Codex's model provider goes in Codex's home (a profile per environment, or the user config with --global), since Codex ignores it in project config; likewise for any tool whose project config can't name a provider (our call 2026-11-19)	(Codex's|in its) home	design plan4 plans
 D193	Claude Code's settings in .claude/settings.local.json with every model variable; its plugins as a local plugin marketplace (our call 2026-11-19)	local (plugin |directory )?marketplace	design plan4 plans
 D194	sekisho run's proxy: 127.0.0.1, a per-run secret, only the environment's path, only the gateway's origin, no redirects; sekisho token asks it inside a run (our call 2026-11-19)	per-run( secret)?$|per-run secret	design plan4
-D195	Tokens in the OS keyring, else Linux keyutils, else nowhere (sekisho run holds them in memory) (our call 2026-11-19)	keyutils	design plan4 plans
+D195	Tokens in the OS keyring, else Linux keyutils, else nowhere (sekisho run holds them in memory); a keyring that can't be reached, such as Windows over SSH, counts as none (our call 2026-11-19)	keyutilsdesign plan4 plans
 D196	One signed-in server at a time (our call 2026-11-19)	one (signed-in )?server	design plan4 plans
 D197	The CLI's server URL is https or loopback http, and it never follows redirects (our call 2026-11-19)	(redirects are never followed|never follows a redirect|no redirects)	design plan4 plans
 D198	The delivery document and its blobs for a person who may use the environment or its key, the same 404 otherwise; SEKISHO_GATEWAY_URL (our call 2026-11-19)	SEKISHO_GATEWAY_URL	design plan4 plans
@@ -211,3 +211,4 @@ D209	Refusals stay JSON unless a tool shows them badly (our call 2026-11-19)	ref
 D210	Gemini's JSON-array stream counted only if a release 1 tool sends it (plan 1c's M7) (our call 2026-11-19)	JSON-array	design plan4
 D211	The unmanaged config report reads each tool's MCP servers and marketplaces at project and user level (our call 2026-11-19)	unmanaged config report	design plan4
 D212	sekisho check runs the sync's library offline; --server checks references through a route any signed-in person or key may call (our call 2026-11-19)	(references through a|check/references)	design plan4
+D213	On Windows one Credential Manager entry per server, local-machine persistence (never the roaming default), its tokens one UTF-8 value written at once (our call 2026-11-19)	local-machine	design plan4
