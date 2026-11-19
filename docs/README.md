@@ -35,6 +35,7 @@ documentation.
 | [People and sign-in](people-and-sign-in.md) | Signing in, tokens, the first admin, local accounts, identity providers, groups, admins and offboarding |
 | [Testing on Linux](testing-on-linux.md) | `make check`: building Sekisho and running every test, the images and the end-to-end suite on a Linux machine |
 | [Testing on Linux by hand](testing-on-linux-by-hand.md) | The same checks as commands to run one at a time, with a results checklist |
+| [Testing on WSL 2](testing-on-wsl.md) | Running the Linux checks on Windows, in a WSL 2 distribution with Docker Desktop |
 
 Sekisho runs [agentgateway](https://github.com/agentgateway/agentgateway),
 unmodified, in front of the model providers, and answers its checks. People

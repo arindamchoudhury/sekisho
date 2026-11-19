@@ -19,7 +19,8 @@ the images. Record each result in the [checklist](#results).
 ## Prerequisites
 
 Any x86-64 or arm64 Linux with these works; Ubuntu 24.04 and Debian 13 are
-the easiest.
+the easiest. On Windows, use WSL 2 with Docker Desktop:
+[Testing on WSL 2](testing-on-wsl.md) sets it up, then continue here.
 
 | Need | Version or size | Why |
 |---|---|---|
@@ -224,8 +225,7 @@ Linux is proven when every check passes.
 | End-to-end tests refuse every environment save with 409 "kept in Git" | A stopped Git mode test left Git mode on | `docker compose -f e2e/docker-compose.yml down -v`, then `up` again |
 | Every end-to-end test fails at once with `Connection refused` on 127.0.0.1:18080 | The stack isn't up | Run the `up -d --wait` line first and check `ps` |
 | End-to-end tests get 404 where they expect 200, soon after creating an environment | The scale test ran earlier on this stack, and its 300 environments slow every config load | `down -v`, `up` again, and run the scale test only last |
-| WSL 2 with Docker Desktop: `docker` can't reach `/var/run/docker.sock` | Docker Desktop's WSL integration is off for your distribution | In Docker Desktop, turn your distribution on under Settings → Resources → WSL integration |
-| WSL 2: the image build fails with `docker-credential-desktop.exe: exec format error` | `~/.docker/config.json` names Windows' credential helper, which the distribution can't run (common with `systemd=true`) | The builds pull only public images: remove `credsStore` from `~/.docker/config.json` |
+| Docker problems on WSL 2 (no `/var/run/docker.sock`, `exec format error`) | Docker Desktop's setup for WSL | See [Testing on WSL 2](testing-on-wsl.md#troubleshooting) |
 | Builds or containers get killed | Out of memory | Use 8 GB or more; build with `cargo build -j 2`; don't run two stacks at once |
 
 If something fails that isn't here, keep its log (`workspace-tests.log`,
