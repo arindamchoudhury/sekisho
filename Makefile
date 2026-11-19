@@ -131,7 +131,8 @@ images:
 	$(COMPOSE) build
 	g=$$(docker run --rm --entrypoint git sekisho-e2e:dev --version | awk '{ print $$3 }')
 	ver_ge "$$g" 2.37 || fail "git $$g in the image is older than 2.37"
-	u=$$(docker run --rm --entrypoint id -u sekisho-e2e:dev)
+	# id's -u goes after the image: before it, docker reads it as --user.
+	u=$$(docker run --rm --entrypoint id sekisho-e2e:dev -u)
 	[ "$$u" = 65532 ] || fail "the image runs as uid $$u, not 65532"
 	ok "end-to-end image: git $$g, uid $$u"
 
