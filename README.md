@@ -135,7 +135,9 @@ and what they carried.
     servers, skills, plugins and prompts;
   - a lock file, with checks for hidden Unicode characters and for paths that
     escape the target folder;
-  - a diff of what changed.
+  - a diff of what changed;
+  - beside a global install of another environment, a list of what the global
+    one adds to the project and which one each tool uses for a shared name.
 
   The CLI fetches everything from Sekisho, so it works where developer
   machines can reach only Sekisho and internal mirrors.

@@ -212,3 +212,4 @@ D210	Gemini's JSON-array stream counted only if a release 1 tool sends it (plan 
 D211	The unmanaged config report reads each tool's MCP servers and marketplaces at project and user level (our call 2026-11-19)	unmanaged config report	design plan4
 D212	sekisho check runs the sync's library offline; --server checks references through a route any signed-in person or key may call (our call 2026-11-19)	(references through a|check/references)	design plan4
 D213	On Windows one Credential Manager entry per server, local-machine persistence (never the roaming default), its tokens one UTF-8 value written at once (our call 2026-11-19)	local-machine	design plan4
+D214	A project install and a global install of one tool both stay, layered by the tool; use and status show what the global environment adds and which wins each shared name (our call 2026-11-19)	global (install|environment) adds|what the global (one|environment) adds	design plan4
