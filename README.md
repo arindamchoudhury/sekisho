@@ -130,7 +130,7 @@ and what they carried.
     environments kept in Git, so a CI job refuses what Sekisho would.
 - **Delivery.** `sekisho use <environment>` installs an environment into Claude
   Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code or Kilo
-  CLI, for one project or globally:
+  CLI, for one project or globally, one environment per project folder:
   - model and MCP endpoints, the environment's default model, local MCP
     servers, skills, plugins and prompts;
   - a lock file, with checks for hidden Unicode characters and for paths that
@@ -174,12 +174,15 @@ claude
 | `sekisho status` | Show what's installed and whether it's current, your spend, and config Sekisho didn't install |
 | `sekisho uninstall <env>` | Remove an environment |
 | `sekisho token` | Print a fresh token; coding tools call it as a credential helper |
+| `sekisho run <tool>` | Start a coding tool that can't fetch a fresh token itself (Gemini CLI, Qwen Code, OpenCode, Kilo CLI, Pi, Copilot CLI), through a local proxy that keeps its token fresh |
 | `sekisho keys …` | Manage environment keys |
 | `sekisho check [path]` | Check a catalog repository, or environments kept in Git, as Sekisho would (for CI) |
 | `sekisho logout` | Sign out |
 
 CI and containers set `SEKISHO_URL` and `SEKISHO_KEY` (an environment key)
-instead of signing in. The CLI runs on macOS, Linux and Windows.
+instead of signing in. The CLI runs on macOS, Linux and Windows, and keeps
+its tokens in the operating system's keyring, never in a file; no coding
+tool's config file ever holds a token.
 
 ### Signing in before the CLI exists
 

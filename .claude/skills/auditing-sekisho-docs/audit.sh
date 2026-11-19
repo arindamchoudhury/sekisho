@@ -27,6 +27,7 @@ declare -A F=(
   [plan2]=.private/superpowers/plans/2026-11-12-plan-2-sign-in-and-people.md
   [plan1d]=.private/superpowers/plans/2026-11-15-plan-1d-open-weight-hosts.md
   [plan3]=.private/superpowers/plans/2026-11-17-plan-3-catalogs.md
+  [plan4]=.private/superpowers/plans/2026-11-19-plan-4-delivery-cli.md
   [plans]=.private/superpowers/plans/README.md
   [comparison]=.private/comparison.md
   [inventory]=.private/research/feature-inventory.md

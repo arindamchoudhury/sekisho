@@ -188,3 +188,26 @@ D186	An environment delivers its own entries and its toolkits', each once, with 
 D187	A toolkit's bare reference means the entry of that kind and name in the toolkit's own source when it has one, else the unique one elsewhere; environments keep the strict rule (decided 2026-11-18, amends D185)	own source	design plan3 plans
 D188	Plugins' MCP servers launched through bunx, pnpm dlx, yarn dlx, npm exec, uv tool run or pipx run need one exact version, as npx and uvx; a shell command line (sh -c, cmd /c, powershell -Command) is refused (decided 2026-11-18, extends D103)	pipx run	design plan3 plans
 D189	Stopping sekisho serve drains for a bounded time: running streams get SEKISHO_SHUTDOWN_GRACE (default 20 s) to finish, then are ended with their estimates charged; charges still being recorded get TALLY_WAIT plus 2 s; long polls end at once (decided 2026-11-18)	SEKISHO_SHUTDOWN_GRACE	design
+D190	One environment per project folder for every coding tool, one per tool globally; several teams' content through toolkits (decided 2026-11-19)	one environment per (project )?folder	README design plan4 plans
+D191	sekisho run <tool> starts a coding tool behind a loopback proxy that swaps in fresh Sekisho tokens, for tools that can't run a command for their key (decided 2026-11-19)	sekisho run	README design plan4 plans
+D192	Codex's model provider goes in Codex's home (a profile per environment, or the user config with --global), since Codex ignores it in project config; likewise for any tool whose project config can't name a provider (our call 2026-11-19)	(Codex's|in its) home	design plan4 plans
+D193	Claude Code's settings in .claude/settings.local.json with every model variable; its plugins as a local plugin marketplace (our call 2026-11-19)	local (plugin |directory )?marketplace	design plan4 plans
+D194	sekisho run's proxy: 127.0.0.1, a per-run secret, only the environment's path, only the gateway's origin, no redirects; sekisho token asks it inside a run (our call 2026-11-19)	per-run( secret)?$|per-run secret	design plan4
+D195	Tokens in the OS keyring, else Linux keyutils, else nowhere (sekisho run holds them in memory) (our call 2026-11-19)	keyutils	design plan4 plans
+D196	One signed-in server at a time (our call 2026-11-19)	one (signed-in )?server	design plan4 plans
+D197	The CLI's server URL is https or loopback http, and it never follows redirects (our call 2026-11-19)	(redirects are never followed|never follows a redirect|no redirects)	design plan4 plans
+D198	The delivery document and its blobs for a person who may use the environment or its key, the same 404 otherwise; SEKISHO_GATEWAY_URL (our call 2026-11-19)	SEKISHO_GATEWAY_URL	design plan4 plans
+D199	Install-wide npm and Python registries written into local MCP servers' environments (our call 2026-11-19)	package registries	design plan4 plans
+D200	Local servers get a publish-time cutoff at the applied time where the runner has an absolute one; bunx, pnpm dlx and yarn dlx don't, and use warns (our call 2026-11-19)	(publish-time cutoff|cutoffs per runner)	design plan4 plans
+D201	The lock file in .sekisho/lock.json (project) or the config dir (global); files two tools share removed with the last (our call 2026-11-19)	lock\.json	design plan4
+D202	Files and keys the user owns are asked about, never overwritten silently (our call 2026-11-19)	asked about	design plan4 plans
+D203	Every use removes what left the environment, quarantined entries included, keeping hand edits unless --force; --dry-run (our call 2026-11-19)	(dry-run|dry run)	design plan4
+D204	Plugins namespaced by name, <source>-<name> on a clash (our call 2026-11-19)	<source>-<name>	design plan4
+D205	Content a tool can't use skipped with one warning; plugin hooks outside Claude Code skipped (our call 2026-11-19)	plugin hooks	design plan4
+D206	A project install is listed in .git/info/exclude, never .gitignore (our call 2026-11-19)	info/exclude	design plan4 plans
+D207	Every file checked against its SHA-256, scanned for hidden characters, and every path checked before anything is written (our call 2026-11-19)	hidden[- ]character	design plan4
+D208	A tool with one provider per session gets Anthropic Messages when the environment has an anthropic default, else Chat Completions (our call 2026-11-19)	(one provider per session|provider per session)	design plan4
+D209	Refusals stay JSON unless a tool shows them badly (our call 2026-11-19)	refusals stay JSON	design plan4
+D210	Gemini's JSON-array stream counted only if a release 1 tool sends it (plan 1c's M7) (our call 2026-11-19)	JSON-array	design plan4
+D211	The unmanaged config report reads each tool's MCP servers and marketplaces at project and user level (our call 2026-11-19)	unmanaged config report	design plan4
+D212	sekisho check runs the sync's library offline; --server checks references through a route any signed-in person or key may call (our call 2026-11-19)	(references through a|check/references)	design plan4
