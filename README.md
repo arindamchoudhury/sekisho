@@ -130,9 +130,13 @@ and what they carried.
     environments kept in Git, so a CI job refuses what Sekisho would.
 - **Delivery.** `sekisho use <environment>` installs an environment into Claude
   Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code or Kilo
-  CLI, for one project or globally, one environment per project folder:
+  CLI, for one project or globally:
   - model and MCP endpoints, the environment's default model, local MCP
     servers, skills, plugins and prompts;
+  - several environments in one folder, which add up: each tool takes its
+    models from one of them and gets every environment's MCP servers, skills,
+    plugins and prompts; two environments that deliver different content
+    under the same name are refused, and nothing is renamed;
   - a lock file, with checks for hidden Unicode characters and for paths that
     escape the target folder;
   - a diff of what changed;
