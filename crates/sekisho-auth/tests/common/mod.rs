@@ -11,6 +11,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sekisho_auth::dex::{DexClient, DexConfig, DexPassword};
+use sekisho_testkit::{CONTAINER_TRIES, REACHABLE_WITHIN, retry_unreachable};
 use sha2::{Digest, Sha256};
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -75,8 +76,14 @@ pub async fn dex() -> TestDex {
 }
 
 /// Starts PostgreSQL 18 and Dex on a network of their own, with or without
-/// `DEX_API_CONNECTORS_CRUD=true`.
+/// `DEX_API_CONNECTORS_CRUD=true`. A Dex whose ports don't answer is
+/// replaced, with its database and network ([`retry_unreachable`]).
 pub async fn dex_with(connectors_crud: bool) -> TestDex {
+    retry_unreachable("Dex", CONTAINER_TRIES, || start_dex(connectors_crud)).await
+}
+
+/// One try of [`dex_with`]: `Err` when a port of Dex's doesn't answer.
+async fn start_dex(connectors_crud: bool) -> Result<TestDex, String> {
     let name = format!("sekisho-dex-{}", sekisho_core::keys::generate_key().id);
     let db_host = format!("{name}-db");
     // The entrypoint's temporary initdb server logs its ready line to stdout;
@@ -110,25 +117,39 @@ pub async fn dex_with(connectors_crud: bool) -> TestDex {
         .start()
         .await
         .expect("start ghcr.io/dexidp/dex:v2.46.1");
-    let http_port = dex.get_host_port_ipv4(5556).await.unwrap();
-    let grpc_port = dex.get_host_port_ipv4(5557).await.unwrap();
+    let port = async |port: u16| {
+        dex.get_host_port_ipv4(port)
+            .await
+            .map_err(|e| format!("no published port for {port}: {e}"))
+    };
+    let http_port = port(5556).await?;
+    let grpc_port = port(5557).await?;
     let discovery = format!("http://127.0.0.1:{http_port}/dex/.well-known/openid-configuration");
     let http = reqwest::Client::new();
-    let mut ready = false;
-    for _ in 0..50 {
-        if http
+    let deadline = tokio::time::Instant::now() + REACHABLE_WITHIN;
+    loop {
+        let served = http
             .get(&discovery)
             .send()
             .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            ready = true;
+            .is_ok_and(|r| r.status().is_success());
+        let grpc = tokio::net::TcpStream::connect(("127.0.0.1", grpc_port))
+            .await
+            .is_ok();
+        if served && grpc {
             break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Dex didn't answer within {REACHABLE_WITHIN:?}: discovery at \
+                 127.0.0.1:{http_port} {}, gRPC at 127.0.0.1:{grpc_port} {}",
+                if served { "served" } else { "not served" },
+                if grpc { "open" } else { "refused" },
+            ));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(ready, "Dex never served {discovery}");
-    TestDex {
+    Ok(TestDex {
         client: DexClient::new(config_for(
             http_port,
             grpc_port,
@@ -139,7 +160,7 @@ pub async fn dex_with(connectors_crud: bool) -> TestDex {
         grpc_port,
         _dex: dex,
         _postgres: postgres,
-    }
+    })
 }
 
 /// A PKCE verifier and its S256 challenge.

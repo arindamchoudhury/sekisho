@@ -68,7 +68,11 @@ wsl --shutdown
    (`sudo usermod -aG docker "$USER"`) and open a new terminal.
 
 Containers' published ports, such as the end-to-end stack's 18080, are
-reachable at `127.0.0.1` from inside the distribution.
+reachable at `127.0.0.1` from inside the distribution. Now and then, about
+one container in 200, Docker Desktop publishes a port that refuses every
+connection although the container is up. The database and Dex tests
+replace such a container with a fresh one, up to three times, and print
+`try 1 of 3` when they do.
 
 ### Windows' credential helper
 
