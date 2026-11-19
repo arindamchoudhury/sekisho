@@ -12,7 +12,7 @@ stops at the first that fails:
 | `make test` | Every workspace test passes (about 614); database tests start their own `postgres:18` through Docker |
 | `make unix` | What only Linux and other Unix systems exercise, [below](#what-make-unix-checks) |
 | `make images` | The release image and the end-to-end image build straight from the `Dockerfile`; the release image's `--version` works, and the end-to-end image has git 2.37 or later and runs as uid 65532 |
-| `make e2e` | The end-to-end suite passes twice in a row on the same stack, then Sekisho stops cleanly on SIGTERM; the stack is removed after |
+| `make e2e` | The end-to-end suite passes twice in a row on the same stack, then the scale test passes once, then Sekisho stops cleanly on SIGTERM; the stack is removed after |
 
 Each target also runs on its own. Plan on about an hour on a 4-core
 machine for `make check`, most of it the first build and the images.
@@ -60,7 +60,12 @@ Each check prints a line starting `ok`, and the run ends with
 failed and which log to read, and `make` exits non-zero.
 
 Test output goes to logs in `target/check/`: `workspace.log`,
-`unix-*.log`, `e2e-1.log` and `e2e-2.log`. `make help` lists the targets.
+`unix-*.log`, `e2e-1.log`, `e2e-2.log` and `e2e-scale.log`. `make help`
+lists the targets.
+
+The scale test leaves 300 environments in the stack, which makes every
+later config load take about half a second, so `make e2e` leaves it out of
+both runs and runs it once at the end.
 
 To look around the end-to-end stack after the suite, keep it running with
 `make e2e KEEP=1`, then remove it with `make e2e-down`.
@@ -96,6 +101,9 @@ stop timeout and log `shutting down`.
 | A gateway agent timing test fails once (`… not seen within 2s`) | A loaded machine; its windows are 2 to 3 seconds | Run `cargo test -p sekisho-gateway --test agent` alone; it is a bug only if it fails there too |
 | `docker compose up --wait` fails on a port | Something else holds 18080, 3000, 5556 or 18000 | Stop it, or run on another machine |
 | End-to-end tests refuse every environment save with 409 "kept in Git" | A stopped Git mode test left Git mode on | `make e2e-down`, then `make e2e` again |
+| End-to-end tests get 404 where they expect 200, soon after creating an environment | The scale test ran earlier on this stack, and its 300 environments slow every config load | `make e2e-down`, then `make e2e` again; run the scale test only last |
+| WSL 2 with Docker Desktop: `docker` can't reach `/var/run/docker.sock` | Docker Desktop's WSL integration is off for your distribution | In Docker Desktop, turn your distribution on under Settings → Resources → WSL integration |
+| WSL 2: the image build fails with `docker-credential-desktop.exe: exec format error` | `~/.docker/config.json` names Windows' credential helper, which the distribution can't run (common with `systemd=true`) | The builds pull only public images: remove `credsStore` from `~/.docker/config.json` |
 | Builds or containers get killed | Out of memory | Use 8 GB or more; build with `CARGO_BUILD_JOBS=2 make check`; don't run two stacks at once |
 
 If something fails that isn't here, keep its log from `target/check/` and

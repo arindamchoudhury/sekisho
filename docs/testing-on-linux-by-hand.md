@@ -11,7 +11,7 @@ to see each one, or have no `make`. They cover, in order:
    executable bits, the gateway agent's `0600` config file, git's
    `/dev/null` config, and SIGTERM;
 4. the Docker images;
-5. the end-to-end suite, twice.
+5. the end-to-end suite, twice, then the scale test once.
 
 Plan on about an hour on a 4-core machine, most of it the first build and
 the images. Record each result in the [checklist](#results).
@@ -151,15 +151,25 @@ mock that serves the model APIs, Git, a registry, agent cards and GitHub.
 
 ```bash
 docker compose -f e2e/docker-compose.yml up -d --wait
+docker compose -f e2e/docker-compose.yml ps
 for run in 1 2; do
-  cargo test -p sekisho-e2e --locked --no-fail-fast -- --ignored --test-threads=1 2>&1 | tee e2e-$run.log
+  cargo test -p sekisho-e2e --locked --no-fail-fast -- --ignored --test-threads=1 \
+    --skip many_environments_add_no_latency 2>&1 | tee e2e-$run.log
   grep 'test result' e2e-$run.log | awk '{p+=$4; f+=$6} END {print "run", '$run', "passed", p, "failed", f}'
 done
+cargo test -p sekisho-e2e --locked --test scale -- --ignored --nocapture 2>&1 | tee e2e-scale.log
 ```
 
-Expected: each run shows 65 passed and 0 failed (more once tests are
-added). Each run takes 3 to 6 minutes; the Git mode test alone waits up to
-150 s for a merged change.
+Expected: `up` ends with every service healthy or, for `migrate` and
+`dex-db`, exited after their one job. Each run shows 64 passed and 0
+failed (more once tests are added), and the scale test 1 passed. Each run
+takes 3 to 6 minutes; the Git mode test alone waits up to 150 s for a
+merged change.
+
+The scale test runs once, last, because it leaves 300 environments in the
+stack. With them, each agentgateway config load takes about half a second,
+longer than the other tests wait for a new environment, so tests run after
+it can get 404.
 
 Then check that Sekisho stops cleanly on SIGTERM:
 
@@ -198,6 +208,7 @@ Linux is proven when every check passes.
 | e2e image: git 2.37 or later, uid 65532 | 4 | | |
 | e2e run 1: all passed, 0 failed | 5 | | |
 | e2e run 2: all passed, 0 failed | 5 | | |
+| e2e scale test passed | 5 | | |
 | SIGTERM: `Exited (0)` and `shutting down` logged | 5 | | |
 
 ## Troubleshooting
@@ -211,7 +222,12 @@ Linux is proven when every check passes.
 | A gateway agent timing test fails once (`… not seen within 2s`) | A loaded machine; its windows are 2 to 3 seconds | Run `cargo test -p sekisho-gateway --test agent` alone; it is a bug only if it fails there too |
 | `docker compose up --wait` fails on a port | Something else holds 18080, 3000, 5556 or 18000 | Stop it, or run on another machine |
 | End-to-end tests refuse every environment save with 409 "kept in Git" | A stopped Git mode test left Git mode on | `docker compose -f e2e/docker-compose.yml down -v`, then `up` again |
+| Every end-to-end test fails at once with `Connection refused` on 127.0.0.1:18080 | The stack isn't up | Run the `up -d --wait` line first and check `ps` |
+| End-to-end tests get 404 where they expect 200, soon after creating an environment | The scale test ran earlier on this stack, and its 300 environments slow every config load | `down -v`, `up` again, and run the scale test only last |
+| WSL 2 with Docker Desktop: `docker` can't reach `/var/run/docker.sock` | Docker Desktop's WSL integration is off for your distribution | In Docker Desktop, turn your distribution on under Settings → Resources → WSL integration |
+| WSL 2: the image build fails with `docker-credential-desktop.exe: exec format error` | `~/.docker/config.json` names Windows' credential helper, which the distribution can't run (common with `systemd=true`) | The builds pull only public images: remove `credsStore` from `~/.docker/config.json` |
 | Builds or containers get killed | Out of memory | Use 8 GB or more; build with `cargo build -j 2`; don't run two stacks at once |
 
 If something fails that isn't here, keep its log (`workspace-tests.log`,
-`e2e-1.log`) and note the step in the results table.
+`e2e-1.log`, `e2e-2.log`, `e2e-scale.log`) and note the step in the
+results table.

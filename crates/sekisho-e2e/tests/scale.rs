@@ -1,6 +1,8 @@
 //! Many environments at the gateway (plan 1d, design risk 9): one `llm:`
 //! block with a model entry per environment and model. It leaves 300
-//! environments behind, so run it last, on a fresh stack:
+//! environments behind, which make each later config load take about half
+//! a second, longer than `wait_route` waits, so run it last; `make e2e`
+//! leaves it out of both runs of the suite and runs it once after them:
 //!
 //! ```text
 //! cargo test -p sekisho-e2e --test scale -- --ignored --nocapture

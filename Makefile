@@ -51,7 +51,7 @@ help:
 	echo 'make test       every workspace test (Docker must be running)'
 	echo 'make unix       what only Linux and other Unix systems exercise'
 	echo 'make images     the release image and the end-to-end image'
-	echo 'make e2e        the end-to-end suite twice, then SIGTERM (KEEP=1 keeps the stack)'
+	echo 'make e2e        the end-to-end suite twice, the scale test, then SIGTERM (KEEP=1 keeps the stack)'
 	echo 'make e2e-down   remove the end-to-end stack and its volumes'
 	echo "Logs: $(LOGS)/"
 
@@ -140,11 +140,16 @@ e2e:
 	step 'End-to-end stack'
 	$(COMPOSE) up -d --wait
 	if [ -z '$(KEEP)' ]; then trap '$(COMPOSE) down -v > /dev/null 2>&1 || true' EXIT; fi
+	# The scale test leaves 300 environments behind, which slows every later
+	# config load, so it runs once, after both runs of the rest.
 	for run in 1 2; do
 	  step "End-to-end run $$run (log: $(LOGS)/e2e-$$run.log)"
 	  tests e2e-$$run '' cargo test -p sekisho-e2e --locked --no-fail-fast -- \
-	    --ignored --test-threads=1
+	    --ignored --test-threads=1 --skip many_environments_add_no_latency
 	done
+	step "End-to-end scale (log: $(LOGS)/e2e-scale.log)"
+	tests e2e-scale 1 cargo test -p sekisho-e2e --locked --test scale -- \
+	  --ignored --nocapture
 	step 'SIGTERM'
 	start=$$SECONDS
 	$(COMPOSE) stop -t 10 sekisho
