@@ -9,9 +9,12 @@ entries.
 
 What works today is the catalog itself (sources, syncs, entries, owners
 and quarantine), and [environments](environments-and-keys.md#catalog-entries)
-listing its entries and toolkits. **Nothing in a catalog reaches a coding
-tool or the gateway yet**: MCP servers and A2A agents can't be called
-through Sekisho.
+listing its entries and toolkits. Machines read what an environment
+delivers, skills, plugins and prompts with their files, from Sekisho's
+pinned copy ([What `sekisho use` reads](environments-and-keys.md#what-sekisho-use-reads)),
+never from Git hosts. **Nothing in a catalog reaches a coding tool or the
+gateway yet**: `sekisho use` is still to come, and MCP servers and A2A
+agents can't be called through Sekisho.
 
 ## Sources
 
@@ -391,7 +394,9 @@ that is quarantined already, or lifting one that isn't, is 409. Every
 period is kept in the entry's `quarantine_history`. Environments that
 list a quarantined entry keep listing it, flagged in their
 `catalog_status` and `delivered`, and new ones can't add it; a quarantined
-toolkit brings nothing to any environment. What it stops at the gateway
+toolkit brings nothing to any environment. Delivery documents
+leave it out of `entries` and list it under `quarantined`, and its files
+are no longer served, so the next `sekisho use` removes it from machines. What it stops at the gateway
 comes with the MCP and A2A routes: its MCP server or A2A agent refused
 everywhere at once.
 
@@ -475,6 +480,44 @@ Some registries want a password to resolve an image's tag.
 Hosts are kept lowercase. Passwords are sealed in the database, sent only
 to their registry, and never answered back. Docker Hub is
 `registry-1.docker.io`.
+
+## Package registries
+
+Local MCP servers start on developers' machines through `npx`, `uvx` and
+the like, which fetch packages from the public registries unless told
+otherwise. An install can name its own, for every machine:
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  https://sekisho.example.com/api/v1/package-registries \
+  -d '{"npm": "https://npm.example.com/", "python": "https://pypi.example.com/simple"}'
+```
+
+`GET` and `PUT /api/v1/package-registries` are for admins. `PUT` replaces
+both, and a field left out or `null` means the runner's default. Each is an
+`https://` URL without a user name, password, query or fragment, since it
+reaches every machine (422 otherwise, never quoting the value). Every
+environment's delivery document carries them in `registries`, so a change
+changes every environment's `revision`.
+
+## Checking references
+
+`POST /api/v1/check/references` says whether each catalog reference names
+exactly one entry, for checks in CI. Anyone signed in, and any environment
+key, may call it: entry names aren't secret, since every delivery document
+carries them.
+
+```json
+{"references": [{"kind": "skill", "reference": "pdf"},
+                {"kind": "mcp_server", "reference": "github@team"}]}
+```
+
+`kind` is `mcp_server`, `a2a_agent`, `skill`, `plugin`, `prompt` or
+`toolkit` (400 otherwise); at most 1,000 references at once. The answer
+keeps their order: `{kind, reference, source, name}` for a reference that
+names one entry, else `{kind, reference, error}`: `no such entry`, a bare
+name that several sources have (the error names them; write
+`name@source`), or a reference that isn't one.
 
 ## Importing Obot catalogs
 

@@ -894,6 +894,28 @@ impl Store {
         Ok(())
     }
 
+    /// The environment's models in its order, with their providers' kinds,
+    /// for saying which client APIs reach each.
+    pub async fn environment_models(&self, environment: Uuid) -> Result<Vec<crate::EnvModel>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "select m.name, p.kind from environment_models em \
+             join models m on m.id = em.model_id join providers p on p.id = m.provider_id \
+             where em.environment_id = $1 order by em.position",
+        )
+        .bind(environment)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(name, kind)| {
+                Ok(crate::EnvModel {
+                    name: ModelName::parse(&name).map_err(|_| bad_column("model name", &name))?,
+                    kind: ProviderKind::parse(&kind)
+                        .ok_or_else(|| bad_column("provider kind", &kind))?,
+                })
+            })
+            .collect()
+    }
+
     /// What the environment delivers (D186): its own entries and those of
     /// its toolkits that aren't quarantined, at their applied revisions,
     /// each entry once with its MCP server's allowed tools unioned. Its own

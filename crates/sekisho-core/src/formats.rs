@@ -49,8 +49,10 @@ impl ApiFormat {
     }
 }
 
-/// The API a client's request speaks, from its path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// The API a client's request speaks, from its path. Serialized as
+/// [`ClientApi::as_str`] spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ClientApi {
     /// Anthropic's Messages API, `count_tokens` included.
     Messages,

@@ -43,6 +43,9 @@ pub struct Settings {
     pub republish: Duration,
     /// `SEKISHO_PUBLIC_URL`, without a trailing slash: the issuer.
     pub public_url: Url,
+    /// `SEKISHO_GATEWAY_URL`, without a trailing slash: where clients reach
+    /// agentgateway's `/env/<name>/` routes. `SEKISHO_PUBLIC_URL` by default.
+    pub gateway_url: Url,
     /// `SEKISHO_ADMIN_GROUPS`: members of these groups are admins.
     pub admin_groups: Vec<String>,
     /// How catalog sources are synced.
@@ -57,6 +60,7 @@ impl fmt::Debug for Settings {
             .field("long_poll", &self.long_poll)
             .field("republish", &self.republish)
             .field("public_url", &self.public_url.as_str())
+            .field("gateway_url", &self.gateway_url.as_str())
             .field("admin_groups", &self.admin_groups)
             .field("catalog", &self.catalog)
             .finish_non_exhaustive()
@@ -89,6 +93,7 @@ struct Inner {
     /// Whether shutdown has begun.
     stopping: watch::Sender<bool>,
     catalog: CatalogSettings,
+    gateway_url: Url,
 }
 
 impl AppState {
@@ -126,12 +131,18 @@ impl AppState {
                 published: watch::channel(0).0,
                 stopping: watch::channel(false).0,
                 catalog: settings.catalog,
+                gateway_url: settings.gateway_url,
             }),
         }
     }
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    /// `SEKISHO_GATEWAY_URL`, without a trailing slash.
+    pub(crate) fn gateway_url(&self) -> &Url {
+        &self.inner.gateway_url
     }
 
     pub(crate) fn secret_box(&self) -> &SecretBox {

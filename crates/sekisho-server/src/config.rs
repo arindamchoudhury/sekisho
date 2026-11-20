@@ -194,6 +194,17 @@ impl ServerConfig {
             .map_err(|r| invalid("SEKISHO_PUBLIC_URL", r))?;
         let path = public_url.path().trim_end_matches('/').to_owned();
         public_url.set_path(&path);
+        // Where clients reach agentgateway; by default an ingress at the
+        // public URL sends `/env/` there (D198).
+        let gateway_url = match var("SEKISHO_GATEWAY_URL") {
+            Some(v) => {
+                let mut url = web_url(&v).map_err(|r| invalid("SEKISHO_GATEWAY_URL", r))?;
+                let path = url.path().trim_end_matches('/').to_owned();
+                url.set_path(&path);
+                url
+            }
+            None => public_url.clone(),
+        };
         let issuer = web_url(&required("SEKISHO_DEX_ISSUER")?)
             .map_err(|r| invalid("SEKISHO_DEX_ISSUER", r))?;
         let http_url = match var("SEKISHO_DEX_URL") {
@@ -326,6 +337,7 @@ impl ServerConfig {
                 long_poll: LONG_POLL,
                 republish: REPUBLISH,
                 public_url,
+                gateway_url,
                 admin_groups,
                 catalog,
             },
@@ -565,12 +577,15 @@ mod tests {
         assert_eq!(c.dex.http_url.as_str(), "https://sekisho.example.com/");
         assert_eq!(c.dex.grpc, "dex:5557");
         assert!(c.settings.admin_groups.is_empty());
+        assert_eq!(c.settings.gateway_url, c.settings.public_url);
 
         let mut vars = required();
         vars.insert("SEKISHO_PUBLIC_URL", "https://sekisho.example.com/sekisho/");
         vars.insert("SEKISHO_DEX_URL", "http://dex:5556");
         vars.insert("SEKISHO_ADMIN_GROUPS", " platform , github/acme:admins ,");
+        vars.insert("SEKISHO_GATEWAY_URL", "https://gw.example.com/ai/");
         let c = load(&vars).unwrap();
+        assert_eq!(c.settings.gateway_url.as_str(), "https://gw.example.com/ai");
         assert_eq!(
             c.settings.public_url.as_str(),
             "https://sekisho.example.com/sekisho"
@@ -587,6 +602,9 @@ mod tests {
             ("SEKISHO_PUBLIC_URL", "ftp://sekisho.example.com/"),
             ("SEKISHO_PUBLIC_URL", "sekisho.example.com"),
             ("SEKISHO_PUBLIC_URL", "https://user:pw@sekisho.example.com/"),
+            ("SEKISHO_GATEWAY_URL", "https://gw.example.com/?x=1"),
+            ("SEKISHO_GATEWAY_URL", "gw.example.com"),
+            ("SEKISHO_GATEWAY_URL", "https://user:pw@gw.example.com/"),
             ("SEKISHO_DEX_ISSUER", "dex"),
             ("SEKISHO_DEX_ISSUER", "https://dex.example.com/?x=1"),
             ("SEKISHO_DEX_URL", "file:///dex"),

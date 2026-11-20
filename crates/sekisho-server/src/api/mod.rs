@@ -1,6 +1,8 @@
 //! The API (`/api/v1`) and the gateway agents' endpoint (`/internal`).
 //!
-//! `/api/v1/me` routes are for any signed-in person; every other `/api/v1`
+//! `/api/v1/me` routes are for any signed-in person, and those machines
+//! read (an environment's delivery and files, spend, reference checks) for
+//! environment keys too; every other `/api/v1`
 //! route is for admins. JSON fields are snake_case and named like the
 //! store's validation fields. Money is an exact USD decimal string; times
 //! are RFC 3339.
@@ -8,7 +10,9 @@
 mod budgets;
 mod catalog_entries;
 mod catalog_sources;
+mod check;
 mod connectors;
+mod delivery;
 mod environments;
 mod gateway;
 mod git_mode;
@@ -18,6 +22,7 @@ mod local_accounts;
 mod me;
 mod models;
 mod obot_vmcps;
+mod package_registries;
 mod providers;
 mod registry_credentials;
 mod signing_keys;
@@ -36,7 +41,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::json;
 
 use crate::app::AppState;
-use crate::auth::{require_admin, require_gateway, require_user};
+use crate::auth::{require_admin, require_gateway, require_person_or_key, require_user};
 
 pub(crate) fn router(state: AppState) -> Router {
     let me = Router::new()
@@ -45,6 +50,22 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/api/v1/me/keys", get(me::keys).post(me::create_key))
         .route("/api/v1/me/keys/{id}/{action}", post(me::act))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_user));
+    // What machines read: for people and for environment keys (D198, D212).
+    let machines = Router::new()
+        .route(
+            "/api/v1/me/environments/{name}/delivery",
+            get(delivery::delivery),
+        )
+        .route(
+            "/api/v1/me/environments/{name}/blobs/{sha256}",
+            get(delivery::blob),
+        )
+        .route("/api/v1/me/spend", get(me::spend))
+        .route("/api/v1/check/references", post(check::references))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_person_or_key,
+        ));
     let admin = Router::new()
         .route(
             "/api/v1/providers",
@@ -105,6 +126,10 @@ pub(crate) fn router(state: AppState) -> Router {
             put(connectors::put).delete(connectors::delete),
         )
         .route("/api/v1/signing-keys/rotate", post(signing_keys::rotate))
+        .route(
+            "/api/v1/package-registries",
+            get(package_registries::get).put(package_registries::put),
+        )
         .route(
             "/api/v1/catalog-sources",
             get(catalog_sources::list).post(catalog_sources::create),
@@ -167,7 +192,10 @@ pub(crate) fn router(state: AppState) -> Router {
             state.clone(),
             require_gateway,
         ));
-    me.merge(admin).merge(internal).with_state(state)
+    me.merge(machines)
+        .merge(admin)
+        .merge(internal)
+        .with_state(state)
 }
 
 /// Every error answer: `{"error": <code>, "message": ..., "fields"?: [...]}`.

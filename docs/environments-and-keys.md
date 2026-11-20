@@ -103,8 +103,9 @@ gets from another toolkit, stays. Toolkits themselves aren't delivered.
 | `via` | The toolkits that bring it, as `<source>/<name>` |
 | `quarantined`, `removed` | As in `catalog_status`; delivery leaves a quarantined entry out ([Quarantine](catalogs.md#quarantine)) |
 
-Nothing reaches coding tools yet: `sekisho use` and the gateway's MCP and
-A2A routes are still to come.
+Machines read what an environment delivers from its delivery document
+([What `sekisho use` reads](#what-sekisho-use-reads)). `sekisho use`
+itself, and the gateway's MCP and A2A routes, are still to come.
 
 ### Default models
 
@@ -260,10 +261,62 @@ use (one of their groups is among the access groups), with each one's
 name, description, notice and models. Being an admin gives no access of its
 own: admins are listed the environments their groups give them.
 
+## What `sekisho use` reads
+
+`GET /api/v1/me/environments/{name}/delivery` answers everything a machine
+installs for one environment, as one JSON document. It is for anyone who
+may use the environment, and for that environment's own
+[keys](#environment-keys) (so CI can install with `SEKISHO_KEY`). Anyone
+else, an admin outside the environment's access groups and a key of
+another environment included, gets the same 404 as for an environment that
+doesn't exist, so the answer tells nobody which environments exist.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  https://sekisho.example.com/api/v1/me/environments/data-team/delivery
+```
+
+| Field | Meaning |
+|---|---|
+| `environment`, `notice` | The environment's name, and the notice shown to people who start using it |
+| `revision` | SHA-256 in hex of the rest of the document: it changes when anything delivered changes (a model, a default, an applied sync, a quarantine, the package registries, the notice), and only then |
+| `gateway_url` | `<SEKISHO_GATEWAY_URL>/env/<name>`, the base of the environment's model routes ([Running Sekisho](running.md#settings)) |
+| `models` | The environment's models in its order, each `{name, apis}`: the client APIs that reach it through the gateway (`messages`, `chat_completions`, `responses`, `gemini`; [The gateway](gateway.md)) |
+| `defaults` | `{anthropic, openai, gemini, small}`: each format's default model with its fallback, as `effective_default_models` ([Default models](#default-models)) |
+| `mcp` | The environment's MCP endpoint; always `null` for now |
+| `entries` | What the environment [delivers](#what-an-environment-delivers), each entry once, at its applied revision: `kind`, `source`, `name`, `commit`, `digest`, `applied_at`, `tools` (an MCP server's allowed tools, `null` for all), `spec` (the entry's definition, as the catalog read it) and `files` |
+| `quarantined` | Entries the environment delivers that are quarantined, each `{kind, source, name}`: they are left out of `entries`, and a machine removes them |
+| `registries` | `{npm, python}`: the install's [package registries](catalogs.md#package-registries), or `null` |
+
+An entry is in `entries` once its source's sync is applied; an entry gone
+from its source keeps its last revision. Toolkits never appear: their
+members do.
+
+### Files
+
+Each entry's `files` lists `{path, sha256, size, executable}`, sorted by
+path. A machine fetches each file by its hash:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -o SKILL.md \
+  https://sekisho.example.com/api/v1/me/environments/data-team/blobs/<sha256>
+```
+
+The answer is the file's bytes (`application/octet-stream`, `Cache-Control:
+private, max-age=31536000, immutable`, since a hash's content never
+changes). Only files of the entries the environment delivers now are
+answered: a file of another environment's entry, of a quarantined entry, a
+hash Sekisho doesn't have, or one that isn't 64 lowercase hex digits all
+get the same 404. Nothing is fetched from Git hosts: Sekisho serves the
+copy it pinned at sync.
+
 ## Environment keys
 
 A key belongs to one person and one environment, and works only on that
-environment's gateway routes. It works as long as its owner may use the
+environment's gateway routes and on the routes machines read for it: its
+[delivery document and files](#what-sekisho-use-reads), its
+[spend](budgets-and-spend.md#your-spend) and
+[reference checks](catalogs.md#checking-references). It works as long as its owner may use the
 environment: someone who leaves the environment's groups, is disabled or
 is offboarded can't use their keys any more.
 

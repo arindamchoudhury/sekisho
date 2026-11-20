@@ -29,7 +29,7 @@ documentation.
 | [Running Sekisho](running.md) | The `sekisho` binary's commands, its settings, and what it needs from PostgreSQL, Dex and agentgateway |
 | [The API](api.md) | Who may call what, JSON conventions, error answers, and every route |
 | [Providers and models](providers-and-models.md) | Model providers, their credentials, OpenAI-compatible hosts and presets, models and their prices |
-| [Environments and keys](environments-and-keys.md) | Environments, who may use them, their catalog entries and toolkits, default models, labels, YAML, and environment keys |
+| [Environments and keys](environments-and-keys.md) | Environments, who may use them, their catalog entries and toolkits, default models, labels, YAML, what machines read to install one, and environment keys |
 | [Budgets and spend](budgets-and-spend.md) | Dollar budgets, and how each request is charged |
 | [The gateway](gateway.md) | Calling models through an environment's routes, which client API reaches which model, and every refusal |
 | [Catalogs](catalogs.md) | Catalog sources (MCP servers, A2A agents, skills, plugins, prompts), syncs, entries, owners, quarantine, registry credentials and importing Obot catalogs |

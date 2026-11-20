@@ -3442,6 +3442,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror",
+ "time",
  "url",
 ]
 
@@ -3594,6 +3595,7 @@ dependencies = [
  "sekisho-testkit",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "sqlx",
  "tempfile",
  "thiserror",

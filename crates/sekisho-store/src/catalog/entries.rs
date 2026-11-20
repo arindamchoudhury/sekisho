@@ -1,6 +1,8 @@
 //! Catalog entries: reading them and their files, resolving references,
 //! owners and quarantine.
 
+use std::collections::HashMap;
+
 use sekisho_catalog::model::EntrySpec;
 use sekisho_catalog::names::{EntryKind, EntryRef};
 use sqlx::Row;
@@ -199,6 +201,27 @@ impl Store {
         super::toolkits::resolve_in(&mut conn, kind, reference).await
     }
 
+    /// [`Store::resolve_entry`], answering the entry's address.
+    pub async fn resolve_key(
+        &self,
+        kind: EntryKind,
+        reference: &EntryRef,
+    ) -> std::result::Result<EntryKey, ResolveError> {
+        let id = self.resolve_entry(kind, reference).await?;
+        let source: String = sqlx::query_scalar(
+            "select s.name from catalog_entries e join catalog_sources s on s.id = e.source_id \
+             where e.id = $1",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(EntryKey {
+            kind,
+            source: source_name(&source)?,
+            name: reference.name.clone(),
+        })
+    }
+
     /// A file of the entry's applied revision.
     pub async fn entry_file(&self, key: &EntryKey, path: &str) -> Result<Vec<u8>> {
         let id = self.entry_id(key).await?;
@@ -210,6 +233,75 @@ impl Store {
         )
         .bind(id)
         .bind(path)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StoreError::NotFound)
+    }
+
+    /// Revisions by ID, with their files, in two queries; IDs that name no
+    /// revision are left out.
+    pub async fn revisions(&self, ids: &[Uuid]) -> Result<HashMap<Uuid, Revision>> {
+        let mut out = HashMap::with_capacity(ids.len());
+        for row in sqlx::query(
+            "select id, commit, digest, spec, applied_at from catalog_revisions \
+             where id = any($1)",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?
+        {
+            let spec: serde_json::Value = row.try_get("spec")?;
+            let spec: EntrySpec =
+                serde_json::from_value(spec).map_err(|e| bad_column("spec", &e.to_string()))?;
+            let id: Uuid = row.try_get("id")?;
+            out.insert(
+                id,
+                Revision {
+                    id,
+                    commit: row.try_get("commit")?,
+                    digest: row.try_get("digest")?,
+                    spec,
+                    applied_at: row.try_get("applied_at")?,
+                    files: Vec::new(),
+                },
+            );
+        }
+        for f in sqlx::query(
+            "select revision_id, path, sha256, size, executable from catalog_revision_files \
+             where revision_id = any($1) order by revision_id, path collate \"C\"",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?
+        {
+            let id: Uuid = f.try_get("revision_id")?;
+            if let Some(revision) = out.get_mut(&id) {
+                revision.files.push(FileMeta {
+                    path: f.try_get("path")?,
+                    sha256: hex(&f.try_get::<Vec<u8>, _>("sha256")?),
+                    size: f.try_get::<i64, _>("size")? as u64,
+                    executable: f.try_get("executable")?,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// A stored file by its SHA-256 in lowercase hex, only when one of
+    /// these revisions has it (an environment's delivered revisions):
+    /// `NotFound` otherwise, as for a hash Sekisho doesn't have.
+    pub async fn blob_in(&self, revisions: &[Uuid], sha256: &str) -> Result<Vec<u8>> {
+        if sha256.bytes().any(|c| c.is_ascii_uppercase()) {
+            return Err(StoreError::NotFound);
+        }
+        let sha = unhex(sha256).ok_or(StoreError::NotFound)?;
+        sqlx::query_scalar(
+            "select b.bytes from catalog_blobs b where b.sha256 = $2 and exists ( \
+             select 1 from catalog_revision_files f \
+             where f.sha256 = $2 and f.revision_id = any($1))",
+        )
+        .bind(revisions)
+        .bind(sha)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(StoreError::NotFound)

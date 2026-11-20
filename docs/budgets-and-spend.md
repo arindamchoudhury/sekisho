@@ -2,7 +2,7 @@
 
 Sekisho records what every model request costs, in US dollars, and refuses
 new requests once a budget they count against is used up. Only admins
-manage budgets.
+manage budgets; anyone can read [their own spend](#your-spend).
 
 ## Budgets
 
@@ -36,6 +36,22 @@ against it with 429 `budget_exhausted`, naming the budget and when it
 resets ([refusals](gateway.md#when-the-gateway-says-no)). If several are
 used up, it names the one that resets last. Requests already running are
 not cut off, so spend can go a little over a limit.
+
+## Your spend
+
+`GET /api/v1/me/spend` answers anyone signed in the budgets that count
+them: their own (in any environment), those of the environments they may
+use, and those of their keys that aren't revoked. Called with an
+environment key, it answers the key's own budgets and its environment's.
+
+```json
+[{"scope": "environment", "name": "data team", "environment": "data-team",
+  "limit_usd": "500", "spent_usd": "123.45", "resets_at": "2026-12-01T00:00:00Z"}]
+```
+
+Each is `{scope, name, limit_usd, spent_usd, resets_at}` for the current
+window, with `environment` for an environment's budget or a person's
+within one, and `key` (its ID) for a key's.
 
 ## How a request is charged
 

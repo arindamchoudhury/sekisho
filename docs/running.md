@@ -74,6 +74,7 @@ but never quoting a secret.
 | `SEKISHO_DATABASE_MAX_CONNECTIONS` | no | The connection pool's size, 1 to 1000; default 20 |
 | `SEKISHO_ENCRYPTION_KEY` | yes | Standard base64 of 32 random bytes (`openssl rand -base64 32`). It encrypts provider credentials and signing keys in the database: keep it safe, and keep it the same |
 | `SEKISHO_PUBLIC_URL` | yes | Where people and programs reach Sekisho, such as `https://sekisho.example.com` |
+| `SEKISHO_GATEWAY_URL` | no | Where coding tools reach agentgateway, such as `https://ai.example.com`: each environment's delivery document gives tools `<this>/env/<name>` as their model routes' base. Default: `SEKISHO_PUBLIC_URL`, for an ingress that sends `/env/` to agentgateway and the rest to Sekisho |
 | `SEKISHO_BOOTSTRAP_TOKEN` | yes | At least 16 characters; makes the first admin on `/setup`, and nothing once there is one |
 | `SEKISHO_GATEWAY_TOKEN` | yes | At least 16 characters, different from the bootstrap token; gateway agents use it to fetch agentgateway's configuration |
 | `SEKISHO_DEX_ISSUER` | yes | Dex's issuer, as browsers reach it, such as `https://sekisho.example.com/dex` |

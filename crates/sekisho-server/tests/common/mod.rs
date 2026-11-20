@@ -60,6 +60,7 @@ pub fn settings() -> Settings {
         long_poll: Duration::from_secs(1),
         republish: Duration::from_millis(300),
         public_url: Url::parse(ISSUER).unwrap(),
+        gateway_url: Url::parse(ISSUER).unwrap(),
         admin_groups: vec![ADMIN_GROUP.to_owned(), format!("github/{ADMIN_GROUP}")],
         // The tests' Git hosts, registries and agents speak plain HTTP.
         catalog: CatalogSettings {

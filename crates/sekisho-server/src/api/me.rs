@@ -1,5 +1,6 @@
 //! A signed-in person's own routes: who they are, the environments they may
-//! use, and their keys, which only they create.
+//! use, and their keys, which only they create; and the spend that counts
+//! them, which a key may read too.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -7,7 +8,7 @@ use axum::{Extension, Json};
 use sekisho_core::access::can_use;
 use sekisho_core::keys::EnvKeyId;
 use sekisho_core::names::EnvName;
-use sekisho_store::{FieldError, StoreError};
+use sekisho_store::{BudgetScope, FieldError, StoreError};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -15,7 +16,7 @@ use uuid::Uuid;
 use super::keys::{CreatedKeyBody, KeyBody};
 use super::{ApiError, ApiJson};
 use crate::app::AppState;
-use crate::auth::Caller;
+use crate::auth::{Caller, Principal};
 
 #[derive(Serialize)]
 pub struct MeBody {
@@ -152,4 +153,87 @@ pub async fn act(
         _ => return Err(ApiError::NotFound),
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// One budget that counts the caller, in its current window. `environment`
+/// for an environment's budget or a person's within one; `key` for a key's.
+#[derive(Serialize)]
+pub struct SpendBody {
+    scope: &'static str,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    limit_usd: String,
+    spent_usd: String,
+    #[serde(with = "time::serde::rfc3339")]
+    resets_at: OffsetDateTime,
+}
+
+/// The budgets that count the caller. A person: their own, those of the
+/// environments they may use and those of their keys. A key: its own and
+/// its environment's.
+pub async fn spend(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<SpendBody>>, ApiError> {
+    let store = state.store();
+    let budgets = match &principal {
+        Principal::Person(caller) => {
+            let access = caller.user.access();
+            let environments: Vec<EnvName> = store
+                .list_environments()
+                .await?
+                .into_iter()
+                .filter(|e| can_use(&access, &e.spec.access_groups))
+                .map(|e| e.spec.name)
+                .collect();
+            let keys: Vec<EnvKeyId> = store
+                .list_user_keys(&caller.user.id)
+                .await?
+                .into_iter()
+                .filter(|k| k.revoked_at.is_none())
+                .map(|k| k.id)
+                .collect();
+            store
+                .budgets_counting(Some(caller.user.id), &environments, &keys)
+                .await?
+        }
+        Principal::Key {
+            id, environment, ..
+        } => {
+            store
+                .budgets_counting(
+                    None,
+                    std::slice::from_ref(environment),
+                    std::slice::from_ref(id),
+                )
+                .await?
+        }
+    };
+    let statuses = store.status(&budgets, OffsetDateTime::now_utc()).await?;
+    Ok(Json(
+        statuses
+            .into_iter()
+            .map(|s| {
+                let (scope, environment, key) = match s.budget.scope {
+                    BudgetScope::Person { environment, .. } => {
+                        ("person", environment.map(|e| e.to_string()), None)
+                    }
+                    BudgetScope::Environment(e) => ("environment", Some(e.to_string()), None),
+                    BudgetScope::Key(k) => ("key", None, Some(k.to_string())),
+                };
+                SpendBody {
+                    scope,
+                    name: s.budget.name,
+                    environment,
+                    key,
+                    limit_usd: s.budget.limit.to_usd_string(),
+                    spent_usd: s.spent.to_usd_string(),
+                    resets_at: s.resets_at,
+                }
+            })
+            .collect(),
+    ))
 }

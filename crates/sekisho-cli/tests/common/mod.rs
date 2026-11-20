@@ -67,6 +67,7 @@ pub async fn server() -> Harness {
         long_poll: Duration::from_secs(1),
         republish: Duration::from_millis(300),
         public_url: Url::parse(&base).unwrap(),
+        gateway_url: Url::parse(&base).unwrap(),
         admin_groups: vec!["github/sekisho-admins".to_owned()],
         catalog: CatalogSettings::default(),
     };

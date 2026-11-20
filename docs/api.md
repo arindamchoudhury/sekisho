@@ -8,14 +8,21 @@ yet, so these pages show it with `curl`.
 
 Every call needs a session token, `Authorization: Bearer <token>`, which
 you get by [signing in](people-and-sign-in.md#signing-in). Environment keys
-(`sek_…`) work only on the gateway, never on the API.
+(`sek_…`) work on the gateway and on the four routes machines read (an
+environment's delivery document and its files, spend, and reference
+checks), never elsewhere on the API.
 
 - `/api/v1/me…` is for anyone signed in.
+- The four routes machines read are for anyone signed in and for active
+  environment keys; a key reads only its own environment. A key that is
+  revoked, expired or suspended, or whose owner may no longer use its
+  environment, gets 401 with the reason.
 - Everything else is for admins: people marked as an admin, and members of
   the groups in `SEKISHO_ADMIN_GROUPS`. Anyone else gets 403.
 
-The person is read from the database on every call, so disabling someone
-or removing their admin mark applies to their next call.
+The person, or the key, is read from the database on every call, so
+disabling someone, removing their admin mark or revoking a key applies to
+their next call.
 
 ```bash
 TOKEN=...   # an access token from /oauth/token
@@ -50,7 +57,7 @@ Every error is JSON with an `error` code and a `message` for people:
 | Status | `error` | When |
 |---|---|---|
 | 400 | `bad_request` | The body isn't JSON, misses a required field, or has one the route doesn't know |
-| 401 | `unauthorized` | No session token, or one that isn't valid; the answer has `WWW-Authenticate: Bearer realm="sekisho"` |
+| 401 | `unauthorized` | No session token (or, where a key may call, no active key), or one that isn't valid; the answer has `WWW-Authenticate: Bearer realm="sekisho"` |
 | 403 | `forbidden` | Not an admin, on an admin route |
 | 404 | `not_found` | No such thing, or a name that can't be one |
 | 409 | `conflict` | It already exists, or it can't change that way (the message says why) |
@@ -67,6 +74,10 @@ Every error is JSON with an `error` code and a `message` for people:
 | `GET /api/v1/me/environments` | The environments you may use | [Environments](environments-and-keys.md#the-environments-you-may-use) |
 | `GET`, `POST /api/v1/me/keys` | Your environment keys; make one | [Keys](environments-and-keys.md#environment-keys) |
 | `POST /api/v1/me/keys/{id}/{suspend,resume,revoke}` | Change one of your keys | [Keys](environments-and-keys.md#environment-keys) |
+| `GET /api/v1/me/environments/{name}/delivery` | Everything `sekisho use` installs for an environment you may use, or your key's environment | [What `sekisho use` reads](environments-and-keys.md#what-sekisho-use-reads) |
+| `GET /api/v1/me/environments/{name}/blobs/{sha256}` | One file the environment delivers, by its SHA-256 | [Files](environments-and-keys.md#files) |
+| `GET /api/v1/me/spend` | The budgets that count you, or your key, with this window's spend | [Your spend](budgets-and-spend.md#your-spend) |
+| `POST /api/v1/check/references` | Whether catalog references each name one entry, for CI | [Checking references](catalogs.md#checking-references) |
 | `GET`, `POST /api/v1/providers` | List or add model providers | [Providers](providers-and-models.md#providers) |
 | `PATCH`, `DELETE /api/v1/providers/{name}` | Change or delete a provider | [Providers](providers-and-models.md#changing-a-provider) |
 | `GET /api/v1/provider-presets` | The known OpenAI-compatible hosts | [Presets](providers-and-models.md#host-presets) |
@@ -103,6 +114,7 @@ Every error is JSON with an `error` code and a `message` for people:
 | `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of an entry's applied revision | [Entries](catalogs.md#entries) |
 | `POST`, `DELETE /api/v1/catalog/{kind}/{source}/{name}/quarantine` | Quarantine an entry, or lift that | [Quarantine](catalogs.md#quarantine) |
 | `GET /api/v1/registry-credentials`, `PUT`, `DELETE /api/v1/registry-credentials/{host}` | Container registries' credentials | [Registry credentials](catalogs.md#registry-credentials) |
+| `GET`, `PUT /api/v1/package-registries` | The npm and Python registries machines' local MCP servers use | [Package registries](catalogs.md#package-registries) |
 
 Gateway agents use one more route, `GET /internal/gateway/config`, with
 the gateway token ([Running Sekisho](running.md#the-gateway-agent)).

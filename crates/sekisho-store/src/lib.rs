@@ -35,6 +35,7 @@ pub use catalog::{
 pub use dex_tokens::{DexTokenLock, IDP_CHECK_EVERY};
 pub use environments::{Delivered, EffectiveDefaults, EnvEntry, Environment, EnvironmentSpec};
 pub use error::{FieldError, StoreError};
+pub use install::PackageRegistries;
 pub use keys::{AuthSnapshot, EnvAccess, EnvKey, EnvModel};
 pub use models::{Model, ModelPricing, NewModel};
 pub use notify::ChangeKind;

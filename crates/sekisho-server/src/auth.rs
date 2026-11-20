@@ -1,5 +1,5 @@
-//! Who is calling: people by their session tokens for the API, gateway
-//! agents by the gateway token.
+//! Who is calling: people by their session tokens for the API, environment
+//! keys on the routes machines read, gateway agents by the gateway token.
 //!
 //! A session token is checked against the published signing keys, its
 //! session must not have ended, and the person is read from the database on
@@ -13,7 +13,8 @@ use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sekisho_core::access::is_admin;
-use sekisho_core::keys::verify_secret;
+use sekisho_core::keys::{EnvKeyId, KeyState, parse_token, verify_secret};
+use sekisho_core::names::EnvName;
 use sekisho_core::session_token::{TokenError, verify};
 use sekisho_store::{StoreError, User};
 use time::OffsetDateTime;
@@ -69,7 +70,8 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> Result<Caller, ApiErro
         }
         Err(_) => {
             return Err(unauthorized(
-                "not a session token; environment keys work only on the gateway",
+                "not a session token; environment keys work only on the gateway \
+                 and the routes sekisho use reads",
             ));
         }
     };
@@ -102,6 +104,80 @@ pub async fn require_user(State(state): State<AppState>, mut req: Request, next:
     match caller(&state, req.headers()).await {
         Ok(caller) => {
             req.extensions_mut().insert(caller);
+            next.run(req).await
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Who calls a route machines read (D198): a signed-in person, or an
+/// environment key, which reads only its own environment.
+#[derive(Clone, Debug)]
+pub enum Principal {
+    Person(Box<Caller>),
+    Key {
+        id: EnvKeyId,
+        environment: EnvName,
+        /// The user the key belongs to.
+        owner: Uuid,
+    },
+}
+
+/// The active key a request's `sek_` token names, or why not. The key is
+/// read from the database on every request, as people are, so a key made
+/// a moment ago works and a revoked one stops at once; its owner must
+/// still be enabled and allowed to use its environment (`Invalid`
+/// otherwise). A wrong secret and an unknown key get the same answer.
+async fn key_caller(state: &AppState, token: &str) -> Result<Option<Principal>, ApiError> {
+    let Some((id, secret)) = parse_token(token) else {
+        return Ok(None);
+    };
+    let Some((key, _)) = state
+        .store()
+        .find_key(&id)
+        .await?
+        .filter(|(_, sha)| verify_secret(&secret, sha))
+    else {
+        return Err(unauthorized("unknown key"));
+    };
+    let message = match key.state(OffsetDateTime::now_utc()) {
+        KeyState::Active => None,
+        KeyState::Revoked => Some("this key was revoked"),
+        KeyState::Expired => Some("this key has expired"),
+        KeyState::Suspended => Some("this key is suspended"),
+        KeyState::Invalid => Some("this key's owner may not use its environment"),
+    };
+    if let Some(message) = message {
+        return Err(unauthorized(message));
+    }
+    Ok(Some(Principal::Key {
+        id: key.id,
+        environment: key.environment,
+        owner: key.owner,
+    }))
+}
+
+/// A signed-in person or an active environment key.
+pub async fn require_person_or_key(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let principal = match bearer(req.headers()).map(|token| key_caller(&state, token)) {
+        Some(found) => match found.await {
+            Ok(Some(key)) => Ok(key),
+            Ok(None) => caller(&state, req.headers())
+                .await
+                .map(|c| Principal::Person(Box::new(c))),
+            Err(e) => Err(e),
+        },
+        None => caller(&state, req.headers())
+            .await
+            .map(|c| Principal::Person(Box::new(c))),
+    };
+    match principal {
+        Ok(principal) => {
+            req.extensions_mut().insert(principal);
             next.run(req).await
         }
         Err(e) => e.into_response(),

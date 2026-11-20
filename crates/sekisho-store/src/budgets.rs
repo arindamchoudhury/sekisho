@@ -280,6 +280,33 @@ impl Store {
         .collect()
     }
 
+    /// The budgets that count a caller: `person`'s own (in any
+    /// environment), those of `environments` and those of `keys`, by name.
+    pub async fn budgets_counting(
+        &self,
+        person: Option<Uuid>,
+        environments: &[EnvName],
+        keys: &[EnvKeyId],
+    ) -> Result<Vec<Budget>> {
+        let environments: Vec<&str> = environments.iter().map(EnvName::as_str).collect();
+        let keys: Vec<&str> = keys.iter().map(EnvKeyId::as_str).collect();
+        sqlx::query(concat!(
+            select_budgets!(),
+            " where (b.scope = 'person' and b.person_id = $1) \
+             or (b.scope = 'environment' and e.name = any($2)) \
+             or (b.scope = 'key' and b.key_id = any($3)) \
+             order by b.name, b.created_at"
+        ))
+        .bind(person)
+        .bind(&environments)
+        .bind(&keys)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(from_row)
+        .collect()
+    }
+
     /// Adds `amount` to each budget's spend in the window containing `now`.
     ///
     /// Each budget is one atomic upsert, committed on its own, so concurrent
