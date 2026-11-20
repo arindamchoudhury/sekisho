@@ -2,6 +2,26 @@
 members = ["crates/*"]
 resolver = "3"
 
+# Debug and test builds keep file and line numbers for Sekisho's own code and
+# no debug info for dependencies, as Cargo's build-performance guide
+# recommends: with full debug info, every test binary carried all of it and
+# `target/` passed 240 GB. `test` inherits from `dev`. For a debugger, build
+# with `--profile debugging` (output in `target/debugging/`).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+# `inherits` also copies `dev`'s override for dependencies; undo it here so a
+# debugger can step into them too.
+[profile.debugging.package."*"]
+debug = true
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
