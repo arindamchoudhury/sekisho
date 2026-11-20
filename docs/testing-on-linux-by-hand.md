@@ -98,6 +98,19 @@ doesn't hide others. The run takes 5 to 10 minutes; most of it is starting
 PostgreSQL containers. The end-to-end tests are marked `#[ignore]` and run
 in [Step 5](#step-5-the-end-to-end-suite-twice).
 
+A test removes its containers when it ends. A run that is stopped (Ctrl+C,
+`kill`, a closed terminal, a WSL restart) leaves those of the tests still
+running. Each carries the label
+`sekisho.test.started`, and the next run removes those started over two
+hours ago. To remove them now:
+
+```bash
+docker rm --force --volumes $(docker ps --all --quiet --filter label=sekisho.test.started)
+```
+
+Run that only when no other test run is going: it removes their containers
+too.
+
 If a test fails, run its file alone before calling it a bug, for example
 `cargo test -p sekisho-gateway --test agent`. The gateway agent's timing
 tests wait at most 2 to 3 seconds and can fail on a loaded machine.
@@ -218,6 +231,7 @@ Linux is proven when every check passes.
 |---|---|---|
 | `start postgres:18 (is Docker running?)` in many database tests | Docker isn't running, or your user can't reach its socket | `docker run --rm hello-world` must work without `sudo`; add yourself to the `docker` group and log in again. Rootless Docker: export `DOCKER_HOST` to its socket |
 | Database tests time out on the first run | `postgres:18` is still downloading | `docker pull postgres:18`, then run again |
+| Many `postgres:18` (and `dex`) containers, running or stopped, in `docker ps --all` | A test run was stopped before its tests could remove their containers | The next test run removes those over two hours old. To remove them now, when no other test run is going: `docker rm --force --volumes $(docker ps --all --quiet --filter label=sekisho.test.started)` |
 | Catalog sync tests fail with `git 2.37 or later is needed` | The host's git is older (Ubuntu 22.04 has 2.34) | Install a newer git (on Ubuntu, the `git-core` PPA), then run again |
 | Catalog sync tests can't run `git http-backend` | git installed without its helpers | Install the distribution's full `git` package |
 | A gateway agent timing test fails once (`… not seen within 2s`) | A loaded machine; its windows are 2 to 3 seconds | Run `cargo test -p sekisho-gateway --test agent` alone; it is a bug only if it fails there too |

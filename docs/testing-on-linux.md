@@ -98,6 +98,7 @@ stop timeout and log `shutting down`.
 | `FAIL  Docker isn't reachable` | Docker isn't running, or your user can't reach its socket | `docker run --rm hello-world` must work without `sudo`; add yourself to the `docker` group and log in again. Rootless Docker: export `DOCKER_HOST` to its socket |
 | `FAIL  git … is older than 2.37` | The host's git is older (Ubuntu 22.04 has 2.34) | Install a newer git (on Ubuntu, the `git-core` PPA), then run again |
 | Database tests time out on the first run | `postgres:18` is still downloading | `docker pull postgres:18`, then run again |
+| Many `postgres:18` (and `dex`) containers, running or stopped, in `docker ps --all` | A test run was stopped before its tests could remove their containers | The next test run removes those over two hours old. To remove them now, when no other test run is going: `docker rm --force --volumes $(docker ps --all --quiet --filter label=sekisho.test.started)` |
 | Catalog sync tests can't run `git http-backend` | git installed without its helpers | Install the distribution's full `git` package |
 | A gateway agent timing test fails once (`… not seen within 2s`) | A loaded machine; its windows are 2 to 3 seconds | Run `cargo test -p sekisho-gateway --test agent` alone; it is a bug only if it fails there too |
 | `docker compose up --wait` fails on a port | Something else holds 18080, 3000, 5556 or 18000 | Stop it, or run on another machine |

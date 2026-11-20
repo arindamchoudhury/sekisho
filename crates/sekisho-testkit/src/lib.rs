@@ -10,6 +10,7 @@ pub mod eventstream;
 pub mod fake_dex;
 pub mod git_http;
 pub mod github;
+pub mod leftovers;
 pub mod people;
 pub mod registry;
 
@@ -83,7 +84,9 @@ where
 /// `SecretBox` keyed by [`TEST_ENCRYPTION_KEY`]. A container whose port
 /// doesn't answer is replaced ([`retry_unreachable`]).
 pub async fn store() -> (TestStore, SecretBox) {
+    leftovers::remove_leftovers_once().await;
     let (store, postgres) = retry_unreachable("postgres:18", CONTAINER_TRIES, || async {
+        let (label, started) = leftovers::started_label();
         // The entrypoint's temporary initdb server logs its ready line to
         // stdout; only the real server logs it to stderr.
         let postgres = GenericImage::new("postgres", "18")
@@ -91,6 +94,7 @@ pub async fn store() -> (TestStore, SecretBox) {
             .with_wait_for(WaitFor::message_on_stderr(
                 "database system is ready to accept connections",
             ))
+            .with_label(label, started)
             .with_env_var("POSTGRES_PASSWORD", "sekisho")
             .with_cmd(["postgres", "-c", "fsync=off"])
             .with_startup_timeout(Duration::from_secs(120))

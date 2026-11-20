@@ -11,7 +11,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sekisho_auth::dex::{DexClient, DexConfig, DexPassword};
-use sekisho_testkit::{CONTAINER_TRIES, REACHABLE_WITHIN, retry_unreachable};
+use sekisho_testkit::{CONTAINER_TRIES, REACHABLE_WITHIN, leftovers, retry_unreachable};
 use sha2::{Digest, Sha256};
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -86,12 +86,15 @@ pub async fn dex_with(connectors_crud: bool) -> TestDex {
 async fn start_dex(connectors_crud: bool) -> Result<TestDex, String> {
     let name = format!("sekisho-dex-{}", sekisho_core::keys::generate_key().id);
     let db_host = format!("{name}-db");
+    leftovers::remove_leftovers_once().await;
+    let (label, started) = leftovers::started_label();
     // The entrypoint's temporary initdb server logs its ready line to stdout;
     // only the real server logs it to stderr.
     let postgres = GenericImage::new("postgres", "18")
         .with_wait_for(WaitFor::message_on_stderr(
             "database system is ready to accept connections",
         ))
+        .with_label(label, started.clone())
         .with_network(&name)
         .with_container_name(&db_host)
         .with_env_var("POSTGRES_PASSWORD", "sekisho")
@@ -106,6 +109,7 @@ async fn start_dex(connectors_crud: bool) -> Result<TestDex, String> {
         .with_exposed_port(5557.tcp())
         // Logged once both the HTTP and the gRPC server are set up.
         .with_wait_for(WaitFor::message_on_stderr("server=grpc"))
+        .with_label(label, started)
         .with_network(&name)
         .with_cmd(["dex", "serve", "/etc/dex/sekisho.yaml"])
         .with_copy_to("/etc/dex/sekisho.yaml", config.into_bytes())
