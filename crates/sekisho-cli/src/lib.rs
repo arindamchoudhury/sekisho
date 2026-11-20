@@ -4,6 +4,7 @@
 pub mod commands;
 pub mod config;
 pub mod credentials;
+pub mod install;
 pub mod login;
 pub mod output;
 pub mod server;

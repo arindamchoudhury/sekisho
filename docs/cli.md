@@ -1,8 +1,9 @@
 # The `sekisho` CLI
 
 Developers sign in to Sekisho with the same `sekisho` binary the server
-runs. Today it signs in, keeps the session fresh and signs out; installing
-an environment into coding tools comes next.
+runs. Today it signs in, keeps the session fresh and signs out, lists the
+environments you may use, and manages your environment keys; installing an
+environment into coding tools comes next.
 
 ## Installing it
 
@@ -99,6 +100,58 @@ ends the session at Sekisho and forgets its tokens. They are forgotten even
 when Sekisho can't be reached; then `logout` warns that Sekisho didn't
 confirm the end, and the session lasts until its refresh token would have
 expired.
+
+## Your environments
+
+```bash
+sekisho env list
+```
+
+lists the environments you may use, with their models and descriptions:
+
+```text
+  NAME  MODELS                    MODELS FOR          DESCRIPTION
+  ops
+* pay   claude-sonnet-4-5, gpt-5  claude-code, codex  Payments team
+```
+
+A `*` marks an environment installed in the current folder (from its
+`.sekisho/lock.json`, which `sekisho use` will write), and `MODELS FOR`
+names the coding tools in this folder that take their models from it. A
+lock file that isn't Sekisho's stops the command with an error naming it.
+
+`--json` prints a list of `{name, description, notice, models, installed,
+model_tools}`.
+
+## Environment keys
+
+A key lets a machine that can't sign in, such as a CI job, use one
+environment ([Environment keys](environments-and-keys.md#environment-keys)).
+
+```bash
+sekisho keys create data-team --name ci --expires 90d
+```
+
+prints the key's token on stdout, alone, and warns on stderr that this is
+the only time it is shown: Sekisho keeps only a hash of it, and the CLI
+keeps it nowhere. `--expires` takes a number of days (`30d`, up to 36,500),
+a date (`2027-03-01`, midnight UTC) or an RFC 3339 time, in the future;
+without it the key doesn't expire. A name is unique in its environment,
+among everyone's keys, revoked ones included.
+
+| Command | What it does |
+|---|---|
+| `sekisho keys list [--env <env>] [--json]` | Your keys: ID, name, environment, state and expiry, never a token. `--json` prints `{id, environment, name, state, suspended_by_admin, expires_at, created_at}` for each |
+| `sekisho keys suspend <key> [--env <env>]` | Pause a key until you resume it |
+| `sekisho keys resume <key> [--env <env>]` | Let it work again (not one an admin suspended) |
+| `sekisho keys revoke <key> [--env <env>]` | End it for good |
+
+`<key>` is the key's ID, or the name of one of your keys that isn't
+revoked. When keys in several environments share the name, the command
+stops (exit 2) until `--env` picks one.
+
+`env list` and `keys` act as you, so they need `sekisho login`: with
+`SEKISHO_KEY` set they stop with exit 4.
 
 ## Settings
 

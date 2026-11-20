@@ -78,7 +78,7 @@ cargo build --release --locked -p sekisho-server -p sekisho-testkit --bins
 ```
 
 Expected: `--help` lists the commands `serve`, `migrate`, `admin-link`,
-`gateway-agent`, `login`, `logout` and `token`.
+`gateway-agent`, `login`, `logout`, `token`, `env` and `keys`.
 
 ## Step 2: the workspace tests
 

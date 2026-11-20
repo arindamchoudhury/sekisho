@@ -9,6 +9,7 @@ use anyhow::Context;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
 use sekisho_auth::dex::{DexClient, DexConfig};
+use sekisho_cli::commands::{self, KeyAction, run_here};
 use sekisho_core::keys::hash_secret;
 use sekisho_gateway::agent::{AgentConfig, Url, run_agent};
 use sekisho_hooks::authz::{self, HooksState};
@@ -81,6 +82,66 @@ enum Command {
     Logout,
     /// Print a fresh token on stdout, for coding tools' credential helpers.
     Token,
+    /// The environments you may use.
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+    /// Your environment keys, for CI and machines that can't sign in.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvCommand {
+    /// List them; `*` marks those installed in this folder.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// List your keys (never their tokens).
+    List {
+        /// Only this environment's.
+        #[arg(long)]
+        env: Option<String>,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make a key and print its token, this once.
+    Create {
+        /// The environment it is for.
+        env: String,
+        /// Its name, unique among your keys in the environment.
+        #[arg(long)]
+        name: String,
+        /// When it stops working: days (30d), a date (2027-03-01) or an RFC
+        /// 3339 time.
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// Pause a key until you resume it.
+    Suspend(KeyTarget),
+    /// Let a suspended key work again.
+    Resume(KeyTarget),
+    /// End a key for good.
+    Revoke(KeyTarget),
+}
+
+#[derive(clap::Args)]
+struct KeyTarget {
+    /// The key's name or ID.
+    key: String,
+    /// The environment, when keys in several share the name.
+    #[arg(long)]
+    env: Option<String>,
 }
 
 #[tokio::main]
@@ -96,9 +157,33 @@ async fn main() -> ExitCode {
         } => sekisho_cli::commands::login(server, device, no_browser).await,
         Command::Logout => sekisho_cli::commands::logout().await,
         Command::Token => sekisho_cli::commands::token().await,
+        Command::Env {
+            command: EnvCommand::List { json },
+        } => run_here(async |ctx| commands::env_list(ctx, json).await).await,
+        Command::Keys { command } => keys(command).await,
         service => return run_service(service).await,
     };
     sekisho_cli::output::finish(result)
+}
+
+async fn keys(command: KeysCommand) -> Result<(), sekisho_cli::output::CliError> {
+    let act = |action: KeyAction, target: KeyTarget| {
+        run_here(async move |ctx| {
+            commands::keys_act(ctx, action, &target.key, target.env.as_deref()).await
+        })
+    };
+    match command {
+        KeysCommand::List { env, json } => {
+            run_here(async |ctx| commands::keys_list(ctx, env.as_deref(), json).await).await
+        }
+        KeysCommand::Create { env, name, expires } => {
+            run_here(async |ctx| commands::keys_create(ctx, &env, &name, expires.as_deref()).await)
+                .await
+        }
+        KeysCommand::Suspend(target) => act(KeyAction::Suspend, target).await,
+        KeysCommand::Resume(target) => act(KeyAction::Resume, target).await,
+        KeysCommand::Revoke(target) => act(KeyAction::Revoke, target).await,
+    }
 }
 
 async fn run_service(command: Command) -> ExitCode {
@@ -116,7 +201,11 @@ async fn run_service(command: Command) -> ExitCode {
             server,
             config_path,
         } => gateway_agent(server, config_path).await,
-        Command::Login { .. } | Command::Logout | Command::Token => unreachable!("run above"),
+        Command::Login { .. }
+        | Command::Logout
+        | Command::Token
+        | Command::Env { .. }
+        | Command::Keys { .. } => unreachable!("run above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

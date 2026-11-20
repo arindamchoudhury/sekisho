@@ -99,3 +99,56 @@ pub fn warn(text: &str) {
 pub fn note(text: &str) {
     eprintln!("{text}");
 }
+
+/// Rows in aligned columns under a header, two spaces apart, with no
+/// trailing spaces; each line ends with a newline.
+pub fn table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let line = |cells: &mut dyn Iterator<Item = &str>| {
+        let mut text = String::new();
+        for (i, (cell, w)) in cells.zip(&widths).enumerate() {
+            if i > 0 {
+                text.push_str("  ");
+            }
+            text.push_str(cell);
+            text.extend(std::iter::repeat_n(' ', w - cell.chars().count()));
+        }
+        let mut text = text.trim_end().to_owned();
+        text.push('\n');
+        text
+    };
+    let mut out = line(&mut header.iter().copied());
+    for row in rows {
+        out.push_str(&line(&mut row.iter().map(String::as_str)));
+    }
+    out
+}
+
+/// A value as `--json` prints it: pretty, with a final newline.
+pub fn json<T: serde::Serialize>(value: &T) -> String {
+    let mut text = serde_json::to_string_pretty(value).expect("answers serialize");
+    text.push('\n');
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tables_line_up_without_trailing_spaces() {
+        let out = table(
+            &["A", "LONGER", "C"],
+            &[
+                vec!["xyz".into(), "1".into(), String::new()],
+                vec!["q".into(), "22".into(), "end".into()],
+            ],
+        );
+        assert_eq!(out, "A    LONGER  C\nxyz  1\nq    22      end\n");
+    }
+}

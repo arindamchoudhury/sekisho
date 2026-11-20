@@ -320,13 +320,22 @@ environment's gateway routes and on the routes machines read for it: its
 environment: someone who leaves the environment's groups, is disabled or
 is offboarded can't use their keys any more.
 
-People make their own keys:
+People make their own keys, with the CLI:
+
+```bash
+sekisho keys create data-team --name ci --expires 2027-03-01
+```
+
+or with the API:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   https://sekisho.example.com/api/v1/me/keys \
   -d '{"environment": "data-team", "name": "ci", "expires_at": "2027-03-01T00:00:00Z"}'
 ```
+
+`sekisho keys` also lists, suspends, resumes and revokes them
+([The CLI](cli.md#environment-keys)).
 
 - `name` is up to 100 characters, without control characters, and unique
   in the environment.

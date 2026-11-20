@@ -282,13 +282,31 @@ fn api_error(status: u16, body: &[u8]) -> CallError {
     let Some(error) = value["error"].as_str() else {
         return CallError::Status(status);
     };
-    let message = value["message"]
+    let mut message = value["message"]
         .as_str()
         .or_else(|| value["error_description"].as_str())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
+    // A validation answer's fields say what is wrong; Sekisho's field
+    // messages never quote the values sent.
+    let fields: Vec<String> = value["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            Some(format!(
+                "{}: {}",
+                f["field"].as_str()?,
+                f["message"].as_str()?
+            ))
+        })
+        .collect();
+    if !fields.is_empty() {
+        message = format!("{message} ({})", fields.join("; "));
+    }
     CallError::Api(ApiError {
         status,
         error: error.to_owned(),
-        message: message.to_owned(),
+        message,
     })
 }
