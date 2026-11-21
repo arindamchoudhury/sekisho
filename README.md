@@ -136,7 +136,9 @@ and what they carried.
   - several environments in one folder, which add up: each tool takes its
     models from one of them and gets every environment's MCP servers, skills,
     plugins and prompts; two environments that deliver different content
-    under the same name are refused, and nothing is renamed;
+    under the same name are refused, and nothing is renamed; skills and
+    local MCP servers have names unique across the whole install, so they
+    never clash;
   - a lock file, with checks for hidden Unicode characters and for paths that
     escape the target folder;
   - a diff of what changed;
