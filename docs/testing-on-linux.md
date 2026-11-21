@@ -84,6 +84,7 @@ take another path, and `make unix` refuses to run there.
 | A symlink and a submodule committed to Git are refused after checkout | `sekisho-server` `catalog_sync::symlinks_and_submodules_in_git_are_refused` |
 | A skill's executable bit is kept (Unix only) | `sekisho-catalog` `content_sources::a_skills_executable_bit_is_kept` |
 | The gateway agent writes its config file with mode `0600` (Unix only) | `sekisho-gateway` `agent::write_atomic_makes_the_file_private` |
+| Installing an environment never writes through a symlink, and a failed install puts back a script's executable bit (Unix only) | `sekisho-cli` `install::symlinks_are_never_written_through`, `install::a_rollback_keeps_the_executable_bit` |
 | Git runs hardened, with `GIT_CONFIG_GLOBAL=/dev/null` (Windows uses `NUL`), pinned to the checked address | `sekisho-server` `catalog_sync::git_pins_the_checked_address`, `catalog_sync::the_token_never_appears_in_errors_or_argv` |
 | Only git 2.37 or later is used | `sekisho-server` `catalog::git` `only_git_that_honours_the_pin_is_used`, `every_git_call_is_hardened` |
 

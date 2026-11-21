@@ -115,6 +115,8 @@ unix:
 	  a_skills_executable_bit_is_kept
 	tests unix-config-0600 1 cargo test --locked -p sekisho-gateway --test agent \
 	  write_atomic_makes_the_file_private
+	tests unix-install 2 cargo test --locked -p sekisho-cli --test install -- \
+	  symlinks_are_never_written_through a_rollback_keeps_the_executable_bit
 	tests unix-git-hardened 2 cargo test --locked -p sekisho-server --test catalog_sync -- \
 	  git_pins_the_checked_address the_token_never_appears_in_errors_or_argv
 	tests unix-git-version 2 cargo test --locked -p sekisho-server --lib -- \

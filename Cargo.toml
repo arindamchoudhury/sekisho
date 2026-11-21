@@ -56,6 +56,9 @@ hyper = { version = "1.12.0", default-features = false }
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "ring", "tls12"] }
 hyper-util = { version = "0.1.21", default-features = false }
 jsonschema = { version = "0.60.1", default-features = false }
+# Edits a coding tool's JSON-with-comments config in place, keeping the
+# user's comments (plan 4, Task 4).
+jsonc-parser = { version = "0.34.0", default-features = false, features = ["cst", "serde_json"] }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 # The CLI's credential store (plan 4, D195, D213): the platform's keyring
 # through keyring's v1 stores, keyring-core for entries with modifiers, and
@@ -79,6 +82,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_yaml_ng = "0.10.0"
 sha2 = "0.11.1"
+# The per-file diff behind `sekisho use --dry-run` (plan 4).
+similar = "3.2.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "time", "uuid", "migrate", "macros"] }
 tempfile = "3.27.0"
 testcontainers = "0.28.0"
@@ -88,6 +93,8 @@ tiktoken = { version = "4.1.2", default-features = false, features = ["vocab-o20
 time = "0.3.55"
 tokio = "1.54.1"
 tokio-stream = "0.1.19"
+# Edits Codex's TOML keeping the user's comments (plan 4).
+toml_edit = "0.23.9"
 tonic = "0.14.6"
 tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"

@@ -21,18 +21,22 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+jsonc-parser = { workspace = true }
 keyring = { workspace = true }
 keyring-core = { workspace = true }
 open = { workspace = true }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
+sekisho-catalog = { workspace = true }
 sekisho-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+similar = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde", "formatting", "parsing"] }
+toml_edit = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 url = { workspace = true }
 

@@ -126,6 +126,7 @@ than skip. On Windows some are skipped, compiled out or take another path.
 | A symlink and a submodule committed to Git are refused after checkout | `cargo test -p sekisho-server --test catalog_sync symlinks_and_submodules_in_git_are_refused` | `1 passed` |
 | A skill's executable bit is kept (Unix only) | `cargo test -p sekisho-catalog --test content_sources a_skills_executable_bit_is_kept` | `1 passed` |
 | The gateway agent writes its config file with mode `0600` (Unix only) | `cargo test -p sekisho-gateway --test agent write_atomic_makes_the_file_private` | `1 passed` |
+| Installing an environment never writes through a symlink, and a failed install puts back a script's executable bit (Unix only) | `cargo test -p sekisho-cli --test install -- symlinks_are_never_written_through a_rollback_keeps_the_executable_bit` | `2 passed` |
 | Git runs hardened, with `GIT_CONFIG_GLOBAL=/dev/null` (Windows uses `NUL`), pinned to the checked address | `cargo test -p sekisho-server --test catalog_sync -- git_pins_the_checked_address the_token_never_appears_in_errors_or_argv` | `2 passed` |
 | Only git 2.37 or later is used | `cargo test -p sekisho-server --lib -- only_git_that_honours_the_pin_is_used every_git_call_is_hardened` | `2 passed` |
 
