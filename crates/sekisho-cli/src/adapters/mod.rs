@@ -348,6 +348,8 @@ pub struct RenderContext<'a> {
     pub blobs: &'a BTreeMap<String, Vec<u8>>,
     /// Each delivered plugin's installed name (D204).
     pub plugin_names: &'a HashMap<EntryAddress, String>,
+    /// The environment's local MCP servers, as each is started (Task 5).
+    pub local_servers: &'a [crate::install::launch::LocalServer],
     /// This environment is the tool's model environment: only then does
     /// the adapter render model settings and a [`RunSpec`] (D216).
     pub models: bool,

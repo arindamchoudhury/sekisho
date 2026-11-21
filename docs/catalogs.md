@@ -334,6 +334,41 @@ a tag; each sync resolves it to a digest at its registry
 without a tag is `latest`. A registry that wants a password gets the one
 [set for its host](#registry-credentials).
 
+### How a local server starts on a machine
+
+An exact version pins the package, but not the packages it depends on. So
+a machine also holds each runner to the time the entry's version was
+applied, where the runner has an absolute cutoff:
+
+| Runner | How the applied time is passed |
+|---|---|
+| `npx` | `npx --yes --before=<time> <package> …` |
+| `npm exec` | `npm exec --before=<time> …` |
+| `uvx` | `uvx --exclude-newer <time> <package> …` (or `--from <package> <command>`) |
+| `uv tool run` | `uv tool run --exclude-newer <time> …` |
+| `pipx run` | `UV_EXCLUDE_NEWER` and `PIP_UPLOADED_PRIOR_TO` in its environment, which reach both its uv and its pip backend |
+| container | `docker run --rm -i <image>@<digest> …`, never a tag; Docker Hub images as `docker.io/…`, so a registry mirror applies |
+
+`<time>` is RFC 3339 in UTC, such as `2026-11-01T10:00:00Z`. `bunx`,
+`pnpm dlx` and `yarn dlx` take only relative ages, so they get no cutoff:
+the package is still exact, and one warning lists them.
+
+The [package registries](#package-registries) go into each server's
+environment: `NPM_CONFIG_REGISTRY` for npm runners, `UV_DEFAULT_INDEX`
+and `PIP_INDEX_URL` for Python ones.
+
+A configuration field becomes an environment variable of the server: a
+fixed value as written, and anything else (always a sensitive one) as a
+reference to the same variable in the person's own environment, such as
+`${GITHUB_TOKEN}`. A sensitive value is never written to a file. A
+container gets each one as `-e <name>`. Header fields are for remote
+servers only.
+
+Not started on machines: a container that serves on a port (a coding
+tool can only start a server it talks to on stdin and stdout), and an
+image without a digest; each is listed with a warning. Remote servers are
+reached through the environment's endpoint instead.
+
 ### A2A agents and their cards
 
 Each sync fetches an agent's card from its `card_url`, or else

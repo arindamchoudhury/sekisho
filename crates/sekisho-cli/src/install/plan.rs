@@ -796,6 +796,8 @@ pub(super) fn install(
             .any(|q| q.kind == e.kind && q.source == e.source && q.name == e.name)
     });
     let names = plugin_names(&delivery);
+    let (servers, server_warnings) = super::launch::local_servers(&delivery);
+    warnings.extend(server_warnings);
     let sekisho = options.sekisho.as_deref().unwrap_or("sekisho");
     let env = d.environment.to_string();
 
@@ -847,6 +849,7 @@ pub(super) fn install(
                 scope,
                 blobs: &blobs,
                 plugin_names: &names,
+                local_servers: &servers,
                 models,
                 sekisho,
             };

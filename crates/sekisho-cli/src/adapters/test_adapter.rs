@@ -14,6 +14,7 @@ use super::{
     RenderContext, Rendered, Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem,
 };
 use crate::install::Scope;
+use crate::install::launch::EnvValue;
 
 #[doc(hidden)]
 #[derive(Clone, Debug)]
@@ -104,10 +105,25 @@ impl Adapter for TestAdapter {
                 EntrySpec::McpServer(s) => {
                     let value = match &s.runtime {
                         McpRuntime::Remote { url } => json!({"url": url}),
-                        McpRuntime::Npx { package, args } => {
-                            json!({"command": "npx", "args": [package.to_string()], "extra": args})
-                        }
-                        other => json!({"runtime": format!("{other:?}")}),
+                        _ => match ctx.local_servers.iter().find(|l| l.entry.name == e.name) {
+                            Some(l) => {
+                                let env: serde_json::Map<String, serde_json::Value> = l
+                                    .env
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        let v = match v {
+                                            EnvValue::Literal(x) => x.clone(),
+                                            EnvValue::FromUser { name, .. } => {
+                                                format!("${{{name}}}")
+                                            }
+                                        };
+                                        (k.clone(), json!(v))
+                                    })
+                                    .collect();
+                                json!({"command": l.command, "args": l.args, "env": env})
+                            }
+                            None => continue,
+                        },
                     };
                     out.keys.push(KeyWrite {
                         root,
