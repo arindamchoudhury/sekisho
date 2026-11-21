@@ -116,12 +116,158 @@ lists the environments you may use, with their models and descriptions:
 ```
 
 A `*` marks an environment installed in the current folder (from its
-`.sekisho/lock.json`, which `sekisho use` will write), and `MODELS FOR`
+`.sekisho/lock.json`, which [`sekisho use`](#installing-an-environment) writes), and `MODELS FOR`
 names the coding tools in this folder that take their models from it. A
 lock file that isn't Sekisho's stops the command with an error naming it.
 
 `--json` prints a list of `{name, description, notice, models, installed,
 model_tools}`.
+
+## Installing an environment
+
+```bash
+sekisho use pay
+```
+
+writes the environment `pay` into the coding tools of the current folder:
+its models, local MCP servers, skills, plugins and prompts. Today
+`sekisho use` installs for Claude Code; the other tools follow.
+
+| Option | What it does |
+|---|---|
+| `--target <tool>,…` | The tools to install for (`claude-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`), or its program on `PATH`. None found is an error listing the targets |
+| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`) |
+| `--dir <path>` | The project folder, instead of the current one |
+| `--models` | Make this environment the one these tools take their models from |
+| `--dry-run` | Show what would change, with each update's diff, and write nothing |
+| `--yes` | Overwrite your own files and settings that are in the way, without asking |
+| `--force` | Replace or remove files and settings you edited since Sekisho wrote them |
+
+It works signed in, or with an [environment key](#environment-keys) in
+`SEKISHO_KEY`: a CI job can install the environment its key is for.
+
+Every file is checked before anything is written: its SHA-256 against
+what the server sent, its size, hidden Unicode characters (a dangerous
+one stops the install; others are listed as warnings), and its path,
+which can't leave its folder or pass through a symbolic link. Each file is
+written whole and at once; if a later write fails, everything already
+written is put back, and the lock file is unchanged.
+
+`use` prints what it changed, one line each:
+
+```text
++ claude-code: .claude/skills/pdf/SKILL.md
+~ claude-code: .claude/settings.local.json model
+- claude-code: .claude/commands/old-review.md
+! claude-code: .claude/skills/deploy/SKILL.md
+Claude Code takes its models from "pay".
+```
+
+`+` added, `~` updated, `-` removed (the environment no longer delivers
+it, or it is quarantined), `!` kept: you edited it since Sekisho wrote
+it, so it is left as you made it (`--force` replaces it). A setting in a
+shared file is named by its key, such as
+`.mcp.json mcpServers.fetch`. Running `use` again brings the folder up
+to the environment's current version.
+
+### Your own files
+
+Sekisho never overwrites a file, or a setting in a shared config file,
+that it didn't write and that holds something else: `use` lists them and
+asks on the terminal, and without a terminal it stops with exit 3 (run
+again with `--yes` to overwrite them). The same content already in place
+is taken over quietly. Settings files are changed key by key, so your
+other keys, comments and order are kept, and `uninstall` takes out only
+Sekisho's keys.
+
+### The lock file
+
+`.sekisho/lock.json` in the project (or `global/lock.json` in Sekisho's
+config folder for `--global`) records each installed environment, which
+tool takes its models from which, and every file and setting Sekisho
+wrote, with a SHA-256 of what it wrote. It holds no token or key. In a
+Git repository, `.sekisho/` and the files Sekisho wrote are listed in a
+marked block of `.git/info/exclude`, never `.gitignore`; `uninstall`
+removes the block. A file already tracked by Git, such as a committed
+`.mcp.json`, still shows Sekisho's change as a change.
+
+### Several environments in one folder
+
+Environments add up: `sekisho use ops` where `pay` is installed adds
+`ops`'s skills, servers, plugins and prompts and keeps `pay`'s. Each tool
+takes its models from one of them: the first installed, until
+`sekisho use <env> --models` moves them. The same catalog entry in two
+environments is written once and stays until neither delivers it; a newer
+version of it, from either, is written for both. A name two environments
+deliver with different content, such as two prompts called `deploy` from
+different sources, stops the `use` before anything is written (exit 3,
+naming the other environment): ask an admin to rename one, or uninstall
+the other. Skills and local MCP servers can't clash this way, since their
+names are [unique across the install](catalogs.md#names).
+
+### Beside a global install
+
+A project install and a `--global` one both stay, and each tool combines
+them its own way. `use` says what a session in the folder also gets from
+a global environment that the folder doesn't hold, and, for a name both
+define, whose copy runs. Claude Code uses the folder's model settings,
+loads MCP servers, skills, prompts and plugins from both, and on a shared
+name runs the folder's MCP server but the global skill or prompt (a
+personal skill beats a project one):
+
+```text
+Claude Code also loads the global environment "tools": skill "deploy" (the session uses "tools"'s), MCP server "db".
+```
+
+### What Claude Code gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings | `.claude/settings.local.json` | `settings.json` in `~/.claude` or `$CLAUDE_CONFIG_DIR` |
+| Local MCP servers | `.mcp.json`, approved in `enabledMcpjsonServers` | `mcpServers` in `.claude.json` (`~/.claude.json`, or in `$CLAUDE_CONFIG_DIR`) |
+| Skills | `.claude/skills/<name>/` | `skills/<name>/` |
+| Prompts | `.claude/commands/<name>.md` | `commands/<name>.md` |
+| Plugins | a marketplace `sekisho-<env>` in `.sekisho/claude-plugins/<env>/` | the same in Sekisho's config folder |
+
+The model settings, written only by the folder's model environment and
+only when the environment has a model the Anthropic API reaches (else a
+warning says so):
+
+| Setting | Value |
+|---|---|
+| `apiKeyHelper` | `sekisho token`, so Claude Code asks for a fresh token itself; `sekisho`'s full path when it isn't on `PATH` |
+| `model` | the environment's `anthropic` [default model](environments-and-keys.md#default-models) |
+| `env.ANTHROPIC_BASE_URL` | `<gateway>/env/<name>/anthropic` |
+| `env.ANTHROPIC_DEFAULT_OPUS_MODEL`, `env.ANTHROPIC_DEFAULT_SONNET_MODEL`, `env.CLAUDE_CODE_SUBAGENT_MODEL` | the default model |
+| `env.ANTHROPIC_DEFAULT_HAIKU_MODEL` | the small model, else the default |
+| `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | `3000000`: a token is asked for again after 50 minutes |
+
+A local MCP server's settings from your own environment are written as
+references, `${GITHUB_TOKEN}` (or `${LOG_LEVEL:-}` for one it can do
+without), never as values. Plugins are turned on in `enabledPlugins` as
+`<plugin>@sekisho-<env>`, from the marketplace registered in
+`extraKnownMarketplaces`; Claude Code reads that registration from a
+project's settings only once you trust the folder.
+
+`.claude/settings.local.json` is yours alone and applied over the
+committed `.claude/settings.json`, so in your sessions Sekisho's settings
+win. A teammate who hasn't run `sekisho use` gets the committed file's
+`model`, `env` and `apiKeyHelper`, if it sets them.
+
+### Removing an environment
+
+```bash
+sekisho uninstall pay
+```
+
+removes `pay` from the folder (or, with `--global`, your own config):
+every file and setting it wrote that no other installed environment still
+delivers, keeping the ones you edited (`!`, unless `--force`). With no
+environment named, it removes every one. `--target`, `--dir`,
+`--dry-run`, `--yes` and `--force` work as for `use`. When the
+environment the tools took their models from goes, the earliest
+installed one left takes them over; with none left, the model settings
+go too. An environment that isn't installed is an error.
 
 ## Environment keys
 
@@ -175,5 +321,5 @@ Results go to stdout; progress and warnings to stderr. An error prints
 | 0 | Done |
 | 1 | An error |
 | 2 | The command line was wrong |
-| 3 | Refused: a check failed, or an answer is needed and there is no terminal |
+| 3 | Refused: a check failed, a name clashes with another environment's, or an answer is needed and there is no terminal |
 | 4 | Not signed in |

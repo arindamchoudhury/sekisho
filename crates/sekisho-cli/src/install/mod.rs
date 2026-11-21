@@ -83,6 +83,8 @@ pub struct Layered {
     pub other_env: EnvName,
     pub kind: ContentKind,
     pub name: String,
+    /// This scope delivers the same name too.
+    pub here: bool,
     /// Which scope's the tool uses.
     pub used: ScopeKind,
 }

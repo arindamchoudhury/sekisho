@@ -92,6 +92,79 @@ enum Command {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Install an environment into this folder's coding tools (or, with
+    /// --global, your own), beside any already there.
+    Use {
+        /// The environment.
+        env: String,
+        #[command(flatten)]
+        place: Place,
+        /// Make it the one these tools take their models from.
+        #[arg(long)]
+        models: bool,
+    },
+    /// Remove environments from this folder (or, with --global, your own);
+    /// every one when none is named.
+    Uninstall {
+        /// The environments.
+        envs: Vec<String>,
+        #[command(flatten)]
+        place: Place,
+    },
+}
+
+/// Where `use` and `uninstall` act, and how.
+#[derive(clap::Args)]
+struct Place {
+    /// The tools, such as claude-code (default: those found here).
+    #[arg(long = "target", value_delimiter = ',', value_parser = parse_tool)]
+    targets: Vec<sekisho_cli::adapters::Tool>,
+    /// Your own config, for every folder, instead of this folder's.
+    #[arg(long)]
+    global: bool,
+    /// The project folder (default: the current one).
+    #[arg(long, conflicts_with = "global")]
+    dir: Option<PathBuf>,
+    /// Show the changes, and each update's diff, without writing.
+    #[arg(long)]
+    dry_run: bool,
+    /// Overwrite your own files and settings in the way without asking.
+    #[arg(long)]
+    yes: bool,
+    /// Replace or remove files and settings edited since Sekisho wrote them.
+    #[arg(long)]
+    force: bool,
+}
+
+fn parse_tool(s: &str) -> Result<sekisho_cli::adapters::Tool, String> {
+    sekisho_cli::adapters::Tool::parse(s).ok_or_else(|| {
+        let all: Vec<&str> = sekisho_cli::adapters::Tool::ALL
+            .iter()
+            .map(|t| t.as_str())
+            .collect();
+        format!("{s} isn't a coding tool Sekisho knows: {}", all.join(", "))
+    })
+}
+
+/// Asks on the terminal whether to overwrite the person's own files; never
+/// without one, which `use` reports as refused (exit 3).
+fn ask_terminal(items: &[String]) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return false;
+    }
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "These are yours, and would be overwritten:");
+    for item in items {
+        let _ = writeln!(err, "  {item}");
+    }
+    let _ = write!(err, "Overwrite them? [y/N] ");
+    let _ = err.flush();
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim(), "y" | "Y" | "yes" | "Yes")
 }
 
 #[derive(Subcommand)]
@@ -161,6 +234,31 @@ async fn main() -> ExitCode {
             command: EnvCommand::List { json },
         } => run_here(async |ctx| commands::env_list(ctx, json).await).await,
         Command::Keys { command } => keys(command).await,
+        Command::Use { env, place, models } => {
+            let args = commands::UseArgs {
+                env,
+                targets: place.targets,
+                models,
+                global: place.global,
+                dir: place.dir,
+                dry_run: place.dry_run,
+                yes: place.yes,
+                force: place.force,
+            };
+            run_here(async |ctx| commands::use_(ctx, &args, &ask_terminal).await).await
+        }
+        Command::Uninstall { envs, place } => {
+            let args = commands::UninstallArgs {
+                envs,
+                targets: place.targets,
+                global: place.global,
+                dir: place.dir,
+                dry_run: place.dry_run,
+                yes: place.yes,
+                force: place.force,
+            };
+            run_here(async |ctx| commands::uninstall(ctx, &args).await).await
+        }
         service => return run_service(service).await,
     };
     sekisho_cli::output::finish(result)
@@ -205,7 +303,9 @@ async fn run_service(command: Command) -> ExitCode {
         | Command::Logout
         | Command::Token
         | Command::Env { .. }
-        | Command::Keys { .. } => unreachable!("run above"),
+        | Command::Keys { .. }
+        | Command::Use { .. }
+        | Command::Uninstall { .. } => unreachable!("run above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -36,6 +36,8 @@ impl Signed {
             dirs: Dirs::at(self.config.path().to_owned()),
             store: &self.store,
             folder: self.folder.path().to_owned(),
+            home: self.folder.path().join("home"),
+            sekisho: "sekisho".into(),
             now: OffsetDateTime::now_utc(),
         }
     }

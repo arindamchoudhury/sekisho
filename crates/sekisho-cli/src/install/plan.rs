@@ -123,7 +123,7 @@ impl<'a> Planner<'a> {
     }
 
     fn what_key(&self, root: Root, file: &RelPath, key: &[String]) -> String {
-        format!("{} {}", self.what_file(root, file), key.join("."))
+        format!("{} {}", self.what_file(root, file), merge::show_key(key))
     }
 
     fn item(&mut self, tool: Tool, sign: Sign, what: String, diff: Option<String>) {
@@ -728,7 +728,8 @@ fn layered(
                 continue;
             };
             for (kind, name) in names(&theirs, tool, Some(env)) {
-                let used = if here.contains(&(kind, name.clone())) {
+                let both = here.contains(&(kind, name.clone()));
+                let used = if both {
                     layering
                         .get(kind)
                         .same_name_wins
@@ -741,6 +742,7 @@ fn layered(
                     other_env: other_env.clone(),
                     kind,
                     name,
+                    here: both,
                     used,
                 });
             }

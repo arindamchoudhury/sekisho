@@ -126,6 +126,14 @@ falls back, and `small`: the `small_model` when one is named, else `null`
 (tools then use their default model). A model named as a default can't be
 deleted, since it is one of the environment's models.
 
+[`sekisho use`](cli.md#installing-an-environment) writes these into each
+coding tool, so it starts on a model the environment serves. Claude Code
+starts on the `anthropic` default, which also stands behind its `opus` and
+`sonnet` aliases and its subagents, and uses the small model for `haiku`
+and background work (the default when there is none, or when the Anthropic
+API can't reach it). An environment with no `anthropic` default writes no
+model settings for Claude Code.
+
 ### Labels
 
 Labels are free-form, such as `"cost-centre": "4711"`. At most 32; a key

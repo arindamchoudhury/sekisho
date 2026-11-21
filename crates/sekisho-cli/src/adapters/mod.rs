@@ -12,9 +12,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::install::Scope;
 
+mod claude_code;
 mod test_adapter;
 
+pub use claude_code::ClaudeCode;
 pub use test_adapter::TestAdapter;
+
+/// Every tool `use` can install for, as each adapter task adds its own.
+pub fn all() -> Vec<&'static dyn Adapter> {
+    vec![&ClaudeCode]
+}
 
 /// The eight coding tools of release 1 (D19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -58,6 +65,42 @@ impl Tool {
     pub fn parse(s: &str) -> Option<Tool> {
         Tool::ALL.into_iter().find(|t| t.as_str() == s)
     }
+
+    /// The tool's name, as people write it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Tool::ClaudeCode => "Claude Code",
+            Tool::Codex => "Codex",
+            Tool::GeminiCli => "Gemini CLI",
+            Tool::OpenCode => "OpenCode",
+            Tool::CopilotCli => "GitHub Copilot CLI",
+            Tool::Pi => "Pi",
+            Tool::QwenCode => "Qwen Code",
+            Tool::KiloCli => "Kilo CLI",
+        }
+    }
+}
+
+/// `program` is on `PATH` (with Windows' `PATHEXT` extensions).
+pub fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
+            .split(';')
+            .map(str::to_owned)
+            .chain(std::iter::once(String::new()))
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    std::env::split_paths(&path).any(|dir| {
+        extensions
+            .iter()
+            .any(|ext| dir.join(format!("{program}{ext}")).is_file())
+    })
 }
 
 impl fmt::Display for Tool {
@@ -142,14 +185,15 @@ impl Layering {
     }
 }
 
-/// Where a path is relative to: the project folder, a tool's own home, or
-/// Sekisho's folder in the scope (`.sekisho/` in a project, the config
-/// folder globally).
+/// Where a path is relative to: the project folder, a tool's own home, the
+/// user's home folder, or Sekisho's folder in the scope (`.sekisho/` in a
+/// project, the config folder globally).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Root {
     Project,
     ToolHome(Tool),
+    UserHome,
     SekishoConfig,
 }
 

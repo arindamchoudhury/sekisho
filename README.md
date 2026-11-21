@@ -36,9 +36,14 @@ and what they carried.
 > image digests and agent cards pinned too, and updates wait for an admin's
 > apply; entries have owners and can be quarantined. Environments list
 > entries and toolkits, default models and labels, as JSON or YAML, and can
-> be kept in Git, with changes proposed as GitHub pull requests. The web UI,
-> the CLI, delivering catalog entries to coding tools, and calling MCP
-> servers and A2A agents through the gateway come next. Everything below describes what release 1 will do; the
+> be kept in Git, with changes proposed as GitHub pull requests. **The CLI**
+> (in progress): `sekisho login`, `token`, `env list` and `keys`, and
+> `sekisho use` and `uninstall` for Claude Code, which install an
+> environment's models, local MCP servers, skills, plugins and prompts into a
+> folder or the user's own config, checked before anything is written,
+> several environments side by side. The other seven coding tools, the web
+> UI, and calling MCP servers and A2A agents through the gateway come next.
+> Everything below describes what release 1 will do; the
 > [documentation](docs/README.md) describes what works today.
 
 ## What release 1 will do

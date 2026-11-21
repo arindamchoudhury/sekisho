@@ -3,7 +3,7 @@
 //! through `toml_edit`, so comments, order and formatting survive.
 
 use jsonc_parser::ParseOptions;
-use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
+use jsonc_parser::cst::{CstArray, CstInputValue, CstNode, CstObject, CstRootNode};
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
@@ -12,8 +12,67 @@ use crate::adapters::Format;
 /// Why a document couldn't be read or changed.
 pub type MergeError = String;
 
-/// The value at `key`, if any.
+/// Starts a key's last segment that names one item of an array rather than
+/// a key, so a tool's list (Claude Code's `enabledMcpjsonServers`) can hold
+/// Sekisho's items beside the user's, each owned on its own.
+pub const ITEM: char = '\u{1}';
+
+/// The key of `item` in the array at `array`.
+pub fn item_key(array: &[&str], item: &str) -> Vec<String> {
+    let mut key: Vec<String> = array.iter().map(|s| (*s).to_owned()).collect();
+    key.push(format!("{ITEM}{item}"));
+    key
+}
+
+/// The array's key and the item, when `key` names an item.
+fn split_item(key: &[String]) -> Option<(&[String], &str)> {
+    let (last, array) = key.split_last()?;
+    let item = last.strip_prefix(ITEM)?;
+    (!array.is_empty()).then_some((array, item))
+}
+
+/// `key` for people: an item as `[name]`.
+pub fn show_key(key: &[String]) -> String {
+    key.iter()
+        .map(|s| match s.strip_prefix(ITEM) {
+            Some(item) => format!("[{item}]"),
+            None => s.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The object `parents` lead to, if every one exists.
+fn find_object(root: &CstRootNode, parents: &[String]) -> Option<CstObject> {
+    let mut object = root.object_value()?;
+    for segment in parents {
+        object = object.object_value(segment)?;
+    }
+    Some(object)
+}
+
+/// The array's element that is the string `item`.
+fn holds(array: &CstArray, item: &str) -> Option<CstNode> {
+    array
+        .elements()
+        .into_iter()
+        .find(|e| e.to_serde_value() == Some(Value::String(item.to_owned())))
+}
+
+/// The value at `key`, if any; for an item key, the item while the array
+/// holds it.
 pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, MergeError> {
+    if let Some((array, item)) = split_item(key) {
+        if format == Format::Toml {
+            return Err("array items are kept only in JSON".into());
+        }
+        let root = parse_json(text)?;
+        let (name, parents) = array.split_last().expect("not empty");
+        let found = find_object(&root, parents)
+            .and_then(|o| o.array_value(name))
+            .and_then(|a| holds(&a, item));
+        return Ok(found.map(|_| Value::String(item.to_owned())));
+    }
     match format {
         Format::Json | Format::Jsonc => {
             let root = parse_json(text)?;
@@ -51,6 +110,23 @@ pub fn set(
     value: &Value,
 ) -> Result<String, MergeError> {
     let (last, parents) = key.split_last().ok_or("an empty key")?;
+    if let Some((array, item)) = split_item(key) {
+        if format == Format::Toml {
+            return Err("array items are kept only in JSON".into());
+        }
+        let root = parse_json(text.unwrap_or("{}\n"))?;
+        let (name, parents) = array.split_last().expect("not empty");
+        let mut object = root.object_value_or_set();
+        for segment in parents {
+            object = object.object_value_or_set(segment);
+        }
+        let list = object.array_value_or_set(name);
+        if holds(&list, item).is_none() {
+            list.append(CstInputValue::String(item.to_owned()));
+        }
+        ensure_multiline(&root);
+        return Ok(root.to_string());
+    }
     match format {
         Format::Json | Format::Jsonc => {
             let root = parse_json(text.unwrap_or("{}\n"))?;
@@ -90,6 +166,24 @@ pub fn set(
 /// `text` without `key`, each table or object it leaves empty removed too,
 /// and whether nothing is left in the document.
 pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
+    if let Some((array, item)) = split_item(key) {
+        if format == Format::Toml {
+            return Err("array items are kept only in JSON".into());
+        }
+        let root = parse_json(text)?;
+        let (name, parents) = array.split_last().expect("not empty");
+        if let Some(list) = find_object(&root, parents).and_then(|o| o.array_value(name)) {
+            if let Some(node) = holds(&list, item) {
+                node.remove();
+            }
+            if list.elements().is_empty() {
+                // The array goes too, and the objects it leaves empty.
+                return remove(format, &root.to_string(), array);
+            }
+        }
+        let empty = is_empty_json(&root);
+        return Ok((root.to_string(), empty));
+    }
     match format {
         Format::Json | Format::Jsonc => {
             let root = parse_json(text)?;
@@ -300,6 +394,32 @@ mod tests {
             Some(serde_json::json!("u"))
         );
         let (text, empty) = remove(Format::Json, &text, &key(&["mcpServers", "db"])).unwrap();
+        assert!(empty, "{text}");
+    }
+
+    #[test]
+    fn array_items_are_owned_one_by_one() {
+        let db = item_key(&["enabledMcpjsonServers"], "db");
+        let mine = r#"{"enabledMcpjsonServers": ["mine"]}"#;
+        let text = set(Format::Json, Some(mine), &db, &serde_json::json!("db")).unwrap();
+        let again = set(Format::Json, Some(&text), &db, &serde_json::json!("db")).unwrap();
+        let list: Value = serde_json::from_str(&again).unwrap();
+        assert_eq!(
+            list["enabledMcpjsonServers"],
+            serde_json::json!(["mine", "db"])
+        );
+        assert_eq!(
+            get(Format::Json, &again, &db).unwrap(),
+            Some(serde_json::json!("db"))
+        );
+        assert_eq!(show_key(&db), "enabledMcpjsonServers.[db]");
+        let (text, empty) = remove(Format::Json, &again, &db).unwrap();
+        assert!(!empty);
+        let list: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(list["enabledMcpjsonServers"], serde_json::json!(["mine"]));
+        // The last item takes its array with it.
+        let only = set(Format::Json, None, &db, &serde_json::json!("db")).unwrap();
+        let (text, empty) = remove(Format::Json, &only, &db).unwrap();
         assert!(empty, "{text}");
     }
 

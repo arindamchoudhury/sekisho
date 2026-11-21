@@ -6,14 +6,16 @@
 
 mod env;
 mod keys;
+mod use_;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use time::OffsetDateTime;
 
 use crate::config::{Config, Dirs, ServerUrl, Vars};
 use crate::credentials::{Credential, Store, open_store};
+use crate::install::{Scope, ToolHomes};
 use crate::login::{self, Method, TerminalUi, WAIT, no_keyring_error};
 use crate::output::{CliError, note};
 use crate::server::Server;
@@ -21,6 +23,7 @@ use crate::token::{self, Sources};
 
 pub use env::env_list;
 pub use keys::{KeyAction, keys_act, keys_create, keys_list};
+pub use use_::{UninstallArgs, UseArgs, uninstall, use_, use_notices};
 
 /// What a command runs with.
 pub struct Context<'a> {
@@ -29,6 +32,11 @@ pub struct Context<'a> {
     pub store: &'a dyn Store,
     /// The folder it runs in: a project's root.
     pub folder: PathBuf,
+    /// The user's home folder.
+    pub home: PathBuf,
+    /// `sekisho` as the user would type it: `sekisho` when that is this
+    /// program on `PATH`, else its absolute path.
+    pub sekisho: String,
     pub now: OffsetDateTime,
 }
 
@@ -52,6 +60,74 @@ impl Context<'_> {
         .await?;
         Ok((server, credential))
     }
+
+    /// The server and this machine's credential: an environment key
+    /// (`SEKISHO_KEY`) or the signed-in person's session.
+    pub(crate) async fn caller(&self) -> Result<(Server, Credential), CliError> {
+        let server = Server::new(Config::server(&self.vars, &self.dirs)?)?;
+        let credential = token::current(
+            &server,
+            self.store,
+            &Sources::from_vars(&self.vars),
+            &self.dirs.refresh_lock(),
+        )
+        .await?;
+        Ok((server, credential))
+    }
+
+    /// The project folder's install (`dir`, else the current folder), or the
+    /// global one.
+    pub fn scope(&self, global: bool, dir: Option<&std::path::Path>) -> Scope {
+        let homes = ToolHomes::from_env(&|k| self.vars.get(k).map(str::to_owned), &self.home);
+        if global {
+            Scope::global(&self.dirs.config, homes)
+        } else {
+            Scope::project(dir.unwrap_or(&self.folder), &self.dirs.config, homes)
+        }
+    }
+}
+
+/// `sekisho` as the user would type it.
+fn sekisho_command() -> String {
+    let Ok(me) = std::env::current_exe() else {
+        return "sekisho".to_owned();
+    };
+    let me = std::fs::canonicalize(&me).unwrap_or(me);
+    let name = if cfg!(windows) {
+        "sekisho.exe"
+    } else {
+        "sekisho"
+    };
+    let on_path = std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .is_some_and(|p| p == me)
+    });
+    if on_path {
+        "sekisho".to_owned()
+    } else {
+        shown(&me)
+    }
+}
+
+/// A path as a shell runs it: Windows' verbatim form (`\\?\C:\…`, which
+/// `canonicalize` gives) as the ordinary one, since `cmd` can't run it.
+fn shown(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(local) = text.strip_prefix(r"\\?\") {
+        local.to_owned()
+    } else {
+        text.into_owned()
+    }
+}
+
+/// The user's home folder.
+fn home_dir() -> Result<PathBuf, CliError> {
+    etcetera::home_dir().map_err(|e| CliError::error(format!("can't find your home folder: {e}")))
 }
 
 /// Runs `command` on this process's variables, folders and keyring, and
@@ -70,6 +146,8 @@ where
         dirs,
         store: opened.store.as_ref(),
         folder,
+        home: home_dir()?,
+        sekisho: sekisho_command(),
         now: OffsetDateTime::now_utc(),
     };
     let text = command(&context).await?;
@@ -146,4 +224,25 @@ pub async fn token() -> Result<(), CliError> {
     writeln!(out, "{}", credential.secret())
         .and_then(|()| out.flush())
         .map_err(|e| CliError::error(format!("can't write the token: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_is_shown_as_a_shell_runs_it() {
+        assert_eq!(
+            shown(Path::new(r"\\?\C:\Tools\sekisho.exe")),
+            r"C:\Tools\sekisho.exe"
+        );
+        assert_eq!(
+            shown(Path::new(r"\\?\UNC\server\share\sekisho.exe")),
+            r"\\server\share\sekisho.exe"
+        );
+        assert_eq!(
+            shown(Path::new("/usr/local/bin/sekisho")),
+            "/usr/local/bin/sekisho"
+        );
+    }
 }

@@ -78,7 +78,7 @@ cargo build --release --locked -p sekisho-server -p sekisho-testkit --bins
 ```
 
 Expected: `--help` lists the commands `serve`, `migrate`, `admin-link`,
-`gateway-agent`, `login`, `logout`, `token`, `env` and `keys`.
+`gateway-agent`, `login`, `logout`, `token`, `env`, `keys`, `use` and `uninstall`.
 
 ## Step 2: the workspace tests
 
@@ -211,7 +211,7 @@ Linux is proven when every check passes.
 | Check | Step | Passed? | Notes |
 |---|---|---|---|
 | Build, `cargo fmt` and `cargo clippy` clean | 1 | | |
-| Release binaries build; `sekisho --help` lists seven commands | 1 | | |
+| Release binaries build; `sekisho --help` lists every command | 1 | | |
 | Workspace tests: all passed, 0 failed | 2 | | |
 | Real symlinks refused, no skipped case | 3 | | |
 | Symlink and submodule from Git refused | 3 | | |

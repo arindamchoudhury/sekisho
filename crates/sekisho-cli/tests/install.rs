@@ -42,6 +42,7 @@ impl World {
                 .iter()
                 .map(|t| (*t, tmp.path().join("home").join(t.as_str())))
                 .collect(),
+            tmp.path().join("home"),
         );
         Self {
             _tmp: tmp,

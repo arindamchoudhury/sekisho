@@ -384,6 +384,7 @@ fn a_local_server_reaches_the_tools_config() {
             .iter()
             .map(|t| (*t, tmp.path().join("home").join(t.as_str())))
             .collect(),
+        tmp.path().join("home"),
     );
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();

@@ -6,20 +6,29 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::adapters::{Root, ScopeKind, Tool};
+use crate::adapters::{RelPath, Root, ScopeKind, Tool};
 
-/// Each tool's own config folder.
+/// Each tool's own config folder, and the user's home folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ToolHomes(BTreeMap<Tool, PathBuf>);
+pub struct ToolHomes {
+    homes: BTreeMap<Tool, PathBuf>,
+    home: PathBuf,
+    /// `CLAUDE_CONFIG_DIR` is set, which moves `.claude.json` into it.
+    claude_config_dir: bool,
+}
 
 impl ToolHomes {
     /// Every tool must be given.
-    pub fn new(homes: BTreeMap<Tool, PathBuf>) -> Self {
+    pub fn new(homes: BTreeMap<Tool, PathBuf>, home: PathBuf) -> Self {
         assert!(
             Tool::ALL.iter().all(|t| homes.contains_key(t)),
             "every tool needs a home"
         );
-        Self(homes)
+        Self {
+            homes,
+            home,
+            claude_config_dir: false,
+        }
     }
 
     /// From the tools' variables, else their default folders under `home`.
@@ -51,11 +60,35 @@ impl ToolHomes {
                 (tool, dir)
             })
             .collect();
-        Self(homes)
+        Self {
+            homes,
+            home: home.to_path_buf(),
+            claude_config_dir: set("CLAUDE_CONFIG_DIR").is_some(),
+        }
     }
 
     pub fn get(&self, tool: Tool) -> &Path {
-        &self.0[&tool]
+        &self.homes[&tool]
+    }
+
+    /// The user's home folder.
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// Where Claude Code keeps `.claude.json` (its user-scope MCP servers):
+    /// in `CLAUDE_CONFIG_DIR` when that is set, else in the home folder,
+    /// beside `~/.claude`.
+    pub fn claude_json(&self) -> (Root, RelPath) {
+        let root = if self.claude_config_dir {
+            Root::ToolHome(Tool::ClaudeCode)
+        } else {
+            Root::UserHome
+        };
+        (
+            root,
+            RelPath::parse(".claude.json").expect("a plain file name"),
+        )
     }
 }
 
@@ -103,6 +136,7 @@ impl Scope {
         match root {
             Root::Project => self.project.clone(),
             Root::ToolHome(tool) => Some(self.homes.get(tool).to_path_buf()),
+            Root::UserHome => Some(self.homes.home().to_path_buf()),
             Root::SekishoConfig => Some(match &self.project {
                 Some(p) => p.join(".sekisho"),
                 None => self.config.clone(),
