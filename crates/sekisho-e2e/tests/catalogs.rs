@@ -65,19 +65,27 @@ async fn obot_catalogs_and_skills_appear() {
     let repo = unique("obot");
     let source = unique("obot");
     let digest = format!("sha256:{}", sha256_hex(repo.as_bytes()));
+    // Local servers' and skills' names are unique across the install
+    // (D217), and the stack keeps earlier runs' sources.
+    let (fetch, time, local, pdf) = (
+        unique("fetch"),
+        unique("time"),
+        unique("local"),
+        unique("pdf"),
+    );
     set_image("acme/server", &repo, &digest).await;
     let catalog = format!(
-        "- entryKey: fetch
+        "- entryKey: {fetch}
   name: Fetch
   runtime: npx
   npxConfig:
     package: \"@acme/fetch@1.2.3\"
-- entryKey: time
+- entryKey: {time}
   name: Time
   runtime: uvx
   uvxConfig:
     package: mcp-time==1.0.0
-- entryKey: local
+- entryKey: {local}
   name: Local
   runtime: containerized
   containerizedConfig:
@@ -98,17 +106,21 @@ async fn obot_catalogs_and_skills_appear() {
   components:
     - id: c1
       name: Fetch
-      mcpServerCatalogEntryKey: fetch
+      mcpServerCatalogEntryKey: {fetch}
 "
     );
     git_commit(&repo, &[("catalog.yaml", &catalog)]).await;
     let report = add_source(&source, "catalog", &repo).await;
     assert_eq!(report["outcome"], "ok", "{report}");
     assert_eq!(report["applied"], true);
-    assert_eq!(
-        names_of("mcp-servers", &source).await,
-        ["docs", "fetch", "local", "time"]
-    );
+    let mut expected = vec![
+        "docs".to_owned(),
+        fetch.clone(),
+        local.clone(),
+        time.clone(),
+    ];
+    expected.sort();
+    assert_eq!(names_of("mcp-servers", &source).await, expected);
     let refused = report["refused"].as_array().unwrap();
     assert!(
         refused
@@ -117,7 +129,7 @@ async fn obot_catalogs_and_skills_appear() {
         "{report}"
     );
     assert_eq!(report["vmcps"][0]["key"], "team");
-    let local = entry_of("mcp-servers", &source, "local").await;
+    let local = entry_of("mcp-servers", &source, &local).await;
     assert!(
         local["applied"]["spec"].to_string().contains(&digest),
         "the image is pinned to the registry's digest: {local}"
@@ -128,20 +140,23 @@ async fn obot_catalogs_and_skills_appear() {
     let skills = unique("skills");
     git_commit(
         &skills_repo,
-        &[("pdf/SKILL.md", &skill_md("pdf", "Reads PDFs."))],
+        &[(&format!("{pdf}/SKILL.md"), &skill_md(&pdf, "Reads PDFs."))],
     )
     .await;
     let report = add_source(&skills, "skills", &skills_repo).await;
     assert_eq!(report["outcome"], "ok", "{report}");
-    assert_eq!(names_of("skills", &skills).await, ["pdf"]);
-    let pdf = entry_of("skills", &skills, "pdf").await;
+    assert_eq!(
+        names_of("skills", &skills).await,
+        std::slice::from_ref(&pdf)
+    );
+    let entry = entry_of("skills", &skills, &pdf).await;
     let (s, _) = admin(
         "GET",
-        &format!("/api/v1/catalog/skills/{skills}/pdf/files/SKILL.md"),
+        &format!("/api/v1/catalog/skills/{skills}/{pdf}/files/SKILL.md"),
         None,
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "{pdf}");
+    assert_eq!(s, StatusCode::OK, "{entry}");
 }
 
 #[tokio::test]
@@ -149,24 +164,26 @@ async fn obot_catalogs_and_skills_appear() {
 async fn an_update_reaches_environments_only_when_applied() {
     seed().await;
     let (repo, source, env) = (unique("upd"), unique("upd"), unique("upd"));
-    let first = git_commit(&repo, &[("pdf/SKILL.md", &skill_md("pdf", "v1"))]).await;
+    let pdf = unique("pdf");
+    let file = format!("{pdf}/SKILL.md");
+    let first = git_commit(&repo, &[(&file, &skill_md(&pdf, "v1"))]).await;
     add_source(&source, "skills", &repo).await;
     let (s, body) = put_environment(
         &env,
-        json!({"access_groups": [GROUP], "models": [MODEL], "skills": [format!("pdf@{source}")]}),
+        json!({"access_groups": [GROUP], "models": [MODEL], "skills": [format!("{pdf}@{source}")]}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{body}");
 
-    let second = git_commit(&repo, &[("pdf/SKILL.md", &skill_md("pdf", "v2"))]).await;
+    let second = git_commit(&repo, &[(&file, &skill_md(&pdf, "v2"))]).await;
     let report = sync_now(&source).await;
     assert_eq!(report["commit"], second.as_str(), "{report}");
     assert_eq!(report["applied"], false);
-    let pdf = entry_of("skills", &source, "pdf").await;
-    assert_eq!(pdf["applied"]["commit"], first.as_str());
-    assert_eq!(pdf["pending"]["commit"], second.as_str());
+    let entry = entry_of("skills", &source, &pdf).await;
+    assert_eq!(entry["applied"]["commit"], first.as_str());
+    assert_eq!(entry["pending"]["commit"], second.as_str());
     let delivered = environment(&env).await["delivered"].clone();
-    assert_eq!(delivered[0]["name"], "pdf", "{delivered}");
+    assert_eq!(delivered[0]["name"], pdf.as_str(), "{delivered}");
 
     let (s, applied) = admin(
         "POST",
@@ -175,14 +192,11 @@ async fn an_update_reaches_environments_only_when_applied() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{applied}");
-    assert_eq!(
-        applied["updated"],
-        json!([{"kind": "skill", "name": "pdf"}])
-    );
-    let pdf = entry_of("skills", &source, "pdf").await;
-    assert_eq!(pdf["applied"]["commit"], second.as_str());
-    assert_eq!(pdf["pending"], Value::Null);
-    assert_eq!(pdf["environments"], json!([env]));
+    assert_eq!(applied["updated"], json!([{"kind": "skill", "name": pdf}]));
+    let entry = entry_of("skills", &source, &pdf).await;
+    assert_eq!(entry["applied"]["commit"], second.as_str());
+    assert_eq!(entry["pending"], Value::Null);
+    assert_eq!(entry["environments"], json!([env]));
 }
 
 /// An APM bundle's files and its lock, hashing every file but those named
@@ -329,10 +343,14 @@ async fn agent_cards_are_pinned_and_updates_wait() {
 #[ignore]
 async fn quarantine_marks_every_environment() {
     seed().await;
-    let (repo, source) = (unique("q"), unique("q"));
-    git_commit(&repo, &[("pdf/SKILL.md", &skill_md("pdf", "Reads PDFs."))]).await;
+    let (repo, source, pdf) = (unique("q"), unique("q"), unique("pdf"));
+    git_commit(
+        &repo,
+        &[(&format!("{pdf}/SKILL.md"), &skill_md(&pdf, "Reads PDFs."))],
+    )
+    .await;
     add_source(&source, "skills", &repo).await;
-    let reference = format!("pdf@{source}");
+    let reference = format!("{pdf}@{source}");
     let envs = [unique("qa"), unique("qb")];
     for env in &envs {
         let (s, body) = put_environment(
@@ -342,7 +360,7 @@ async fn quarantine_marks_every_environment() {
         .await;
         assert_eq!(s, StatusCode::OK, "{body}");
     }
-    let path = format!("/api/v1/catalog/skills/{source}/pdf/quarantine");
+    let path = format!("/api/v1/catalog/skills/{source}/{pdf}/quarantine");
     let (s, body) = admin("POST", &path, Some(json!({"reason": "Leaks data."}))).await;
     assert_eq!(s, StatusCode::OK, "{body}");
     for env in &envs {
@@ -380,11 +398,12 @@ async fn quarantine_marks_every_environment() {
 async fn a_toolkit_reaches_the_environments_that_list_it() {
     seed().await;
     let (skills_repo, skills) = (unique("tks"), unique("tks"));
+    let (pdf, notes) = (unique("pdf"), unique("notes"));
     git_commit(
         &skills_repo,
         &[
-            ("pdf/SKILL.md", &skill_md("pdf", "Reads PDFs.")),
-            ("notes/SKILL.md", &skill_md("notes", "Notes.")),
+            (&format!("{pdf}/SKILL.md"), &skill_md(&pdf, "Reads PDFs.")),
+            (&format!("{notes}/SKILL.md"), &skill_md(&notes, "Notes.")),
         ],
     )
     .await;
@@ -415,7 +434,7 @@ async fn a_toolkit_reaches_the_environments_that_list_it() {
     };
     git_commit(
         &repo,
-        &[("catalog.yaml", &catalog(&format!("pdf@{skills}")))],
+        &[("catalog.yaml", &catalog(&format!("{pdf}@{skills}")))],
     )
     .await;
     let report = add_source(&source, "catalog", &repo).await;
@@ -445,13 +464,13 @@ async fn a_toolkit_reaches_the_environments_that_list_it() {
             .collect()
     };
     let ea = environment(&a).await;
-    assert_eq!(delivered(&ea), ["docs", "pdf", "review"], "{ea}");
+    assert_eq!(delivered(&ea), ["docs", pdf.as_str(), "review"], "{ea}");
     // Listed and in the toolkit: once, with every tool (the environment's
     // own grant allows all).
     assert_eq!(ea["delivered"][0]["listed"], true);
     assert_eq!(ea["delivered"][0]["tools"], Value::Null);
     let eb = environment(&b).await;
-    assert_eq!(delivered(&eb), ["docs", "pdf", "review"], "{eb}");
+    assert_eq!(delivered(&eb), ["docs", pdf.as_str(), "review"], "{eb}");
     assert_eq!(eb["delivered"][0]["tools"], json!(["search"]));
 
     // A member added upstream waits for apply.
@@ -459,7 +478,7 @@ async fn a_toolkit_reaches_the_environments_that_list_it() {
         &repo,
         &[(
             "catalog.yaml",
-            &catalog(&format!("pdf@{skills}, notes@{skills}")),
+            &catalog(&format!("{pdf}@{skills}, {notes}@{skills}")),
         )],
     )
     .await;
@@ -479,7 +498,7 @@ async fn a_toolkit_reaches_the_environments_that_list_it() {
     assert_eq!(s, StatusCode::OK);
     for env in [&a, &b] {
         let names = delivered(&environment(env).await);
-        assert!(names.contains(&"notes".to_owned()), "{env}: {names:?}");
+        assert!(names.contains(&notes), "{env}: {names:?}");
     }
 }
 

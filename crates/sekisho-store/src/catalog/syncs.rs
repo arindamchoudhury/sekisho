@@ -13,10 +13,11 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::sources::open_token;
-use super::toolkits;
 use super::{
     Applied, SyncOutcome, SyncOutcomeKind, SyncRecord, SyncReport, entry_kind, entry_name,
 };
+use super::{holders, toolkits};
+use crate::error::bad_column;
 use crate::notify::{ChangeKind, notify};
 use crate::{Result, Store, StoreError};
 
@@ -165,6 +166,7 @@ impl Store {
         let mut report = StoredReport::default();
         let mut applied = false;
         if let Some(mut found) = found {
+            holders::lock(&mut tx).await?;
             let commit = commit.clone().unwrap_or_default();
             let mut seen = HashSet::new();
             // Toolkits last, so their references can name this sync's
@@ -174,6 +176,23 @@ impl Store {
                 .iter()
                 .partition(|e| e.kind == EntryKind::Toolkit);
             for entry in others.into_iter().chain(toolkits) {
+                if let Some(reason) = holders::refusal(
+                    &mut tx,
+                    source_id,
+                    entry.kind,
+                    entry.name.as_str(),
+                    &entry.spec,
+                )
+                .await?
+                {
+                    found.refused.push(Refusal {
+                        path: entry.path.clone(),
+                        kind: Some(entry.kind),
+                        name: Some(entry.name.to_string()),
+                        reason,
+                    });
+                    continue;
+                }
                 let mut bindings = None;
                 if let EntrySpec::Toolkit(spec) = &entry.spec
                     && !toolkits::revision_exists(
@@ -382,6 +401,7 @@ impl Store {
                 )));
             }
         };
+        holders::lock(&mut tx).await?;
         let applied = apply_in(&mut tx, source_id, sync_id, now).await?;
         notify(&mut tx, ChangeKind::Catalog).await?;
         notify(&mut tx, ChangeKind::Environments).await?;
@@ -544,6 +564,24 @@ async fn apply_in(
             let applied_rev: Option<Uuid> = row.try_get("applied_revision_id")?;
             let latest_rev: Option<Uuid> = row.try_get("latest_revision_id")?;
             if applied_rev != latest_rev || removed.is_some() {
+                // Another source may have applied this name since the sync
+                // was recorded; this entry then keeps what it had.
+                let spec: serde_json::Value =
+                    sqlx::query_scalar("select spec from catalog_revisions where id = $1")
+                        .bind(latest_rev)
+                        .fetch_one(&mut *conn)
+                        .await?;
+                let spec: EntrySpec =
+                    serde_json::from_value(spec).map_err(|e| bad_column("spec", &e.to_string()))?;
+                if let Some(reason) = holders::refusal(conn, source_id, kind, &name, &spec).await? {
+                    applied.refused.push(Refusal {
+                        path,
+                        kind: Some(kind),
+                        name: Some(name),
+                        reason,
+                    });
+                    continue;
+                }
                 sqlx::query(
                     "update catalog_entries set applied_revision_id = latest_revision_id, \
                      removed_at = null where id = $1",

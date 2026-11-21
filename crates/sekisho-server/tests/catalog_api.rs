@@ -385,7 +385,7 @@ async fn apply_moves_an_update_to_environments() {
     assert_eq!(applied.status, 200, "{}", applied.text);
     assert_eq!(
         applied.body,
-        json!({"updated": [{"kind": "skill", "name": "pdf"}], "removed": []})
+        json!({"updated": [{"kind": "skill", "name": "pdf"}], "removed": [], "refused": []})
     );
     let entry = app
         .admin("GET", "/api/v1/catalog/skills/team/pdf", None)

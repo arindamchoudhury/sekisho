@@ -180,14 +180,16 @@ fn pay_body() -> Value {
         "default_models": {"anthropic": "mock-model"},
         "small_model": "small-model",
         "skills": ["pdf@team"],
-        "plugins": ["fmt"],
+        "plugins": ["fmt@team"],
         "toolkits": ["kit"],
     })
 }
 
 /// The catalog and two environments: `pay` lists two models, the pdf
 /// skill, the fmt plugin and the kit toolkit (notes and pdf); `ops` lists
-/// the lint skill. The other source also has a pdf skill.
+/// the lint skill. The other source also has an fmt plugin (a skill
+/// couldn't share pdf's name: skills' names are unique across the
+/// install, D217).
 async fn world(app: &TestApp) {
     models(app).await;
     add_source(app, "team").await;
@@ -205,16 +207,7 @@ async fn world(app: &TestApp) {
     )
     .await;
     add_source(app, "other").await;
-    sync(
-        app,
-        "other",
-        "d1",
-        vec![skill(
-            "pdf",
-            vec![file("SKILL.md", "Another pdf.\n", false)],
-        )],
-    )
-    .await;
+    sync(app, "other", "d1", vec![plugin("fmt")]).await;
     put_env(app, "pay", pay_body()).await;
     put_env(
         app,
@@ -680,8 +673,8 @@ async fn references_are_checked_for_anyone_signed_in() {
     let body = json!({"references": [
         {"kind": "skill", "reference": "lint"},
         {"kind": "skill", "reference": "nope"},
-        {"kind": "skill", "reference": "pdf"},
-        {"kind": "skill", "reference": "pdf@other"},
+        {"kind": "plugin", "reference": "fmt"},
+        {"kind": "plugin", "reference": "fmt@other"},
         {"kind": "plugin", "reference": "lint"},
         {"kind": "skill", "reference": "Not A Name"},
     ]});
@@ -704,7 +697,7 @@ async fn references_are_checked_for_anyone_signed_in() {
     );
     assert_eq!(answers[2].get("source"), None);
     assert_eq!(answers[3]["source"], "other");
-    assert_eq!(answers[3]["name"], "pdf");
+    assert_eq!(answers[3]["name"], "fmt");
     assert_eq!(answers[4]["error"], "no such entry");
     assert!(answers[5]["error"].as_str().is_some(), "{}", answers[5]);
 

@@ -116,12 +116,14 @@ Only a source's first sync applies itself. Later ones wait:
 sync, and answers what changed:
 
 ```json
-{"updated": [{"kind": "skill", "name": "pdf"}], "removed": []}
+{"updated": [{"kind": "skill", "name": "pdf"}], "removed": [], "refused": []}
 ```
 
 `updated` entries now use the revision that sync found; `removed` ones
-weren't found and are marked removed. It is 409 when there is nothing to
-apply.
+weren't found and are marked removed. `refused` lists, as in a sync
+report, entries left on the version they had because another source
+applied their [name](#names) first since the sync. It is 409 when there
+is nothing to apply.
 
 ### How Sekisho reads Git
 
@@ -302,6 +304,25 @@ its file name without `.md`, which must follow the entry name rules.
 An entry's name is 1–64 lowercase letters and digits, with single hyphens
 between them. Two sources may hold entries of the same name: their
 addresses differ by source.
+
+Except **skills and local MCP servers** (those that run with npx, uvx or a
+container): their names are unique across the whole install. These are
+the names a coding tool shows with no source in front. Gemini CLI, Qwen
+Code, OpenCode, Kilo CLI and Pi have one flat list of skills and keep one
+of two that share a name without saying so, and a local server's name is
+the key of its entry in each tool's MCP config. So a sync refuses a skill,
+or a local server, whose name another source already holds with an
+applied version (removed upstream or not), with the reason
+
+```text
+skill "deploy" is already source "team-skills"'s; skills' names are unique across the install
+```
+
+and the entry applied first keeps the name. A remote MCP server can share
+a name with a local one, or another remote one: it's reached through the
+environment's own endpoint. Deleting the holding source frees the name
+for the next sync. The skills and servers inside a plugin belong to the
+plugin and don't count.
 
 ### Exact versions and image digests
 

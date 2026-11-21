@@ -1056,12 +1056,13 @@ async fn environments_list_catalog_entries() {
 
 #[tokio::test]
 async fn a_bare_name_in_two_sources_is_refused() {
+    // Prompts: skills' names are unique across the install (D217).
     let (store, sb) = common::store().await;
     let admin = common::admin(&store).await;
-    catalog(&store, &sb, "a", vec![entry(EntryKind::Skill, "pdf")]).await;
-    catalog(&store, &sb, "b", vec![entry(EntryKind::Skill, "pdf")]).await;
+    catalog(&store, &sb, "a", vec![entry(EntryKind::Prompt, "pdf")]).await;
+    catalog(&store, &sb, "b", vec![entry(EntryKind::Prompt, "pdf")]).await;
     let mut s = spec("team", &[]);
-    s.skills = refs(&["pdf"]);
+    s.prompts = refs(&["pdf"]);
     let errs = store
         .upsert_environment(s.clone(), admin)
         .await
@@ -1069,21 +1070,21 @@ async fn a_bare_name_in_two_sources_is_refused() {
     assert_eq!(
         messages(errs),
         [(
-            "skills[0]".to_string(),
+            "prompts[0]".to_string(),
             "pdf is in sources a, b: write pdf@a or pdf@b".to_string()
         )]
     );
-    s.skills = refs(&["pdf@b"]);
+    s.prompts = refs(&["pdf@b"]);
     let env = store.upsert_environment(s, admin).await.unwrap();
     assert_eq!(env.entries[0].key.source.as_str(), "b");
     // One entry named twice.
     let mut twice = spec("twice", &[]);
-    twice.skills = refs(&["pdf@a", "pdf@b", "pdf@a"]);
+    twice.prompts = refs(&["pdf@a", "pdf@b", "pdf@a"]);
     let errs = store.upsert_environment(twice, admin).await.unwrap_err();
     assert!(
         messages(errs)
             .iter()
-            .any(|(f, m)| f == "skills[2]" && m.contains("listed twice")),
+            .any(|(f, m)| f == "prompts[2]" && m.contains("listed twice")),
     );
 }
 
@@ -1091,17 +1092,17 @@ async fn a_bare_name_in_two_sources_is_refused() {
 async fn a_saved_reference_stays_bound() {
     let (store, sb) = common::store().await;
     let admin = common::admin(&store).await;
-    catalog(&store, &sb, "a", vec![entry(EntryKind::Skill, "pdf")]).await;
+    catalog(&store, &sb, "a", vec![entry(EntryKind::Prompt, "pdf")]).await;
     let mut s = spec("team", &[]);
-    s.skills = refs(&["pdf"]);
+    s.prompts = refs(&["pdf"]);
     store.upsert_environment(s.clone(), admin).await.unwrap();
-    catalog(&store, &sb, "b", vec![entry(EntryKind::Skill, "pdf")]).await;
+    catalog(&store, &sb, "b", vec![entry(EntryKind::Prompt, "pdf")]).await;
 
     let env = store.upsert_environment(s.clone(), admin).await.unwrap();
     assert_eq!(listed(&env)[0].2, "a/pdf");
     // Written another way, it is resolved again.
     let mut other = s.clone();
-    other.skills = refs(&["pdf@b"]);
+    other.prompts = refs(&["pdf@b"]);
     let env = store.upsert_environment(other, admin).await.unwrap();
     assert_eq!(listed(&env)[0].2, "b/pdf");
     // And back to the bare name, which is ambiguous now.

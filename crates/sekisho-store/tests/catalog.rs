@@ -641,7 +641,7 @@ async fn bare_references_resolve_or_name_the_sources() {
             .record_sync(
                 &sb,
                 &source_name(s),
-                ok_sync("c1", vec![skill("pdf", s, &[])], vec![]),
+                ok_sync("c1", vec![server("pdf", false)], vec![]),
                 next(),
             )
             .await
@@ -652,13 +652,13 @@ async fn bare_references_resolve_or_name_the_sources() {
         .record_sync(
             &sb,
             &source_name("c"),
-            ok_sync("c1", vec![skill("only", "o", &[])], vec![]),
+            ok_sync("c1", vec![server("only", false)], vec![]),
             next(),
         )
         .await
         .unwrap();
     let r = |s: &str| EntryRef::parse(s).unwrap();
-    match store.resolve_entry(EntryKind::Skill, &r("pdf")).await {
+    match store.resolve_entry(EntryKind::McpServer, &r("pdf")).await {
         Err(ResolveError::Ambiguous(sources)) => {
             let sources: Vec<&str> = sources.iter().map(SourceName::as_str).collect();
             assert_eq!(sources, ["a", "b"]);
@@ -666,18 +666,24 @@ async fn bare_references_resolve_or_name_the_sources() {
         other => panic!("{other:?}"),
     }
     let a_pdf = store
-        .resolve_entry(EntryKind::Skill, &r("pdf@a"))
+        .resolve_entry(EntryKind::McpServer, &r("pdf@a"))
         .await
         .unwrap();
-    assert_eq!(a_pdf, store.get_entry(&key("a", "pdf")).await.unwrap().id);
+    assert_eq!(
+        a_pdf,
+        store.get_entry(&server_key("a", "pdf")).await.unwrap().id
+    );
     let only = store
-        .resolve_entry(EntryKind::Skill, &r("only"))
+        .resolve_entry(EntryKind::McpServer, &r("only"))
         .await
         .unwrap();
-    assert_eq!(only, store.get_entry(&key("c", "only")).await.unwrap().id);
+    assert_eq!(
+        only,
+        store.get_entry(&server_key("c", "only")).await.unwrap().id
+    );
     for (kind, reference) in [
-        (EntryKind::Skill, "nope"),
-        (EntryKind::Skill, "pdf@c"),
+        (EntryKind::McpServer, "nope"),
+        (EntryKind::McpServer, "pdf@c"),
         (EntryKind::Prompt, "pdf"),
     ] {
         assert!(
@@ -1180,21 +1186,13 @@ async fn a_toolkit_naming_no_entry_or_two_is_refused() {
     ));
 
     // A version that binds, applied; then one naming a name two sources hold.
-    source_with(
-        &store,
-        &sb,
-        "a",
-        admin,
-        "c1",
-        vec![skill("pdf", "pdf", &[])],
-    )
-    .await;
+    source_with(&store, &sb, "a", admin, "c1", vec![server("pdf", false)]).await;
     sync(
         &store,
         &sb,
         "kits",
         "k2",
-        vec![toolkit("kit", "v1", &[], &["pdf"])],
+        vec![toolkit("kit", "v1", &[("pdf", None)], &[])],
     )
     .await;
     // The source's first sync, whose toolkit was refused, applied itself.
@@ -1208,27 +1206,19 @@ async fn a_toolkit_naming_no_entry_or_two_is_refused() {
         .unwrap()
         .applied
         .unwrap();
-    source_with(
-        &store,
-        &sb,
-        "b",
-        admin,
-        "c1",
-        vec![skill("pdf", "pdf b", &[])],
-    )
-    .await;
+    source_with(&store, &sb, "b", admin, "c1", vec![server("pdf", false)]).await;
     let report = sync(
         &store,
         &sb,
         "kits",
         "k3",
-        vec![toolkit("kit", "v2", &[], &["pdf"])],
+        vec![toolkit("kit", "v2", &[("pdf", None)], &[])],
     )
     .await;
     assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
     assert_eq!(
         report.refused[0].reason,
-        "skills[0]: pdf is in sources a, b: write pdf@a or pdf@b"
+        "mcp_servers[0]: pdf is in sources a, b: write pdf@a or pdf@b"
     );
     assert!(report.missing.is_empty(), "{:?}", report.missing);
     let entry = store.get_entry(&kit_key("kits", "kit")).await.unwrap();
@@ -1241,14 +1231,19 @@ async fn a_toolkit_naming_no_entry_or_two_is_refused() {
         &sb,
         "kits",
         "k4",
-        vec![toolkit("kit", "v3", &[], &["pdf@a", "pdf@b", "pdf@a"])],
+        vec![toolkit(
+            "kit",
+            "v3",
+            &[("pdf@a", None), ("pdf@b", None), ("pdf@a", None)],
+            &[],
+        )],
     )
     .await;
     assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
     assert!(
         report.refused[0]
             .reason
-            .contains("skills[2]: pdf@a names the same skill as skills[0]"),
+            .contains("mcp_servers[2]: pdf@a names the same MCP server as mcp_servers[0]"),
         "{}",
         report.refused[0].reason
     );
@@ -1383,19 +1378,11 @@ async fn a_toolkits_bare_reference_prefers_its_own_source() {
         "a",
         admin,
         "c1",
-        vec![skill("pdf", "a pdf", &[]), skill("notes", "notes", &[])],
+        vec![server("pdf", false), skill("notes", "notes", &[])],
     )
     .await;
-    source_with(
-        &store,
-        &sb,
-        "b",
-        admin,
-        "c1",
-        vec![skill("pdf", "b pdf", &[])],
-    )
-    .await;
-    // Its own source has pdf: that one, though a and b have one too; notes
+    source_with(&store, &sb, "b", admin, "c1", vec![server("pdf", false)]).await;
+    // Its own source has server pdf: that one, though a and b have one too; notes
     // only elsewhere: the unique one; an explicit source wins.
     let report = source_with(
         &store,
@@ -1404,9 +1391,9 @@ async fn a_toolkits_bare_reference_prefers_its_own_source() {
         admin,
         "k1",
         vec![
-            skill("pdf", "own pdf", &[]),
-            toolkit("kit", "v1", &[], &["pdf", "notes"]),
-            toolkit("explicit", "v1", &[], &["pdf@b"]),
+            server("pdf", false),
+            toolkit("kit", "v1", &[("pdf", None)], &["notes"]),
+            toolkit("explicit", "v1", &[("pdf@b", None)], &[]),
         ],
     )
     .await;
@@ -1432,13 +1419,13 @@ async fn a_toolkits_bare_reference_prefers_its_own_source() {
         "other",
         admin,
         "o1",
-        vec![toolkit("kit", "v1", &[], &["pdf"])],
+        vec![toolkit("kit", "v1", &[("pdf", None)], &[])],
     )
     .await;
     assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
     assert_eq!(
         report.refused[0].reason,
-        "skills[0]: pdf is in sources a, b, kits: write pdf@a or pdf@b or pdf@kits"
+        "mcp_servers[0]: pdf is in sources a, b, kits: write pdf@a or pdf@b or pdf@kits"
     );
 }
 
@@ -1630,4 +1617,309 @@ async fn a_sync_of_settings_changed_meanwhile_is_not_kept() {
         "{report:?}"
     );
     assert!(store.list_entries(None).await.unwrap().is_empty());
+}
+
+// ------------------------------------------------- install-wide names (plan 4 Task 3b)
+
+/// An MCP server named `name`: reached at a URL, or started with npx.
+fn server(name: &str, local: bool) -> CheckedEntry {
+    let runtime = if local {
+        McpRuntime::Npx {
+            package: sekisho_catalog::pins::NpmPackage::parse_exact(&format!("@acme/{name}@1.0.0"))
+                .unwrap(),
+            args: Vec::new(),
+        }
+    } else {
+        McpRuntime::Remote {
+            url: format!("https://mcp.example.com/{name}"),
+        }
+    };
+    CheckedEntry {
+        kind: EntryKind::McpServer,
+        name: entry_name(name),
+        path: "servers.yaml".into(),
+        spec: EntrySpec::McpServer(McpServerSpec {
+            description: format!("The {name} server."),
+            runtime,
+            config: Vec::new(),
+            tool_preview: Vec::new(),
+            unsupported_tools: Vec::new(),
+            static_oauth: false,
+        }),
+        files: Vec::new(),
+    }
+}
+
+fn server_key(source: &str, name: &str) -> EntryKey {
+    EntryKey {
+        kind: EntryKind::McpServer,
+        source: source_name(source),
+        name: entry_name(name),
+    }
+}
+
+fn refused_names(refused: &[Refusal]) -> Vec<(Option<EntryKind>, Option<&str>, &str)> {
+    refused
+        .iter()
+        .map(|r| (r.kind, r.name.as_deref(), r.reason.as_str()))
+        .collect()
+}
+
+const SKILL_TAKEN_BY_A: &str =
+    "skill \"deploy\" is already source \"a\"'s; skills' names are unique across the install";
+
+#[tokio::test]
+async fn two_sources_cannot_hold_one_skill_name() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("deploy", "a", &[])],
+    )
+    .await;
+    let report = source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("deploy", "b", &[]), skill("review", "b", &[])],
+    )
+    .await;
+    assert_eq!(
+        refused_names(&report.refused),
+        [(Some(EntryKind::Skill), Some("deploy"), SKILL_TAKEN_BY_A)]
+    );
+    assert_eq!(names(&report.new), ["review"]);
+    assert!(matches!(
+        store.get_entry(&key("b", "deploy")).await,
+        Err(StoreError::NotFound)
+    ));
+    // A holder removed upstream still holds its name.
+    sync(&store, &sb, "a", "c2", vec![]).await;
+    store
+        .apply_source(&source_name("a"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .get_entry(&key("a", "deploy"))
+            .await
+            .unwrap()
+            .removed_at
+            .is_some()
+    );
+    let report = sync(&store, &sb, "b", "c2", vec![skill("deploy", "b", &[])]).await;
+    assert_eq!(
+        refused_names(&report.refused),
+        [(Some(EntryKind::Skill), Some("deploy"), SKILL_TAKEN_BY_A)]
+    );
+}
+
+#[tokio::test]
+async fn a_local_server_name_is_unique_but_a_remote_one_is_not() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![
+            server("github", false),
+            server("fetch", true),
+            server("mixed", false),
+        ],
+    )
+    .await;
+    let report = source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![
+            server("github", false),
+            server("fetch", true),
+            server("mixed", true),
+        ],
+    )
+    .await;
+    assert_eq!(
+        refused_names(&report.refused),
+        [(
+            Some(EntryKind::McpServer),
+            Some("fetch"),
+            "MCP server \"fetch\" is already source \"a\"'s; local MCP servers' names are \
+             unique across the install"
+        )]
+    );
+    assert_eq!(names(&report.new), ["github", "mixed"]);
+}
+
+#[tokio::test]
+async fn a_server_turned_local_is_checked() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(&store, &sb, "a", admin, "c1", vec![server("fetch", true)]).await;
+    let report = source_with(&store, &sb, "b", admin, "c1", vec![server("fetch", false)]).await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    let report = sync(&store, &sb, "b", "c2", vec![server("fetch", true)]).await;
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    let applied = store
+        .apply_source(&source_name("b"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert!(
+        applied.updated.is_empty() && applied.removed.is_empty(),
+        "{applied:?}"
+    );
+    let entry = store.get_entry(&server_key("b", "fetch")).await.unwrap();
+    match entry.applied.unwrap().spec {
+        EntrySpec::McpServer(spec) => {
+            assert!(
+                matches!(spec.runtime, McpRuntime::Remote { .. }),
+                "{spec:?}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(entry.removed_at.is_none());
+}
+
+/// Sources `a` and `b`, each with an applied first sync, then a second
+/// sync bringing skill `deploy` that waits for apply.
+async fn two_waiting_deploys(store: &Store, sb: &SecretBox, admin: uuid::Uuid) {
+    for s in ["a", "b"] {
+        let first = format!("first-{s}");
+        source_with(store, sb, s, admin, "c1", vec![skill(&first, s, &[])]).await;
+        let report = sync(
+            store,
+            sb,
+            s,
+            "c2",
+            vec![skill(&first, s, &[]), skill("deploy", s, &[])],
+        )
+        .await;
+        assert!(report.refused.is_empty(), "{:?}", report.refused);
+        assert!(!report.applied);
+    }
+}
+
+#[tokio::test]
+async fn the_first_applied_keeps_the_name() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    two_waiting_deploys(&store, &sb, admin).await;
+    let b = store
+        .apply_source(&source_name("b"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert_eq!(names(&b.updated), ["deploy"]);
+    assert!(b.refused.is_empty(), "{:?}", b.refused);
+    let a = store
+        .apply_source(&source_name("a"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert!(a.updated.is_empty(), "{:?}", a.updated);
+    assert_eq!(
+        refused_names(&a.refused),
+        [(
+            Some(EntryKind::Skill),
+            Some("deploy"),
+            "skill \"deploy\" is already source \"b\"'s; skills' names are unique across the \
+             install"
+        )]
+    );
+    assert!(
+        store
+            .get_entry(&key("a", "deploy"))
+            .await
+            .unwrap()
+            .applied
+            .is_none()
+    );
+    assert!(
+        store
+            .get_entry(&key("b", "deploy"))
+            .await
+            .unwrap()
+            .applied
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn concurrent_applies_keep_one_holder() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    two_waiting_deploys(&store, &sb, admin).await;
+    let (a, b) = (source_name("a"), source_name("b"));
+    let now = OffsetDateTime::now_utc();
+    let (a, b) = tokio::join!(store.apply_source(&a, now), store.apply_source(&b, now));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(a.updated.len() + b.updated.len(), 1, "{a:?} {b:?}");
+    assert_eq!(a.refused.len() + b.refused.len(), 1, "{a:?} {b:?}");
+    let mut holders = 0;
+    for k in [key("a", "deploy"), key("b", "deploy")] {
+        holders += usize::from(store.get_entry(&k).await.unwrap().applied.is_some());
+    }
+    assert_eq!(holders, 1);
+}
+
+#[tokio::test]
+async fn a_freed_name_can_be_taken() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("deploy", "a", &[])],
+    )
+    .await;
+    source_with(
+        &store,
+        &sb,
+        "b",
+        admin,
+        "c1",
+        vec![skill("deploy", "b", &[])],
+    )
+    .await;
+    store.delete_source(&source_name("a")).await.unwrap();
+    let report = sync(&store, &sb, "b", "c2", vec![skill("deploy", "b", &[])]).await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(names(&report.new), ["deploy"]);
+}
+
+#[tokio::test]
+async fn a_source_resyncing_its_own_skill_is_not_a_clash() {
+    let (store, sb) = store().await;
+    let admin = person(&store, "admin@example.com", &[]).await;
+    source_with(
+        &store,
+        &sb,
+        "a",
+        admin,
+        "c1",
+        vec![skill("deploy", "v1", &[])],
+    )
+    .await;
+    let report = sync(&store, &sb, "a", "c2", vec![skill("deploy", "v2", &[])]).await;
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(names(&report.updated), ["deploy"]);
+    let applied = store
+        .apply_source(&source_name("a"), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert_eq!(names(&applied.updated), ["deploy"]);
+    assert!(applied.refused.is_empty());
 }

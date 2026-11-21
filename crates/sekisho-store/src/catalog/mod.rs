@@ -8,6 +8,7 @@
 
 mod entries;
 mod git_mode;
+mod holders;
 mod registries;
 mod sources;
 mod syncs;
@@ -199,6 +200,9 @@ pub struct SyncReport {
 pub struct Applied {
     pub updated: Vec<(EntryKind, EntryName)>,
     pub removed: Vec<(EntryKind, EntryName)>,
+    /// Entries this apply left on their earlier version, because another
+    /// source's entry took their name first (D217, D218).
+    pub refused: Vec<sekisho_catalog::model::Refusal>,
 }
 
 /// An entry's address: its kind, source and name.

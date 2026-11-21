@@ -163,6 +163,9 @@ impl From<SyncReport> for SyncReportBody {
 pub struct AppliedBody {
     updated: Vec<EntryNameBody>,
     removed: Vec<EntryNameBody>,
+    /// Entries left on their earlier version: another source's entry took
+    /// their name first (D217).
+    refused: Vec<Refusal>,
 }
 
 impl From<Applied> for AppliedBody {
@@ -170,6 +173,7 @@ impl From<Applied> for AppliedBody {
         Self {
             updated: named(a.updated),
             removed: named(a.removed),
+            refused: a.refused,
         }
     }
 }
