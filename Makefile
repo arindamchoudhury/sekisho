@@ -79,10 +79,10 @@ build:
 	cargo build --workspace --locked --all-targets
 	cargo build --release --locked -p sekisho-server -p sekisho-testkit --bins
 	help=$$(./target/release/sekisho --help)
-	for command in serve migrate admin-link gateway-agent login logout token env keys use uninstall; do
+	for command in serve migrate admin-link gateway-agent login logout token env keys use uninstall run; do
 	  grep -qw -- "$$command" <<< "$$help" || fail "sekisho --help doesn't list $$command"
 	done
-	ok 'build; sekisho --help lists serve, migrate, admin-link, gateway-agent, login, logout, token, env, keys, use and uninstall'
+	ok 'build; sekisho --help lists serve, migrate, admin-link, gateway-agent, login, logout, token, env, keys, use, uninstall and run'
 
 lint:
 	@$(LIB)

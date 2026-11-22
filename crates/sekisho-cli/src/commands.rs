@@ -6,6 +6,7 @@
 
 mod env;
 mod keys;
+mod run;
 mod use_;
 
 use std::io::Write;
@@ -23,6 +24,7 @@ use crate::token::{self, Sources};
 
 pub use env::env_list;
 pub use keys::{KeyAction, keys_act, keys_create, keys_list};
+pub use run::run_tool;
 pub use use_::{UninstallArgs, UseArgs, uninstall, use_, use_notices};
 
 /// What a command runs with.

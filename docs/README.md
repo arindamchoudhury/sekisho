@@ -33,7 +33,7 @@ documentation.
 | [Budgets and spend](budgets-and-spend.md) | Dollar budgets, and how each request is charged |
 | [The gateway](gateway.md) | Calling models through an environment's routes, which client API reaches which model, and every refusal |
 | [Catalogs](catalogs.md) | Catalog sources (MCP servers, A2A agents, skills, plugins, prompts), syncs, entries, owners, quarantine, registry credentials and importing Obot catalogs |
-| [The `sekisho` CLI](cli.md) | Installing it, signing in with `sekisho login`, where tokens are kept on each system, `sekisho token` and `logout`, `env list` and `keys`, installing an environment with `sekisho use` and `uninstall` (what Claude Code gets), `SEKISHO_URL` and `SEKISHO_KEY`, exit codes |
+| [The `sekisho` CLI](cli.md) | Installing it, signing in with `sekisho login`, where tokens are kept on each system, `sekisho token` and `logout`, `env list` and `keys`, installing an environment with `sekisho use` and `uninstall` (what Claude Code, Gemini CLI and Qwen Code get), starting a tool with `sekisho run`, `SEKISHO_URL` and `SEKISHO_KEY`, exit codes |
 | [People and sign-in](people-and-sign-in.md) | Signing in, tokens, the first admin, local accounts, identity providers, groups, admins and offboarding |
 | [Testing on Linux](testing-on-linux.md) | `make check`: building Sekisho and running every test, the images and the end-to-end suite on a Linux machine |
 | [Testing on Linux by hand](testing-on-linux-by-hand.md) | The same checks as commands to run one at a time, with a results checklist |

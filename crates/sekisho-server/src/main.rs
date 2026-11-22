@@ -111,6 +111,16 @@ enum Command {
         #[command(flatten)]
         place: Place,
     },
+    /// Start a coding tool that takes its key from Sekisho through a proxy
+    /// on this computer, such as gemini-cli or qwen-code.
+    Run {
+        /// The tool.
+        #[arg(value_parser = parse_tool)]
+        tool: sekisho_cli::adapters::Tool,
+        /// Passed to the tool; put them after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 /// Where `use` and `uninstall` act, and how.
@@ -259,6 +269,11 @@ async fn main() -> ExitCode {
             };
             run_here(async |ctx| commands::uninstall(ctx, &args).await).await
         }
+        // The tool's own exit code, which can be any i32 on Windows.
+        Command::Run { tool, args } => match commands::run_tool(tool, &args).await {
+            Ok(code) => std::process::exit(code),
+            Err(e) => Err(e),
+        },
         service => return run_service(service).await,
     };
     sekisho_cli::output::finish(result)
@@ -305,7 +320,8 @@ async fn run_service(command: Command) -> ExitCode {
         | Command::Env { .. }
         | Command::Keys { .. }
         | Command::Use { .. }
-        | Command::Uninstall { .. } => unreachable!("run above"),
+        | Command::Uninstall { .. }
+        | Command::Run { .. } => unreachable!("run above"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -8,5 +8,6 @@ pub mod credentials;
 pub mod install;
 pub mod login;
 pub mod output;
+pub mod run;
 pub mod server;
 pub mod token;

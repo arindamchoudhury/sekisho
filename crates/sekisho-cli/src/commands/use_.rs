@@ -225,6 +225,21 @@ pub async fn use_(
     for notice in use_notices(&report, &models_of(&before), environments) {
         let _ = writeln!(out, "{notice}");
     }
+    if !args.dry_run {
+        for a in &adapters {
+            if let Some(note) = a.note(&scope) {
+                let _ = writeln!(out, "{note}");
+            }
+            if a.run_spec(&d).is_some() {
+                let tool = a.tool();
+                let _ = writeln!(
+                    out,
+                    "Start {} with `sekisho run {tool}`: it takes its key from the run.",
+                    tool.title()
+                );
+            }
+        }
+    }
     Ok(out)
 }
 

@@ -38,11 +38,13 @@ and what they carried.
 > entries and toolkits, default models and labels, as JSON or YAML, and can
 > be kept in Git, with changes proposed as GitHub pull requests. **The CLI**
 > (in progress): `sekisho login`, `token`, `env list` and `keys`, and
-> `sekisho use` and `uninstall` for Claude Code, which install an
-> environment's models, local MCP servers, skills, plugins and prompts into a
-> folder or the user's own config, checked before anything is written,
-> several environments side by side. The other seven coding tools, the web
-> UI, and calling MCP servers and A2A agents through the gateway come next.
+> `sekisho use` and `uninstall` for Claude Code, Gemini CLI and Qwen Code,
+> which install an environment's models, local MCP servers, skills, plugins
+> and prompts into a folder or the user's own config, checked before
+> anything is written, several environments side by side; and `sekisho run`,
+> which starts Gemini CLI or Qwen Code behind a local proxy that keeps their
+> token fresh. The other five coding tools, the web UI, and calling MCP
+> servers and A2A agents through the gateway come next.
 > Everything below describes what release 1 will do; the
 > [documentation](docs/README.md) describes what works today.
 

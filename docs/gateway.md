@@ -29,8 +29,13 @@ tool sends is never used. It also removes Sekisho's own `x-sekisho-env` and
 `x-sekisho-model` headers, so a client can't choose an environment or a
 model with them, and they never reach a provider.
 
-The `sekisho` CLI, which will write each coding tool's settings, isn't
-built yet. A tool set up by hand must send its token as
+[`sekisho use`](cli.md#installing-an-environment) writes these settings
+for Claude Code, Gemini CLI and Qwen Code. Claude Code asks `sekisho
+token` for its key and sends it as a bearer token. Gemini CLI and Qwen
+Code send theirs as `x-goog-api-key` or to any URL they're given, so
+[`sekisho run`](cli.md#starting-a-tool-with-sekisho-run) starts them
+behind a proxy on the developer's computer, which sends the token as
+`Authorization: Bearer`. A tool set up by hand must send its token as
 `Authorization: Bearer`, which not every tool does by default.
 
 ## Model requests

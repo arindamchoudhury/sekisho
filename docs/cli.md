@@ -88,7 +88,8 @@ runs under a lock file that other `sekisho` processes wait for:
 `refresh.lock` in `~/.cache/sekisho`, or `%LOCALAPPDATA%\sekisho` on
 Windows, which never roams. When the session has ended (signed out,
 revoked, or 30 days without a refresh), `token` forgets it and exits with
-4.
+4. Inside [`sekisho run`](#starting-a-tool-with-sekisho-run), `token`
+asks the run's proxy instead.
 
 ## Signing out
 
@@ -131,12 +132,13 @@ sekisho use pay
 
 writes the environment `pay` into the coding tools of the current folder:
 its models, local MCP servers, skills, plugins and prompts. Today
-`sekisho use` installs for Claude Code; the other tools follow.
+`sekisho use` installs for Claude Code, Gemini CLI and Qwen Code; the
+other tools follow.
 
 | Option | What it does |
 |---|---|
-| `--target <tool>,…` | The tools to install for (`claude-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`), or its program on `PATH`. None found is an error listing the targets |
-| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`) |
+| `--target <tool>,…` | The tools to install for (`claude-code`, `gemini-cli`, `qwen-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`, `.gemini/`, `.qwen/`), or its program on `PATH` (`claude`, `gemini`, `qwen`). None found is an error listing the targets |
+| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`), `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`), `~/.qwen` (or `$QWEN_HOME`) |
 | `--dir <path>` | The project folder, instead of the current one |
 | `--models` | Make this environment the one these tools take their models from |
 | `--dry-run` | Show what would change, with each update's diff, and write nothing |
@@ -219,6 +221,10 @@ personal skill beats a project one):
 Claude Code also loads the global environment "tools": skill "deploy" (the session uses "tools"'s), MCP server "db".
 ```
 
+Gemini CLI and Qwen Code use the folder's model settings too, and on a
+shared name run the folder's MCP server and skill. A prompt both define
+is kept twice, one of them renamed with a prefix.
+
 ### What Claude Code gets
 
 | What | In a project | With `--global` |
@@ -253,6 +259,117 @@ project's settings only once you trust the folder.
 committed `.claude/settings.json`, so in your sessions Sekisho's settings
 win. A teammate who hasn't run `sekisho use` gets the committed file's
 `model`, `env` and `apiKeyHelper`, if it sets them.
+
+### What Gemini CLI gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings, MCP servers | `.gemini/settings.json` | `settings.json` in `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`) |
+| Skills | `.gemini/skills/<name>/` | `skills/<name>/` |
+| Prompts | `.gemini/commands/<name>.toml` | `commands/<name>.toml` |
+
+The model settings, when the environment has a model the Gemini API
+reaches: `model.name`, the `gemini` [default model](environments-and-keys.md#default-models),
+and `security.auth.selectedType` `gemini-api-key`. Start Gemini CLI with
+[`sekisho run gemini-cli`](#starting-a-tool-with-sekisho-run), which gives
+it `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`. (Gemini CLI's own
+`gateway` auth type is refused by its terminal interface, so the API-key
+type, which reads the same base URL, is used.)
+
+Gemini CLI reads a folder's `.gemini/` (settings, skills, commands and
+local MCP servers) only once you trust the folder: accept its prompt, or
+use `/permissions`. Until then, your own `~/.gemini/settings.json` applies.
+
+Each prompt becomes a TOML command, with its frontmatter's `description`
+and `$ARGUMENTS` written as `{{args}}`. A prompt whose text has `!{…}` or
+`@{…}` is skipped with a warning: Gemini CLI would run the first as a
+shell command and read the second as a file to inject.
+
+A local MCP server's settings from your environment are written as
+`${GITHUB_TOKEN}` references: Gemini CLI hands its servers only a cleaned
+copy of its environment, without names like `*TOKEN*` or `*KEY*`, so every
+one is named, and one you haven't set reaches the server empty.
+
+Gemini CLI has no project folder for extensions and doesn't read Claude
+Code plugins, so a plugin is taken apart: its skills go to `skills/`, its
+commands to `commands/<plugin>/` (`/<plugin>:<command>`), and its MCP
+servers to `mcpServers` as `<plugin>-<server>`. A server run through a
+package runner gets the same publish-time cutoff and registries as a
+catalog server; one that runs a file of the plugin's runs it from a copy
+of the plugin in `.sekisho/plugins/<env>/<plugin>/` (or Sekisho's config
+folder for `--global`). Its hooks, agents and container servers are
+skipped, with a warning.
+
+### What Qwen Code gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings, MCP servers | `.qwen/settings.json` | `settings.json` in `~/.qwen` (or `$QWEN_HOME`) |
+| Skills | `.qwen/skills/<name>/` | `skills/<name>/` |
+| Prompts | `.qwen/commands/<name>.toml` | `commands/<name>.toml` |
+
+Qwen Code takes one provider for a session: the Anthropic Messages API
+when the environment has an `anthropic` default model, else Chat
+Completions with its `openai` default. The model settings:
+
+| Setting | Value |
+|---|---|
+| `modelProviders.anthropic` (or `.openai`) | every model of the environment that API reaches, each with `baseUrl` `${SEKISHO_RUN_URL}/env/<name>/anthropic` (or `…/openai/v1`, with `wireApi` `chat-completions`) and `envKey` `SEKISHO_RUN_KEY` |
+| `security.auth.selectedType` | `anthropic` (or `openai`) |
+| `model.name` | the default model |
+
+Qwen Code fills in `${SEKISHO_RUN_URL}` from its environment when it reads
+its settings, so these settings work only inside
+[`sekisho run qwen-code`](#starting-a-tool-with-sekisho-run). Prompts and
+plugins are written as for Gemini CLI. Qwen Code's MCP servers inherit
+its environment, so a server's setting with the same name as your
+variable isn't written at all.
+
+## Starting a tool with `sekisho run`
+
+```bash
+sekisho run gemini-cli
+sekisho run qwen-code -- -p "Explain this repository"
+```
+
+starts the tool with its arguments (after `--`) and the terminal handed
+over, and exits with the tool's exit code. Gemini CLI and Qwen Code need
+it; Claude Code doesn't, since it runs `sekisho token` itself.
+
+The run takes the folder's install for the tool, else your global one:
+the environment the tool takes its models from, and the others installed
+for it. It asks the server for that environment's delivery document, and
+from it alone decides which program starts and where tokens go, never
+from the lock file, which a repository could carry. Then it listens on
+`127.0.0.1` at a free port with a new random key, and starts the tool
+with:
+
+| Variable | Value |
+|---|---|
+| `SEKISHO_RUN_URL` | the proxy, `http://127.0.0.1:<port>` |
+| `SEKISHO_RUN_KEY` | the run's key, which works only on that proxy and only while the run lasts |
+| Gemini CLI: `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` | `$SEKISHO_RUN_URL/env/<name>/gemini`, and the run's key |
+
+The proxy answers only requests that carry the run's key (as
+`Authorization: Bearer`, `x-api-key` or `x-goog-api-key`), only under
+`/env/<name>/` for the environments installed for the tool; anything
+else is 401 or 404 and goes nowhere. It removes every credential the tool
+sent (and a `key` in the query), adds `Authorization: Bearer` with a fresh
+token, and streams the request and the answer through to the gateway. The
+token is reused and refreshed as `sekisho token`'s is, so a run can last
+longer than an hour. A redirect from the gateway is answered with 502 and
+never followed. When the run has no token (your session has ended), the
+tool gets 401 with Sekisho's reason.
+
+Programs the tool starts, such as its shell commands and MCP servers, see
+`SEKISHO_RUN_URL` and `SEKISHO_RUN_KEY`, and `sekisho token` inside the
+run asks the proxy for a token, so it works without a keyring. Where no
+keyring answers, `sekisho run` signs you in with a device code for the
+run's lifetime and keeps the tokens in memory only. With `SEKISHO_KEY`
+set, the proxy sends the environment key instead.
+
+Ctrl+C reaches the tool from the terminal; the run waits for the tool to
+finish.
 
 ### Removing an environment
 
@@ -306,6 +423,7 @@ stops (exit 2) until `--env` picks one.
 | `SEKISHO_URL` | The server, used before the one in `config.json` |
 | `SEKISHO_KEY` | An environment key. `sekisho token` prints it, and nothing is read from the credential store. With `SEKISHO_URL`, no config file is needed: for CI |
 | `SEKISHO_CONFIG_DIR` | One folder for `config.json` and `refresh.lock`, instead of the defaults below |
+| `SEKISHO_RUN_URL`, `SEKISHO_RUN_KEY` | Set by [`sekisho run`](#starting-a-tool-with-sekisho-run) for the tool it starts; `sekisho token` then asks the run's proxy |
 
 `config.json` holds the server URL and your email only, and on Linux and
 macOS only you can read it. It is in `~/.config/sekisho`, or
@@ -323,3 +441,6 @@ Results go to stdout; progress and warnings to stderr. An error prints
 | 2 | The command line was wrong |
 | 3 | Refused: a check failed, a name clashes with another environment's, or an answer is needed and there is no terminal |
 | 4 | Not signed in |
+
+Once the tool has started, `sekisho run` exits with the tool's own exit
+code.

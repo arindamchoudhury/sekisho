@@ -47,7 +47,8 @@ impl ToolHomes {
                     Tool::GeminiCli => set("GEMINI_CLI_HOME")
                         .unwrap_or_else(|| home.to_path_buf())
                         .join(".gemini"),
-                    Tool::QwenCode => home.join(".qwen"),
+                    // QWEN_HOME is the `.qwen` folder itself.
+                    Tool::QwenCode => set("QWEN_HOME").unwrap_or_else(|| home.join(".qwen")),
                     Tool::OpenCode => config.join("opencode"),
                     Tool::KiloCli => config.join("kilo"),
                     Tool::CopilotCli => {

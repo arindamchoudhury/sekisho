@@ -37,6 +37,25 @@ pub(crate) fn frontmatter(text: &str) -> Result<Option<Mapping>, String> {
     }
 }
 
+/// A Markdown prompt or command's frontmatter `description` (empty when it
+/// has none) and its body after the frontmatter, for the tools that take
+/// prompts in another form (plan 4, Task 7).
+pub fn description_and_body(text: &str) -> Result<(String, String), String> {
+    let description = match frontmatter(text)? {
+        Some(map) => crate::obot::Fields::root(&map)
+            .text("description")?
+            .unwrap_or_default(),
+        None => return Ok((String::new(), text.to_owned())),
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let end = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.trim() == "---")
+        .map_or(0, |i| i + 2);
+    Ok((description, lines[end..].join("\n")))
+}
+
 /// Finds the skills under `root`.
 pub(crate) fn check(root: &Path, limits: &Limits, out: &mut SourceCheck) -> Result<(), CheckError> {
     // A skill at the root has no folder name to match, as in Obot.

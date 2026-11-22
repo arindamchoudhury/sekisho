@@ -13,14 +13,19 @@ use serde::{Deserialize, Serialize};
 use crate::install::Scope;
 
 mod claude_code;
+mod gemini_cli;
+mod qwen_code;
 mod test_adapter;
+mod translate;
 
 pub use claude_code::ClaudeCode;
+pub use gemini_cli::GeminiCli;
+pub use qwen_code::QwenCode;
 pub use test_adapter::TestAdapter;
 
 /// Every tool `use` can install for, as each adapter task adds its own.
 pub fn all() -> Vec<&'static dyn Adapter> {
-    vec![&ClaudeCode]
+    vec![&ClaudeCode, &GeminiCli, &QwenCode]
 }
 
 /// The eight coding tools of release 1 (D19).
@@ -83,23 +88,30 @@ impl Tool {
 
 /// `program` is on `PATH` (with Windows' `PATHEXT` extensions).
 pub fn on_path(program: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
+    find_on_path(program).is_some()
+}
+
+/// Where `program` is on `PATH`: the first folder holding it, trying
+/// Windows' `PATHEXT` extensions in order there (npm installs the coding
+/// tools as `.cmd` files, which Windows' process start doesn't search for).
+pub fn find_on_path(program: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
     let extensions: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
             .split(';')
+            .filter(|e| !e.is_empty())
             .map(str::to_owned)
             .chain(std::iter::once(String::new()))
             .collect()
     } else {
         vec![String::new()]
     };
-    std::env::split_paths(&path).any(|dir| {
+    std::env::split_paths(&path).find_map(|dir| {
         extensions
             .iter()
-            .any(|ext| dir.join(format!("{program}{ext}")).is_file())
+            .map(|ext| dir.join(format!("{program}{ext}")))
+            .find(|p| p.is_file())
     })
 }
 
@@ -382,6 +394,8 @@ pub struct Rendered {
     pub files: Vec<FileWrite>,
     pub keys: Vec<KeyWrite>,
     pub skipped: Vec<Skipped>,
+    /// Anything else the person should know, listed with the skipped.
+    pub warnings: Vec<String>,
     pub run: Option<RunSpec>,
 }
 
@@ -447,4 +461,18 @@ pub trait Adapter {
 
     /// How the tool combines a project and a global install (D214).
     fn layering(&self) -> Layering;
+
+    /// How `sekisho run` starts the tool with `d` as its model environment;
+    /// `None` when the tool takes its key without `sekisho run`, or `d` has
+    /// no model it can use. `sekisho run` asks this of a delivery document
+    /// it fetched, never of the lock, which a repository could carry.
+    fn run_spec(&self, _d: &Delivery) -> Option<RunSpec> {
+        None
+    }
+
+    /// What `use` tells the person about this tool in `scope`, such as a
+    /// step the tool needs before it reads the install.
+    fn note(&self, _scope: &Scope) -> Option<String> {
+        None
+    }
 }

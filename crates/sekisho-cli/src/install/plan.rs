@@ -868,6 +868,9 @@ pub(super) fn install(
         for s in &rendered.skipped {
             warnings.push(format!("{tool}: {} skipped: {}", s.what, s.why));
         }
+        for w in &rendered.warnings {
+            warnings.push(format!("{tool}: {w}"));
+        }
         for f in &rendered.files {
             p.want_file(&env, tool, f)?;
         }

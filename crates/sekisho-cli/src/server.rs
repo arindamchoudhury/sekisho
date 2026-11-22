@@ -26,7 +26,21 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// The most an answer may hold.
 pub const LIMIT: usize = 64 << 20;
 
-type Https = hyper_rustls::HttpsConnector<HttpConnector>;
+pub(crate) type Https = hyper_rustls::HttpsConnector<HttpConnector>;
+
+/// HTTP/1 over rustls with ring and the platform's verifier, or plain HTTP
+/// where the URL rule allows it (D197): the connector every CLI request
+/// goes through, `sekisho run`'s proxy included.
+pub(crate) fn connector() -> Result<Https, CliError> {
+    let mut http = HttpConnector::new();
+    http.enforce_http(false);
+    http.set_connect_timeout(Some(TIMEOUT));
+    Ok(hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config().map_err(CliError::error)?)
+        .https_or_http()
+        .enable_http1()
+        .wrap_connector(http))
+}
 
 /// Sekisho at one URL.
 #[derive(Clone)]
@@ -120,7 +134,7 @@ fn tls_config() -> Result<rustls::ClientConfig, String> {
 }
 
 /// An error and its causes.
-fn describe(e: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn describe(e: &(dyn std::error::Error + 'static)) -> String {
     let mut text = e.to_string();
     let mut source = e.source();
     while let Some(cause) = source {
@@ -133,17 +147,9 @@ fn describe(e: &(dyn std::error::Error + 'static)) -> String {
 
 impl Server {
     pub fn new(url: ServerUrl) -> Result<Self, CliError> {
-        let mut http = HttpConnector::new();
-        http.enforce_http(false);
-        http.set_connect_timeout(Some(TIMEOUT));
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls_config().map_err(CliError::error)?)
-            .https_or_http()
-            .enable_http1()
-            .wrap_connector(http);
         Ok(Self {
             url,
-            client: Client::builder(TokioExecutor::new()).build(connector),
+            client: Client::builder(TokioExecutor::new()).build(connector()?),
             user_agent: HeaderValue::from_str(&format!("sekisho/{}", env!("CARGO_PKG_VERSION")))
                 .expect("a valid header"),
         })

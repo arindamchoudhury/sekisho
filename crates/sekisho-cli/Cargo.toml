@@ -37,7 +37,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde", "formatting", "parsing"] }
 toml_edit = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 url = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -53,4 +53,5 @@ sekisho-hooks = { workspace = true }
 sekisho-server = { path = "../sekisho-server" }
 sekisho-store = { workspace = true }
 sekisho-testkit = { workspace = true }
+tokio-stream = { workspace = true }
 uuid = { workspace = true }
