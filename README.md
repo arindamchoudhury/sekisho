@@ -100,6 +100,11 @@ and what they carried.
     cache rebuilds: requests that wrote the whole context to the cache
     again after a break longer than the cache lasts, and what they cost
     beyond a cache read.
+  - Spend, cache use and refusals by coding tool: Sekisho records which of
+    the eight tools made each model call, and its version, from a header
+    `sekisho use` sets, since some tools copy another's User-Agent. Admins
+    can compare what each tool costs a team on the same models, and see
+    which tool versions are still in use.
   - Budgets send alerts to signed webhooks, at 50%, 80% and 100% by default.
   - Spend exports as CSV, JSON or [FOCUS](https://focus.finops.org/), the
     FinOps cost format, so it can sit beside the rest of the company's cloud
