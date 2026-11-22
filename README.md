@@ -55,9 +55,12 @@ and what they carried.
   - its models and its default model, MCP servers (each with a tool
     allow-list) and A2A agents;
   - its skills, plugins and prompts;
+  - its instructions, short texts every coding session loads, such as
+    "run `make check`, not `cargo test`";
   - toolkits, reusable sets of catalog entries shared by several
     environments, such as a FinOps toolkit of MCP servers, A2A agents,
-    skills, plugins and prompts; an environment delivers each entry once;
+    skills, plugins, prompts and instructions; an environment delivers
+    each entry once;
   - its budgets;
   - labels, such as a cost centre, which travel with its spend exports.
 
@@ -116,8 +119,8 @@ and what they carried.
     tools without an A2A client can use them too. Each agent's card is
     pinned when its catalog syncs, and clients get that reviewed copy from
     Sekisho, never a description that changed unseen.
-- **Catalogs from Git.** MCP servers, A2A agents, skills, plugins, prompts
-  and toolkits, pinned to commits. The MCP and skill catalogs use
+- **Catalogs from Git.** MCP servers, A2A agents, skills, plugins, prompts,
+  instructions and toolkits, pinned to commits. The MCP and skill catalogs use
   Obot-compatible formats; plugins use Claude Code's plugin and
   marketplace format, which is also
   what Microsoft APM's `apm pack` produces, so teams that write their agents
@@ -140,6 +143,11 @@ and what they carried.
   CLI, for one project or globally:
   - model and MCP endpoints, the environment's default model, local MCP
     servers, skills, plugins and prompts;
+  - instructions, each as a file of Sekisho's own that the tool loads at
+    every session start, such as `.claude/rules/` for Claude Code and
+    `developer_instructions` for Codex. Sekisho never writes the
+    repository's own `AGENTS.md` or `CLAUDE.md`, and an instruction with
+    hidden Unicode characters is refused;
   - several environments in one folder, which add up: each tool takes its
     models from one of them and gets every environment's MCP servers, skills,
     plugins and prompts; two environments that deliver different content
