@@ -451,3 +451,75 @@ fn a_second_environment_adds_no_model_settings() {
         "https://gw.example.com/env/b/anthropic"
     );
 }
+
+/// D227: Claude Code names itself to the gateway in a line of
+/// `ANTHROPIC_CUSTOM_HEADERS`, beside the person's own lines, which stay
+/// through `use` and `uninstall`. A committed `.claude/settings.json` that
+/// sets the variable is hidden by the local file, so `use` says so.
+#[test]
+fn claude_code_sends_its_tool_header_beside_the_persons_own() {
+    let w = World::new();
+    let d = delivery("a", Some("sonnet"), vec![]);
+    w.install(&w.project_scope(), &d, Options::default())
+        .unwrap();
+    let local = w.project.join(".claude/settings.local.json");
+    assert_eq!(
+        json_at(&local)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+        "x-sekisho-tool: claude-code"
+    );
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+
+    // The person's own lines stay, in the same file.
+    let w = World::new();
+    std::fs::create_dir_all(w.project.join(".claude")).unwrap();
+    std::fs::write(
+        local_of(&w),
+        r#"{"env": {"ANTHROPIC_CUSTOM_HEADERS": "x-team: pay\nx-trace: on"}}"#,
+    )
+    .unwrap();
+    w.install(&w.project_scope(), &d, Options::default())
+        .unwrap();
+    assert_eq!(
+        json_at(&local_of(&w))["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+        "x-team: pay\nx-trace: on\nx-sekisho-tool: claude-code"
+    );
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert_eq!(
+        json_at(&local_of(&w))["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+        "x-team: pay\nx-trace: on"
+    );
+
+    // A line of the person's naming the header is theirs: asked about.
+    let w = World::new();
+    std::fs::create_dir_all(w.project.join(".claude")).unwrap();
+    std::fs::write(
+        local_of(&w),
+        r#"{"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Sekisho-Tool: mine"}}"#,
+    )
+    .unwrap();
+    let err = w
+        .install(&w.project_scope(), &d, Options::default())
+        .unwrap_err();
+    assert!(matches!(err, InstallError::NeedsConsent(_)), "{err:?}");
+
+    // The committed file's value is hidden in the person's sessions.
+    let w = World::new();
+    std::fs::create_dir_all(w.project.join(".claude")).unwrap();
+    std::fs::write(
+        w.project.join(".claude/settings.json"),
+        r#"{"env": {"ANTHROPIC_CUSTOM_HEADERS": "x-team: pay"}}"#,
+    )
+    .unwrap();
+    let report = w
+        .install(&w.project_scope(), &d, Options::default())
+        .unwrap();
+    let warned = report.warnings.join("\n");
+    assert!(
+        warned.contains("ANTHROPIC_CUSTOM_HEADERS") && warned.contains(".claude/settings.json"),
+        "{warned}"
+    );
+}
+
+fn local_of(w: &World) -> PathBuf {
+    w.project.join(".claude/settings.local.json")
+}

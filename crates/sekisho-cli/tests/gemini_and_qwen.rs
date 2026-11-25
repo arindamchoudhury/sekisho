@@ -560,3 +560,29 @@ fn no_file_holds_a_secret_and_the_layering_is_each_tools() {
     assert_eq!(GeminiCli.tool(), Tool::GeminiCli);
     assert_eq!(QwenCode.tool(), Tool::QwenCode);
 }
+
+/// D227: Gemini CLI reaches Sekisho only through `sekisho run`, whose proxy
+/// adds `x-sekisho-tool`; Qwen Code's provider names it in
+/// `generationConfig.customHeaders`.
+#[test]
+fn gemini_cli_and_qwen_code_send_their_tool_headers() {
+    let d = delivery("a", every_default(), vec![]);
+    let run = GeminiCli.run_spec(&d).unwrap();
+    assert!(run.tool_header);
+    assert!(!run.env.contains_key("GEMINI_CLI_CUSTOM_HEADERS"));
+
+    let w = World::new();
+    w.install(&QwenCode, &w.project_scope(), &d).unwrap();
+    let settings = json_at(&w.project.join(".qwen/settings.json"));
+    let providers = settings["modelProviders"].as_object().unwrap();
+    assert!(!providers.is_empty());
+    for list in providers.values() {
+        for p in list.as_array().unwrap() {
+            assert_eq!(
+                p["generationConfig"]["customHeaders"]["x-sekisho-tool"], "qwen-code",
+                "{p}"
+            );
+        }
+    }
+    assert!(!QwenCode.run_spec(&d).unwrap().tool_header);
+}

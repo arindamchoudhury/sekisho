@@ -90,6 +90,10 @@ impl Adapter for QwenCode {
                                 "name": m.name.to_string(),
                                 "baseUrl": base,
                                 "envKey": "SEKISHO_RUN_KEY",
+                                // D227: the tool names itself to the gateway.
+                                "generationConfig": { "customHeaders": {
+                                    (sekisho_core::TOOL_HEADER): Tool::QwenCode.as_str(),
+                                } },
                             });
                             if api == ClientApi::ChatCompletions {
                                 v["wireApi"] = json!("chat-completions");

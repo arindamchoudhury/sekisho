@@ -261,6 +261,9 @@ impl Adapter for GeminiCli {
                 ("GEMINI_API_KEY".to_owned(), "${SEKISHO_RUN_KEY}".to_owned()),
             ]
             .into(),
+            // Gemini CLI reaches Sekisho only through the run's proxy,
+            // which names it to the gateway (D227).
+            tool_header: true,
         })
     }
 

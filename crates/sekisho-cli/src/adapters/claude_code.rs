@@ -23,11 +23,14 @@ use super::{
 };
 use crate::install::Scope;
 use crate::install::launch::{EnvValue, LocalServer};
-use crate::install::merge::item_key;
+use crate::install::merge::{self, item_key, line_key};
 
 /// `apiKeyHelper`'s cache lifetime: 50 minutes, inside a session token's
 /// hour (D193).
 const HELPER_TTL_MS: &str = "3000000";
+
+/// The headers Claude Code adds to its model calls: `Name: Value` lines.
+const CUSTOM_HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
 
 /// Claude Code.
 #[derive(Clone, Copy, Debug, Default)]
@@ -80,6 +83,26 @@ impl ClaudeCode {
     fn path(rel: &str) -> Result<RelPath, AdapterError> {
         Ok(RelPath::parse(rel)?)
     }
+}
+
+/// Claude Code takes each `env` variable whole from the settings file that
+/// wins, so the local file's `ANTHROPIC_CUSTOM_HEADERS` hides the committed
+/// `.claude/settings.json`'s in this person's sessions: said, never copied.
+fn hidden_headers(ctx: &RenderContext<'_>) -> Result<Option<String>, AdapterError> {
+    let committed = ClaudeCode::path(".claude/settings.json")?;
+    let Some(text) = (ctx.read)(Root::Project, &committed) else {
+        return Ok(None);
+    };
+    let key = vec!["env".to_owned(), CUSTOM_HEADERS.to_owned()];
+    Ok(match merge::get(Format::Json, &text, &key) {
+        Ok(Some(Value::String(s))) if !s.trim().is_empty() => Some(format!(
+            "claude-code: .claude/settings.local.json sets {CUSTOM_HEADERS} to add {}, so in \
+             your sessions it replaces the one in .claude/settings.json; add that file's lines \
+             to .claude/settings.local.json to keep sending them",
+            sekisho_core::TOOL_HEADER
+        )),
+        _ => None,
+    })
 }
 
 impl Adapter for ClaudeCode {
@@ -166,6 +189,20 @@ impl Adapter for ClaudeCode {
                             json!(value),
                             Origin::Models,
                         ));
+                    }
+                    // D227: the tool names itself to the gateway, in a line
+                    // of its own beside the person's.
+                    out.keys.push(key(
+                        line_key(&["env", CUSTOM_HEADERS], sekisho_core::TOOL_HEADER),
+                        json!(format!(
+                            "{}: {}",
+                            sekisho_core::TOOL_HEADER,
+                            Tool::ClaudeCode.as_str()
+                        )),
+                        Origin::Models,
+                    ));
+                    if project {
+                        out.warnings.extend(hidden_headers(ctx)?);
                     }
                 }
             }

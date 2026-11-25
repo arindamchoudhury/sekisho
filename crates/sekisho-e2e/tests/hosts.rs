@@ -633,3 +633,18 @@ async fn a_preset_hosts_model_is_charged_the_catalog_price() {
     let r = the_request_since(before).await;
     assert_bearer(&r, "/v1/chat/completions", TOGETHER_KEY);
 }
+
+/// D227: a coding tool's `x-sekisho-tool` is accepted with the request and
+/// removed before the provider.
+#[tokio::test]
+#[ignore]
+async fn providers_never_see_the_tool_header() {
+    ensure_hosts().await;
+    let (env, _, token, budget) = cloud_env("tool-header", &[QWEN], "openai").await;
+    let before = mock_requests().await.len();
+    ok(chat(&env, &token, QWEN, 1).header("x-sekisho-tool", "qwen-code")).await;
+    wait_charged(&budget, cost(1, 2, 1)).await;
+    let r = the_request_since(before).await;
+    assert_bearer(&r, "/v1/chat/completions", CHAT_HOST_KEY);
+    assert!(r["headers"].get("x-sekisho-tool").is_none(), "{r}");
+}

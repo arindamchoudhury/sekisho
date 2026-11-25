@@ -286,6 +286,7 @@ warning says so):
 | `env.ANTHROPIC_DEFAULT_OPUS_MODEL`, `env.ANTHROPIC_DEFAULT_SONNET_MODEL`, `env.CLAUDE_CODE_SUBAGENT_MODEL` | the default model |
 | `env.ANTHROPIC_DEFAULT_HAIKU_MODEL` | the small model, else the default |
 | `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | `3000000`: a token is asked for again after 50 minutes |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | a line `x-sekisho-tool: claude-code`, beside any lines of yours |
 
 A local MCP server's settings from your own environment are written as
 references, `${GITHUB_TOKEN}` (or `${LOG_LEVEL:-}` for one it can do
@@ -298,6 +299,15 @@ project's settings only once you trust the folder.
 committed `.claude/settings.json`, so in your sessions Sekisho's settings
 win. A teammate who hasn't run `sekisho use` gets the committed file's
 `model`, `env` and `apiKeyHelper`, if it sets them.
+
+`ANTHROPIC_CUSTOM_HEADERS` holds `Name: Value` lines, and Sekisho owns
+only its own line, [`x-sekisho-tool`](gateway.md#which-coding-tool-made-a-call):
+lines of yours in the same file stay, through `use` and `uninstall`. A
+line of yours naming `x-sekisho-tool` is asked about first. Claude Code
+takes the whole variable from the settings file that wins, so when the
+committed `.claude/settings.json` sets it too, `use` warns that its lines
+aren't sent in your sessions; copy them into
+`.claude/settings.local.json` to keep them.
 
 Instructions are rules: Claude Code loads `.claude/rules/` at launch with
 the priority of `.claude/CLAUDE.md`, and rules don't count as a
@@ -387,6 +397,9 @@ Completions with its `openai` default. The model settings:
 | `security.auth.selectedType` | `anthropic` (or `openai`) |
 | `model.name` | the default model |
 
+Each provider also gets `generationConfig.customHeaders` with
+[`x-sekisho-tool: qwen-code`](gateway.md#which-coding-tool-made-a-call).
+
 Qwen Code fills in `${SEKISHO_RUN_URL}` from its environment when it reads
 its settings, so these settings work only inside
 [`sekisho run qwen-code`](#starting-a-tool-with-sekisho-run). Prompts and
@@ -431,7 +444,10 @@ The proxy answers only requests that carry the run's key (as
 `/env/<name>/` for the environments installed for the tool; anything
 else is 401 or 404 and goes nowhere. It removes every credential the tool
 sent (and a `key` in the query), adds `Authorization: Bearer` with a fresh
-token, and streams the request and the answer through to the gateway. The
+token, and streams the request and the answer through to the gateway. For
+Gemini CLI, whose own settings can't carry it, the proxy also sets
+[`x-sekisho-tool: gemini-cli`](gateway.md#which-coding-tool-made-a-call)
+on every request, replacing any copy the tool sent. The
 token is reused and refreshed as `sekisho token`'s is, so a run can last
 longer than an hour. A redirect from the gateway is answered with 502 and
 never followed. When the run has no token (your session has ended), the

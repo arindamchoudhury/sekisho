@@ -27,7 +27,9 @@ The credential must be in `Authorization: Bearer`. agentgateway removes
 provider, so a Sekisho token never reaches a provider, and a provider key a
 tool sends is never used. It also removes Sekisho's own `x-sekisho-env` and
 `x-sekisho-model` headers, so a client can't choose an environment or a
-model with them, and they never reach a provider.
+model with them, and they never reach a provider. The same goes for
+`x-sekisho-tool`, which names the coding tool that made the call
+([below](#which-coding-tool-made-a-call)).
 
 [`sekisho use`](cli.md#installing-an-environment) writes these settings
 for Claude Code, Gemini CLI and Qwen Code. Claude Code asks `sekisho
@@ -37,6 +39,21 @@ Code send theirs as `x-goog-api-key` or to any URL they're given, so
 behind a proxy on the developer's computer, which sends the token as
 `Authorization: Bearer`. A tool set up by hand must send its token as
 `Authorization: Bearer`, which not every tool does by default.
+
+### Which coding tool made a call
+
+Claude Code, Gemini CLI and Qwen Code, set up by
+[`sekisho use`](cli.md#installing-an-environment) and, for the last two,
+started by [`sekisho run`](cli.md#starting-a-tool-with-sekisho-run), name
+themselves on every model call in an `x-sekisho-tool` header:
+`claude-code`, `gemini-cli` or `qwen-code`. It is there so that spend and
+usage can later be reported per tool; a tool's User-Agent alone can't say
+this, since Qwen Code sends Claude Code's to every gateway but
+Anthropic's.
+
+The header is the client's own, so it never decides access, budgets or
+prices: any client can send any value. agentgateway removes it before
+the provider, so no provider sees it. Sekisho doesn't record it yet.
 
 ## Model requests
 

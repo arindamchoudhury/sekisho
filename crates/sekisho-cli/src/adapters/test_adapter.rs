@@ -174,6 +174,7 @@ impl Adapter for TestAdapter {
                 program: self.tool.as_str().to_owned(),
                 args: Vec::new(),
                 env: [("BASE".to_owned(), d.gateway_url.clone())].into(),
+                ..RunSpec::default()
             });
         }
         Ok(out)

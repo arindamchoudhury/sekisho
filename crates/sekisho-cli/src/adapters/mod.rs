@@ -396,6 +396,15 @@ pub struct RunSpec {
     pub program: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// The run's proxy sets [`sekisho_core::TOOL_HEADER`] on every request
+    /// it forwards, replacing any copy: for a tool whose own config can't
+    /// carry it (D227).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_header: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// What an adapter makes of one environment.

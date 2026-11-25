@@ -116,7 +116,7 @@ fn fixed(token: &'static str) -> TokenFn {
 async fn proxy_for(gw: &Gateway, envs: &[&str], tokens: TokenFn) -> run::Proxy {
     let gateways: BTreeMap<String, ServerUrl> =
         envs.iter().map(|e| ((*e).to_owned(), gw.env(e))).collect();
-    run::start(gateways, tokens).await.unwrap()
+    run::start(gateways, tokens, None).await.unwrap()
 }
 
 fn client() -> reqwest::Client {
@@ -461,6 +461,7 @@ async fn the_tools_exit_code_is_returned() {
             ("KEY".to_owned(), "${SEKISHO_RUN_KEY}".to_owned()),
         ]
         .into(),
+        tool_header: false,
     };
     let code = run::run_child(&spec, &["7".to_owned()], &proxy)
         .await
@@ -557,4 +558,46 @@ fn the_gateway_comes_from_the_servers_delivery_document() {
     ] {
         assert!(run::gateways(&d(bad), &envs).is_err(), "{bad}");
     }
+}
+
+/// D227: for a tool that sends no header of its own, the proxy sets
+/// `x-sekisho-tool` on every request it forwards, replacing any copy the
+/// tool sent; a run that doesn't ask for it forwards none of its own.
+#[tokio::test]
+async fn the_proxy_sets_the_tool_header_and_overwrites_a_copy() {
+    let gw = Gateway::start().await;
+    let gateways: BTreeMap<String, ServerUrl> = [("a".to_owned(), gw.env("a"))].into();
+    let proxy = run::start(gateways, fixed("t"), Some(Tool::GeminiCli))
+        .await
+        .unwrap();
+    let path = "/env/a/gemini/v1beta/models/flash:generateContent";
+    let c = client();
+    c.post(format!("{}{path}", proxy.url()))
+        .header("x-goog-api-key", proxy.secret())
+        .send()
+        .await
+        .unwrap();
+    c.post(format!("{}{path}", proxy.url()))
+        .header("x-goog-api-key", proxy.secret())
+        .header("x-sekisho-tool", "claude-code")
+        .header("X-Sekisho-Tool", "codex")
+        .send()
+        .await
+        .unwrap();
+    let seen = gw.seen();
+    assert_eq!(seen.len(), 2);
+    for s in &seen {
+        let sent: Vec<_> = s.headers.get_all("x-sekisho-tool").iter().collect();
+        assert_eq!(sent, ["gemini-cli"], "{:?}", s.headers);
+    }
+    proxy.stop().await;
+
+    let gw = Gateway::start().await;
+    let proxy = proxy_for(&gw, &["a"], fixed("t")).await;
+    c.post(format!("{}{path}", proxy.url()))
+        .header("x-goog-api-key", proxy.secret())
+        .send()
+        .await
+        .unwrap();
+    assert!(gw.seen()[0].headers.get("x-sekisho-tool").is_none());
 }

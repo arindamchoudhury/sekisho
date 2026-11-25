@@ -157,12 +157,16 @@ struct Shared {
     gateways: Arc<BTreeMap<String, ServerUrl>>,
     tokens: TokenFn,
     client: Client<Https, Body>,
+    /// The tool the proxy names to the gateway on every request (D227).
+    tool: Option<HeaderValue>,
 }
 
-/// Starts the proxy for `gateways`, with a new 32-byte secret.
+/// Starts the proxy for `gateways`, with a new 32-byte secret; with
+/// `tool_header`, every request it forwards names that tool (D227).
 pub async fn start(
     gateways: BTreeMap<String, ServerUrl>,
     tokens: TokenFn,
+    tool_header: Option<Tool>,
 ) -> Result<Proxy, CliError> {
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -176,6 +180,7 @@ pub async fn start(
         gateways: Arc::new(gateways),
         tokens,
         client: Client::builder(TokioExecutor::new()).build(connector()?),
+        tool: tool_header.map(|t| HeaderValue::from_static(t.as_str())),
     };
     let app = Router::new().fallback(handle).with_state(shared);
     let task = tokio::spawn(async move {
@@ -355,6 +360,13 @@ async fn handle(State(s): State<Shared>, req: Request) -> Response {
     bearer.set_sensitive(true);
     strip(&mut parts.headers);
     parts.headers.insert(header::AUTHORIZATION, bearer);
+    if let Some(tool) = &s.tool {
+        // `insert` replaces every copy the tool sent.
+        parts.headers.insert(
+            HeaderName::from_static(sekisho_core::TOOL_HEADER),
+            tool.clone(),
+        );
+    }
     parts.uri = uri;
     let answer = match s.client.request(Request::from_parts(parts, body)).await {
         Ok(answer) => answer,

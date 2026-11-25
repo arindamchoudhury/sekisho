@@ -31,12 +31,56 @@ fn split_item(key: &[String]) -> Option<(&[String], &str)> {
     (!array.is_empty()).then_some((array, item))
 }
 
-/// `key` for people: an item as `[name]`.
+/// Starts a key's last segment that names one `Name: Value` line of a
+/// string of such lines rather than a key, so a variable holding several
+/// headers (Claude Code's `ANTHROPIC_CUSTOM_HEADERS`) can hold Sekisho's
+/// line beside the user's. The line is found by its name, in any case.
+pub const LINE: char = '\u{2}';
+
+/// The key of the line named `name` in the string at `at`. Its value is
+/// the whole line, `Name: Value`.
+pub fn line_key(at: &[&str], name: &str) -> Vec<String> {
+    let mut key: Vec<String> = at.iter().map(|s| (*s).to_owned()).collect();
+    key.push(format!("{LINE}{name}"));
+    key
+}
+
+/// The string's key and the line's name, when `key` names a line.
+fn split_line(key: &[String]) -> Option<(&[String], &str)> {
+    let (last, at) = key.split_last()?;
+    let name = last.strip_prefix(LINE)?;
+    (!at.is_empty()).then_some((at, name))
+}
+
+/// `line` is a `Name: Value` line named `name`.
+fn names(line: &str, name: &str) -> bool {
+    line.split_once(':')
+        .is_some_and(|(n, _)| n.trim().eq_ignore_ascii_case(name))
+}
+
+/// What is at `at`: `None` when nothing is.
+fn value_at(
+    format: Format,
+    text: Option<&str>,
+    at: &[String],
+) -> Result<Option<Value>, MergeError> {
+    match text {
+        Some(t) => get(format, t, at),
+        None => Ok(None),
+    }
+}
+
+/// `key` for people: an item as `[name]`, a line as `[name:]`.
 pub fn show_key(key: &[String]) -> String {
     key.iter()
-        .map(|s| match s.strip_prefix(ITEM) {
-            Some(item) => format!("[{item}]"),
-            None => s.clone(),
+        .map(|s| {
+            if let Some(item) = s.strip_prefix(ITEM) {
+                format!("[{item}]")
+            } else if let Some(line) = s.strip_prefix(LINE) {
+                format!("[{line}:]")
+            } else {
+                s.clone()
+            }
         })
         .collect::<Vec<_>>()
         .join(".")
@@ -173,6 +217,13 @@ pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, 
     if format == Format::MarkdownBlock {
         return block_get(text, key);
     }
+    if let Some((at, name)) = split_line(key) {
+        let found = match get(format, text, at)? {
+            Some(Value::String(s)) => s.lines().find(|l| names(l, name)).map(str::to_owned),
+            _ => None,
+        };
+        return Ok(found.map(Value::String));
+    }
     if let Some((array, item)) = split_item(key) {
         if format == Format::Toml {
             return Err("array items are kept only in JSON".into());
@@ -223,6 +274,30 @@ pub fn set(
 ) -> Result<String, MergeError> {
     if format == Format::MarkdownBlock {
         return block_set(text, key, value);
+    }
+    if let Some((at, name)) = split_line(key) {
+        let line = value.as_str().ok_or("a line is a string")?;
+        let now = match value_at(format, text, at)? {
+            Some(Value::String(s)) => s,
+            None => String::new(),
+            Some(_) => return Err(format!("{} isn't a string", show_key(at))),
+        };
+        // The line takes the place of the first of its name; any other
+        // copy goes, so the tool sends one.
+        let mut lines: Vec<&str> = Vec::new();
+        let mut placed = false;
+        for l in now.lines().filter(|l| !l.trim().is_empty()) {
+            if !names(l, name) {
+                lines.push(l);
+            } else if !placed {
+                lines.push(line);
+                placed = true;
+            }
+        }
+        if !placed {
+            lines.push(line);
+        }
+        return set(format, text, at, &Value::String(lines.join("\n")));
     }
     let (last, parents) = key.split_last().ok_or("an empty key")?;
     if let Some((array, item)) = split_item(key) {
@@ -284,6 +359,23 @@ pub fn set(
 pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
     if format == Format::MarkdownBlock {
         return block_remove(text, key);
+    }
+    if let Some((at, name)) = split_line(key) {
+        let now = match get(format, text, at)? {
+            Some(Value::String(s)) => s,
+            // Nothing there: removing the missing key changes nothing.
+            None => return remove(format, text, at),
+            Some(_) => return Ok((text.to_owned(), false)),
+        };
+        let left: Vec<&str> = now
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !names(l, name))
+            .collect();
+        if left.is_empty() {
+            return remove(format, text, at);
+        }
+        let text = set(format, Some(text), at, &Value::String(left.join("\n")))?;
+        return Ok((text, false));
     }
     if let Some((array, item)) = split_item(key) {
         if format == Format::Toml {
@@ -606,5 +698,37 @@ mod tests {
         let (text, empty) = remove(Format::Toml, &text, &key(&["x", "y"])).unwrap();
         assert!(!empty);
         assert!(!text.contains('x'), "{text}");
+    }
+
+    #[test]
+    fn header_lines_are_set_read_and_removed_beside_the_users() {
+        let at = ["env", "H"];
+        let k = line_key(&at, "x-tool");
+        let line = serde_json::json!("x-tool: a");
+        let only = set(Format::Json, None, &k, &line).unwrap();
+        assert_eq!(get(Format::Json, &only, &k).unwrap(), Some(line.clone()));
+        let (text, empty) = remove(Format::Json, &only, &k).unwrap();
+        assert!(empty, "{text}");
+
+        let mine = "{\"env\": {\"H\": \"x-team: pay\\nX-Tool: old\\nx-tool: dup\"}}";
+        assert_eq!(
+            get(Format::Json, mine, &k).unwrap(),
+            Some(serde_json::json!("X-Tool: old"))
+        );
+        let text = set(Format::Json, Some(mine), &k, &line).unwrap();
+        assert_eq!(
+            get(Format::Json, &text, &key(&at)).unwrap(),
+            Some(serde_json::json!("x-team: pay\nx-tool: a"))
+        );
+        let (text, empty) = remove(Format::Json, &text, &k).unwrap();
+        assert!(!empty);
+        assert_eq!(
+            get(Format::Json, &text, &key(&at)).unwrap(),
+            Some(serde_json::json!("x-team: pay"))
+        );
+        // Nothing to remove changes nothing.
+        let (same, _) = remove(Format::Json, &text, &k).unwrap();
+        assert_eq!(same, text);
+        assert_eq!(show_key(&k), "env.H.[x-tool:]");
     }
 }

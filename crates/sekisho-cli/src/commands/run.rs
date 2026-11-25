@@ -93,7 +93,7 @@ pub async fn run_tool(tool: Tool, args: &[String]) -> Result<i32, CliError> {
         ))
     })?;
     let gateways = run::gateways(&d, &plan.envs)?;
-    let proxy = run::start(gateways, tokens).await?;
+    let proxy = run::start(gateways, tokens, spec.tool_header.then_some(tool)).await?;
     let code = run::run_child(&spec, args, &proxy).await;
     proxy.stop().await;
     code

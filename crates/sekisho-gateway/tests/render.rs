@@ -462,8 +462,36 @@ fn client_credentials_are_removed_before_the_provider() {
             "x-api-key",
             "api-key",
             "x-goog-api-key",
-            "x-sekisho-model"
+            "x-sekisho-model",
+            "x-sekisho-tool"
         ])
+    );
+}
+
+/// D227: the coding tool's `x-sekisho-tool` is the client's own, for
+/// reports only. agentgateway runs `extAuthz` before the transformation,
+/// so plan 6's hook can read it, and the transformation removes it, so no
+/// provider sees it. The gateway never sets it.
+#[test]
+fn the_tool_header_never_reaches_the_provider() {
+    let doc = rendered(&fixtures::every_kind());
+    let p = policies(&doc);
+    assert_eq!(sekisho_core::TOOL_HEADER, "x-sekisho-tool");
+    let removed = p["transformations"]["request"]["remove"]
+        .as_array()
+        .unwrap();
+    assert!(
+        removed.contains(&json!(sekisho_core::TOOL_HEADER)),
+        "{removed:?}"
+    );
+    let added = p["extAuthz"]["protocol"]["http"]["addRequestHeaders"]
+        .as_object()
+        .unwrap();
+    assert!(!added.contains_key(sekisho_core::TOOL_HEADER));
+    assert!(
+        p["transformations"]["request"]["set"]
+            .get(sekisho_core::TOOL_HEADER)
+            .is_none()
     );
 }
 
