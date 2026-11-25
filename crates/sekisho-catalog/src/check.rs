@@ -13,7 +13,7 @@ use crate::model::{CheckedEntry, EntrySpec, ObotVmcp, Refusal, SourceCheck, Warn
 use crate::names::{EntryKind, EntryName, SourceKind};
 use crate::tree::Limits;
 use crate::unicode::scan;
-use crate::{obot, plugins, prompts, sekisho_format, skills};
+use crate::{instructions, obot, plugins, prompts, sekisho_format, skills};
 
 /// How a check reads URLs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +125,7 @@ pub fn check_source_with(
         SourceKind::Skills => skills::check(root, &limits, &mut out)?,
         SourceKind::Plugins => plugins::check(root, options, &limits, &mut out)?,
         SourceKind::Prompts => prompts::check(root, &limits, &mut out)?,
+        SourceKind::Instructions => instructions::check_source(root, &mut out)?,
         SourceKind::Environments => {
             check_environments(root, "", &limits, &mut out)?;
             refuse_duplicate_environments(&mut out);
@@ -306,7 +307,7 @@ fn scan_entry_files(out: &mut SourceCheck) {
                 critical = Some(format!("{} holds a hidden character at {c}", file.path));
             }
             let path = match (entry.kind, entry.path.as_str()) {
-                (EntryKind::Prompt, p) => p.to_owned(),
+                (EntryKind::Prompt | EntryKind::Instruction, p) => p.to_owned(),
                 (_, ".") => file.path.clone(),
                 (_, p) => format!("{p}/{}", file.path),
             };

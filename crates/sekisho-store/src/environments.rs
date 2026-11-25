@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use sekisho_catalog::environment::{DefaultModels, EnvironmentDoc, McpServerUse};
+use sekisho_catalog::instructions::MAX_ENVIRONMENT_INSTRUCTION_BYTES;
 use sekisho_catalog::labels::Labels;
 use sekisho_catalog::names::{EntryKind, EntryRef};
 use sekisho_core::access::{GROUP_RULE, is_group_reference};
@@ -39,6 +40,8 @@ pub struct EnvironmentSpec {
     pub skills: Vec<EntryRef>,
     pub plugins: Vec<EntryRef>,
     pub prompts: Vec<EntryRef>,
+    /// Delivered in this order, then each toolkit's (D220).
+    pub instructions: Vec<EntryRef>,
     pub toolkits: Vec<EntryRef>,
     /// The user who owns it. `None` keeps the stored owner, or makes whoever
     /// saves it the owner when there is none.
@@ -62,6 +65,7 @@ impl EnvironmentSpec {
             skills: Vec::new(),
             plugins: Vec::new(),
             prompts: Vec::new(),
+            instructions: Vec::new(),
             toolkits: Vec::new(),
             owner: None,
         }
@@ -86,6 +90,7 @@ impl EnvironmentSpec {
             skills: self.skills.clone(),
             plugins: self.plugins.clone(),
             prompts: self.prompts.clone(),
+            instructions: self.instructions.clone(),
             toolkits: self.toolkits.clone(),
         }
     }
@@ -106,6 +111,7 @@ impl EnvironmentSpec {
             skills: doc.skills,
             plugins: doc.plugins,
             prompts: doc.prompts,
+            instructions: doc.instructions,
             toolkits: doc.toolkits,
             owner,
         }
@@ -113,7 +119,7 @@ impl EnvironmentSpec {
 
     /// Every catalog reference with its kind, its field as the API names
     /// it, and an MCP server's tools: MCP servers, A2A agents, skills,
-    /// plugins, prompts, toolkits.
+    /// plugins, prompts, instructions, toolkits.
     fn references(&self) -> Vec<Reference<'_>> {
         let mut out: Vec<Reference<'_>> = self
             .mcp_servers
@@ -132,6 +138,7 @@ impl EnvironmentSpec {
             (EntryKind::Skill, "skills", &self.skills),
             (EntryKind::Plugin, "plugins", &self.plugins),
             (EntryKind::Prompt, "prompts", &self.prompts),
+            (EntryKind::Instruction, "instructions", &self.instructions),
             (EntryKind::Toolkit, "toolkits", &self.toolkits),
         ] {
             out.extend(refs.iter().enumerate().map(|(i, r)| Reference {
@@ -251,7 +258,8 @@ enum Save<'a> {
 const RESERVED_NAME: &str = "models";
 
 /// Kinds in the order environments list them.
-const KIND_ORDER: &str = "array['mcp_server', 'a2a_agent', 'skill', 'plugin', 'prompt', 'toolkit']";
+const KIND_ORDER: &str =
+    "array['mcp_server', 'a2a_agent', 'skill', 'plugin', 'prompt', 'instruction', 'toolkit']";
 
 /// The listed models that exist, by name, with their ids. An environment
 /// may list models of any providers (plan 1d): agentgateway's router picks
@@ -435,6 +443,69 @@ struct Bound {
     written: String,
     entry_id: Uuid,
     tools: Option<Vec<String>>,
+}
+
+/// The bytes of instructions delivered by these instructions and the
+/// unquarantined toolkits' applied ones, each entry once, at their applied
+/// revisions; quarantined entries aren't delivered (D221).
+async fn instruction_bytes(
+    conn: &mut PgConnection,
+    instructions: &[Uuid],
+    toolkits: &[Uuid],
+) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "with granted as ( \
+           select unnest($1::uuid[]) as entry_id \
+           union \
+           select m.entry_id from catalog_entries t \
+           join catalog_toolkit_members m on m.revision_id = t.applied_revision_id \
+           where t.id = any($2) and m.kind = 'instruction' and t.quarantined_at is null \
+         ) \
+         select coalesce(sum(f.size), 0)::bigint from granted g \
+         join catalog_entries c on c.id = g.entry_id \
+         join catalog_revision_files f on f.revision_id = c.applied_revision_id \
+         where c.quarantined_at is null",
+    )
+    .bind(instructions)
+    .bind(toolkits)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// The environments that deliver `entry` (an instruction, or a toolkit
+/// that brings some) and are now over
+/// [`MAX_ENVIRONMENT_INSTRUCTION_BYTES`], with their totals, by name. An
+/// apply that would leave one over keeps the entry's last version (D221).
+pub(crate) async fn instructions_over(
+    conn: &mut PgConnection,
+    entry: Uuid,
+) -> Result<Vec<(String, i64)>> {
+    Ok(sqlx::query_as(
+        "with granted as ( \
+           select ee.environment_id, ee.entry_id from environment_entries ee \
+           where ee.kind = 'instruction' \
+           union \
+           select ee.environment_id, m.entry_id from environment_entries ee \
+           join catalog_entries t on t.id = ee.entry_id \
+           join catalog_toolkit_members m on m.revision_id = t.applied_revision_id \
+           where ee.kind = 'toolkit' and m.kind = 'instruction' and t.quarantined_at is null \
+         ), affected as ( \
+           select environment_id from granted where entry_id = $1 \
+           union \
+           select environment_id from environment_entries where entry_id = $1 \
+         ) \
+         select e.name, coalesce(sum(f.size), 0)::bigint as bytes \
+         from affected a \
+         join environments e on e.id = a.environment_id \
+         join granted g on g.environment_id = a.environment_id \
+         join catalog_entries c on c.id = g.entry_id and c.quarantined_at is null \
+         join catalog_revision_files f on f.revision_id = c.applied_revision_id \
+         group by e.name having sum(f.size) > $2 order by e.name",
+    )
+    .bind(entry)
+    .bind(MAX_ENVIRONMENT_INSTRUCTION_BYTES as i64)
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
 /// Binds every reference of `spec`. A reference saved before, written the
@@ -626,6 +697,30 @@ impl Store {
             Some(false) => {}
         }
         let bound = bind_references(&mut tx, stored.map(|(id, _)| id), &spec, &mut errors).await?;
+        if errors.is_empty() {
+            let of = |kind: EntryKind| -> Vec<Uuid> {
+                bound
+                    .iter()
+                    .filter(|b| b.kind == kind)
+                    .map(|b| b.entry_id)
+                    .collect()
+            };
+            let bytes = instruction_bytes(
+                &mut tx,
+                &of(EntryKind::Instruction),
+                &of(EntryKind::Toolkit),
+            )
+            .await?;
+            if bytes > MAX_ENVIRONMENT_INSTRUCTION_BYTES as i64 {
+                errors.push(FieldError::new(
+                    "instructions",
+                    format!(
+                        "the environment and its toolkits deliver {bytes} bytes of \
+                         instructions; at most {MAX_ENVIRONMENT_INSTRUCTION_BYTES}"
+                    ),
+                ));
+            }
+        }
         check(errors)?;
         if matches!(mode, Save::Check) {
             // Dropped, the transaction rolls back: nothing was written.
@@ -886,6 +981,7 @@ impl Store {
             e.spec.skills = refs(EntryKind::Skill)?;
             e.spec.plugins = refs(EntryKind::Plugin)?;
             e.spec.prompts = refs(EntryKind::Prompt)?;
+            e.spec.instructions = refs(EntryKind::Instruction)?;
             e.spec.toolkits = refs(EntryKind::Toolkit)?;
             e.effective_defaults =
                 effective_defaults(&e.spec, &model_kinds.remove(&e.id).unwrap_or_default());

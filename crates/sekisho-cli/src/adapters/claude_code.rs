@@ -10,6 +10,7 @@
 //! Plugins go in a directory marketplace of the environment's own,
 //! `sekisho-<env>`, in Sekisho's folder of the scope.
 
+use crate::install::instructions::{self, is_agents_md};
 use serde_json::{Map, Value, json};
 
 use sekisho_catalog::delivery::{Delivery, EntryAddress};
@@ -196,6 +197,8 @@ impl Adapter for ClaudeCode {
                         });
                     }
                 }
+                // Rules files, below.
+                EntrySpec::Instruction(_) => {}
                 EntrySpec::Prompt(_) => {
                     for f in &e.files {
                         out.files.push(FileWrite {
@@ -213,7 +216,8 @@ impl Adapter for ClaudeCode {
                         .get(&address)
                         .cloned()
                         .unwrap_or_else(|| e.name.to_string());
-                    for f in &e.files {
+                    // A plugin's AGENTS.md is never written (D223).
+                    for f in e.files.iter().filter(|f| !is_agents_md(&f.path)) {
                         out.files.push(FileWrite {
                             root: Root::SekishoConfig,
                             path: Self::path(&format!(
@@ -294,6 +298,25 @@ impl Adapter for ClaudeCode {
             ));
         }
 
+        // Instructions as rules, loaded at launch with `.claude/CLAUDE.md`'s
+        // priority without counting as a CLAUDE.md, so a repository's
+        // AGENTS.md still loads; a plugin's path-scoped ones with `paths:`
+        // (D222, D224). Plugins carry no instructions of their own there.
+        let (instructions, skipped) = instructions::collect(d, ctx)?;
+        out.skipped.extend(skipped);
+        for i in &instructions {
+            if i.paths.is_none() {
+                out.always_loaded += i.text.len() as u64;
+            }
+            out.files.push(FileWrite {
+                root,
+                path: Self::path(&format!("{base}rules/sekisho-{env}-{}.md", i.stem))?,
+                content: i.with_paths().into_bytes(),
+                executable: false,
+                origin: i.origin.clone(),
+            });
+        }
+
         // The environment's MCP endpoint, once plan 5 serves it (D216).
         if let Some(endpoint) = &d.mcp {
             let name = format!("sekisho-{env}");
@@ -348,6 +371,7 @@ impl Adapter for ClaudeCode {
             skills: both(Some(ScopeKind::Global)),
             prompts: both(Some(ScopeKind::Global)),
             plugins: both(None),
+            instructions: both(None),
         }
     }
 }

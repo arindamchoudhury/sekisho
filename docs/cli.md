@@ -131,7 +131,8 @@ sekisho use pay
 ```
 
 writes the environment `pay` into the coding tools of the current folder:
-its models, local MCP servers, skills, plugins and prompts. Today
+its models, local MCP servers, skills, plugins, prompts and
+[instructions](#instructions). Today
 `sekisho use` installs for Claude Code, Gemini CLI and Qwen Code; the
 other tools follow.
 
@@ -150,7 +151,8 @@ It works signed in, or with an [environment key](#environment-keys) in
 
 Every file is checked before anything is written: its SHA-256 against
 what the server sent, its size, hidden Unicode characters (a dangerous
-one stops the install; others are listed as warnings), and its path,
+one stops the install; others are listed as warnings, but any invisible
+character in an instruction stops it), and its path,
 which can't leave its folder or pass through a symbolic link. Each file is
 written whole and at once; if a later write fails, everything already
 written is put back, and the lock file is unchanged.
@@ -196,7 +198,7 @@ removes the block. A file already tracked by Git, such as a committed
 ### Several environments in one folder
 
 Environments add up: `sekisho use ops` where `pay` is installed adds
-`ops`'s skills, servers, plugins and prompts and keeps `pay`'s. Each tool
+`ops`'s skills, servers, plugins, prompts and instructions and keeps `pay`'s. Each tool
 takes its models from one of them: the first installed, until
 `sekisho use <env> --models` moves them. The same catalog entry in two
 environments is written once and stays until neither delivers it; a newer
@@ -204,8 +206,44 @@ version of it, from either, is written for both. A name two environments
 deliver with different content, such as two prompts called `deploy` from
 different sources, stops the `use` before anything is written (exit 3,
 naming the other environment): ask an admin to rename one, or uninstall
-the other. Skills and local MCP servers can't clash this way, since their
-names are [unique across the install](catalogs.md#names).
+the other. So does an instruction name two environments deliver from
+different sources with different text, though each environment's
+instruction files carry its name. Skills and local MCP servers can't
+clash this way, since their names are
+[unique across the install](catalogs.md#names).
+
+### Instructions
+
+An environment's [instructions](catalogs.md#instructions) become files of
+Sekisho's own that each tool loads in every session, one per instruction
+(below for each tool). Each starts with a heading saying where it comes
+from, its text's own first heading (or its name) then the environment and
+the instruction:
+
+```markdown
+# Payments style (Sekisho environment pay, instruction style)
+
+Short functions. Money is integer micro-USD.
+```
+
+A plugin's APM instructions (`instructions/*.instructions.md`) are
+written the same way, as `<plugin>-<name>`, with `plugin <plugin>` in the
+heading. One whose `applyTo` is `**`, or that has none, loads in every
+session; any other `applyTo` makes it apply only to those files, which
+Claude Code and Qwen Code support (as `paths:`) and Gemini CLI doesn't, so
+it is skipped there with a warning.
+
+**Sekisho never writes a repository's or your own instructions file**:
+`AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.override.md` or
+`.github/copilot-instructions.md` in a project, nor `AGENTS.md`,
+`CLAUDE.md` or `AGENTS.override.md` in a tool's own folder. Those belong
+to the repository or to you, and writing one would change what the tool
+reads: in Claude Code, a `CLAUDE.md` stops it reading the repository's
+`AGENTS.md`. A plugin's top-level `AGENTS.md` is skipped with a warning.
+
+When the environments installed for a tool together load more than
+16 KiB of instructions in every session, `use` warns: every session pays
+for them, and one environment may deliver at most that much.
 
 ### Beside a global install
 
@@ -234,6 +272,7 @@ is kept twice, one of them renamed with a prefix.
 | Skills | `.claude/skills/<name>/` | `skills/<name>/` |
 | Prompts | `.claude/commands/<name>.md` | `commands/<name>.md` |
 | Plugins | a marketplace `sekisho-<env>` in `.sekisho/claude-plugins/<env>/` | the same in Sekisho's config folder |
+| Instructions | `.claude/rules/sekisho-<env>-<name>.md` | `rules/sekisho-<env>-<name>.md` |
 
 The model settings, written only by the folder's model environment and
 only when the environment has a model the Anthropic API reaches (else a
@@ -260,6 +299,12 @@ committed `.claude/settings.json`, so in your sessions Sekisho's settings
 win. A teammate who hasn't run `sekisho use` gets the committed file's
 `model`, `env` and `apiKeyHelper`, if it sets them.
 
+Instructions are rules: Claude Code loads `.claude/rules/` at launch with
+the priority of `.claude/CLAUDE.md`, and rules don't count as a
+`CLAUDE.md`, so the repository's `AGENTS.md` still loads beside them. A
+plugin's instructions are written there too, since Claude Code loads no
+instructions from inside a plugin; a path-scoped one gets `paths:`.
+
 ### What Gemini CLI gets
 
 | What | In a project | With `--global` |
@@ -267,6 +312,7 @@ win. A teammate who hasn't run `sekisho use` gets the committed file's
 | Model settings, MCP servers | `.gemini/settings.json` | `settings.json` in `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`) |
 | Skills | `.gemini/skills/<name>/` | `skills/<name>/` |
 | Prompts | `.gemini/commands/<name>.toml` | `commands/<name>.toml` |
+| Instructions | `.gemini/sekisho/<env>/<name>.md`, imported by `GEMINI.md` | an extension `extensions/sekisho-<env>/` |
 
 The model settings, when the environment has a model the Gemini API
 reaches: `model.name`, the `gemini` [default model](environments-and-keys.md#default-models),
@@ -290,6 +336,28 @@ A local MCP server's settings from your environment are written as
 copy of its environment, without names like `*TOKEN*` or `*KEY*`, so every
 one is named, and one you haven't set reaches the server empty.
 
+Gemini CLI reads instructions only from its context files, `GEMINI.md`
+by default, so in a project each instruction is a file under
+`.gemini/sekisho/<env>/` and `GEMINI.md` gets one block importing them:
+
+```markdown
+<!-- sekisho:start: managed by `sekisho use`; edits are overwritten -->
+@./.gemini/sekisho/pay/style.md
+<!-- sekisho:end -->
+```
+
+A `GEMINI.md` that doesn't exist is created, and excluded from Git like
+Sekisho's other files. One you wrote is asked about before the block is
+added at its end ([Your own files](#your-own-files)), and only the block
+is ever changed; the last `uninstall` takes the block out, and the file
+too if Sekisho made it and nothing else is left. If your
+`context.fileName` setting reads other files and not `GEMINI.md`, the
+instructions are skipped with a warning: Sekisho never writes those
+files. With `--global`, each environment gets an extension of its own,
+`~/.gemini/extensions/sekisho-<env>/`, whose `SEKISHO.md` holds its
+instructions; Gemini CLI ignores it if your `security.allowedExtensions`
+setting is set.
+
 Gemini CLI has no project folder for extensions and doesn't read Claude
 Code plugins, so a plugin is taken apart: its skills go to `skills/`, its
 commands to `commands/<plugin>/` (`/<plugin>:<command>`), and its MCP
@@ -307,6 +375,7 @@ skipped, with a warning.
 | Model settings, MCP servers | `.qwen/settings.json` | `settings.json` in `~/.qwen` (or `$QWEN_HOME`) |
 | Skills | `.qwen/skills/<name>/` | `skills/<name>/` |
 | Prompts | `.qwen/commands/<name>.toml` | `commands/<name>.toml` |
+| Instructions | `.qwen/rules/sekisho-<env>-<name>.md` | `rules/sekisho-<env>-<name>.md` |
 
 Qwen Code takes one provider for a session: the Anthropic Messages API
 when the environment has an `anthropic` default model, else Chat
@@ -324,6 +393,13 @@ its settings, so these settings work only inside
 plugins are written as for Gemini CLI. Qwen Code's MCP servers inherit
 its environment, so a server's setting with the same name as your
 variable isn't written at all.
+
+Instructions are rules, which Qwen Code loads at session start (a
+plugin's path-scoped ones, with `paths:`, when a matching file is
+touched). It reads a project's `.qwen/rules/` only at the root of its Git
+repository, and only in a trusted folder when you have turned folder
+trust on: `use` says so when the folder is inside a repository but not at
+its root.
 
 ## Starting a tool with `sekisho run`
 

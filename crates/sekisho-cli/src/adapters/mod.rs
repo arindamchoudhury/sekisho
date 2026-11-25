@@ -130,6 +130,8 @@ pub enum ContentKind {
     Skills,
     Prompts,
     Plugins,
+    /// Text every session loads (D220).
+    Instructions,
 }
 
 impl ContentKind {
@@ -141,6 +143,7 @@ impl ContentKind {
             EntryKind::Skill | EntryKind::Toolkit => ContentKind::Skills,
             EntryKind::Plugin => ContentKind::Plugins,
             EntryKind::Prompt => ContentKind::Prompts,
+            EntryKind::Instruction => ContentKind::Instructions,
         }
     }
 
@@ -152,6 +155,7 @@ impl ContentKind {
             ContentKind::Skills => "skill",
             ContentKind::Prompts => "prompt",
             ContentKind::Plugins => "plugin",
+            ContentKind::Instructions => "instruction",
         }
     }
 }
@@ -183,6 +187,7 @@ pub struct Layering {
     pub skills: Layer,
     pub prompts: Layer,
     pub plugins: Layer,
+    pub instructions: Layer,
 }
 
 impl Layering {
@@ -193,6 +198,7 @@ impl Layering {
             ContentKind::Skills => self.skills,
             ContentKind::Prompts => self.prompts,
             ContentKind::Plugins => self.plugins,
+            ContentKind::Instructions => self.instructions,
         }
     }
 }
@@ -317,6 +323,10 @@ pub enum Format {
     /// JSON with comments and trailing commas, which are kept.
     Jsonc,
     Toml,
+    /// Markdown with one block Sekisho manages, its lines each a key whose
+    /// value is `true` (Gemini CLI's `GEMINI.md` imports, D222). The rest of
+    /// the file is the person's and is never changed.
+    MarkdownBlock,
 }
 
 /// What a write is for: a catalog entry, the environment itself (its MCP
@@ -397,6 +407,9 @@ pub struct Rendered {
     /// Anything else the person should know, listed with the skipped.
     pub warnings: Vec<String>,
     pub run: Option<RunSpec>,
+    /// Bytes of instructions every session of the tool loads from this
+    /// environment (D221), for `use`'s warning over all of a scope's.
+    pub always_loaded: u64,
 }
 
 /// What an adapter renders with, besides the delivery document.
@@ -414,6 +427,9 @@ pub struct RenderContext<'a> {
     /// `sekisho` as the user would type it: `sekisho` on `PATH`, else its
     /// absolute path.
     pub sekisho: &'a str,
+    /// A file of the scope as it is now, if it is UTF-8 text: for a
+    /// setting of the person's the adapter must respect (D223).
+    pub read: &'a dyn Fn(Root, &RelPath) -> Option<String>,
 }
 
 /// Why an adapter couldn't render.

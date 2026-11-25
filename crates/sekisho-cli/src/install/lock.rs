@@ -138,6 +138,14 @@ pub struct ToolLock {
     pub model_keys: Vec<StoredKey>,
     #[serde(default)]
     pub run: Option<RunSpec>,
+    /// Bytes of instructions every session loads from the environment
+    /// (D221).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub always_loaded: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A model settings file, kept whole: never a secret (Global Constraints).

@@ -71,6 +71,7 @@ fn kinds_have_names_and_path_segments() {
         (EntryKind::Plugin, "plugin", "plugins"),
         (EntryKind::Prompt, "prompt", "prompts"),
         (EntryKind::Toolkit, "toolkit", "toolkits"),
+        (EntryKind::Instruction, "instruction", "instructions"),
     ];
     assert_eq!(EntryKind::ALL.len(), all.len());
     for (kind, name, segment) in all {
@@ -92,12 +93,17 @@ fn kinds_have_names_and_path_segments() {
     assert_eq!(SourceKind::Skills.entry_kinds(), &[EntryKind::Skill]);
     assert_eq!(SourceKind::Plugins.entry_kinds(), &[EntryKind::Plugin]);
     assert_eq!(SourceKind::Prompts.entry_kinds(), &[EntryKind::Prompt]);
+    assert_eq!(
+        SourceKind::Instructions.entry_kinds(),
+        &[EntryKind::Instruction]
+    );
     assert!(SourceKind::Environments.entry_kinds().is_empty());
     for (kind, name) in [
         (SourceKind::Catalog, "catalog"),
         (SourceKind::Skills, "skills"),
         (SourceKind::Plugins, "plugins"),
         (SourceKind::Prompts, "prompts"),
+        (SourceKind::Instructions, "instructions"),
         (SourceKind::Environments, "environments"),
     ] {
         assert_eq!(kind.as_str(), name);

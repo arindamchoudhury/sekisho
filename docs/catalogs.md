@@ -1,7 +1,8 @@
 # Catalogs
 
 A catalog source is a Git repository that holds MCP servers, A2A agents,
-skills, plugins, prompts or [toolkits](#toolkits) of them. Sekisho reads each source at a commit, checks
+skills, plugins, prompts, [instructions](#instructions) or
+[toolkits](#toolkits) of them. Sekisho reads each source at a commit, checks
 every entry it finds, and keeps what it found in PostgreSQL: the entries,
 their revisions and every file, so nothing is fetched from Git again.
 Admins see what each sync found, apply updates, own and quarantine
@@ -10,11 +11,12 @@ entries.
 What works today is the catalog itself (sources, syncs, entries, owners
 and quarantine), and [environments](environments-and-keys.md#catalog-entries)
 listing its entries and toolkits. Machines read what an environment
-delivers, skills, plugins and prompts with their files, from Sekisho's
+delivers, skills, plugins, prompts and instructions with their files, from Sekisho's
 pinned copy ([What `sekisho use` reads](environments-and-keys.md#what-sekisho-use-reads)),
-never from Git hosts. **Nothing in a catalog reaches a coding tool or the
-gateway yet**: `sekisho use` is still to come, and MCP servers and A2A
-agents can't be called through Sekisho.
+never from Git hosts, and [`sekisho use`](cli.md) writes them into the
+coding tools it supports so far. **Nothing in a catalog reaches the
+gateway yet**: MCP servers and A2A agents can't be called through
+Sekisho.
 
 ## Sources
 
@@ -31,7 +33,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | Field | Required | What it is |
 |---|---|---|
 | `name` | yes | 1–63 lowercase letters, digits or hyphens, starting and ending with a letter or digit. `environments` is reserved for [Git mode](environments-and-keys.md#git-mode)'s source, of kind `environments`, which is managed through `/api/v1/git-mode` |
-| `kind` | yes | What the repository holds: `catalog`, `skills`, `plugins` or `prompts` ([below](#what-each-kind-reads)) |
+| `kind` | yes | What the repository holds: `catalog`, `skills`, `plugins`, `prompts` or `instructions` ([below](#what-each-kind-reads)) |
 | `url` | yes | The repository's `https://` URL, at most 2,048 characters, with no user name, password, query or fragment, not starting with `-` |
 | `ref` | no | The branch or tag to follow (or a full `refs/…` name): 1–255 letters, digits or `. _ / -`, not starting with `-` or `/`, without `..`, `//` or `@{`. Without one, the repository's default branch |
 | `folder` | no | The folder of the repository to read, such as `skills/team`: the same characters, without `.` or `..` parts. Without one, the root |
@@ -78,7 +80,7 @@ source, or 409 `conflict` while a sync of it is running.
 A sync asks Git for the ref's commit, checks it out, reads it, pins what
 its entries name ([Exact versions](#exact-versions-and-image-digests),
 [Agent cards](#a2a-agents-and-their-cards)) and records what it found.
-When the ref hasn't moved, a `skills`, `prompts` or `environments` source
+When the ref hasn't moved, a `skills`, `prompts`, `instructions` or `environments` source
 records `unchanged` without reading anything; `catalog` and `plugins`
 sources are read again, since their images and cards live outside Git.
 A sync running when an admin changes the source's settings read the old
@@ -101,7 +103,7 @@ report (404 before the first):
 | `vmcps` | Obot virtual MCP servers it found ([Importing Obot catalogs](#importing-obot-catalogs)) |
 
 Kinds in reports and entries are `mcp_server`, `a2a_agent`, `skill`,
-`plugin`, `prompt` and `toolkit`.
+`plugin`, `prompt`, `instruction` and `toolkit`.
 
 **Anything Sekisho can't read with certainty is refused, never guessed.**
 A refused entry keeps the revision environments use, and so does an entry
@@ -122,8 +124,11 @@ sync, and answers what changed:
 `updated` entries now use the revision that sync found; `removed` ones
 weren't found and are marked removed. `refused` lists, as in a sync
 report, entries left on the version they had because another source
-applied their [name](#names) first since the sync. It is 409 when there
-is nothing to apply.
+applied their [name](#names) first since the sync, or because their new
+version would take an environment over its
+[16 KiB of instructions](#instructions) (an instruction, or a toolkit
+that brings some; the reason names each environment and its total). It is
+409 when there is nothing to apply.
 
 ### How Sekisho reads Git
 
@@ -160,6 +165,8 @@ so skills under `.claude/skills` are found.
 | A `SKILL.md` | 1 MiB |
 | A plugin's manifest or a marketplace file | 5 MiB |
 | Catalog files in one `catalog` source | 1,000 (more fails the sync) |
+| An instruction | 4 KiB (4,096 bytes) |
+| The instructions one environment delivers | 16 KiB (16,384 bytes) |
 | An A2A agent's card | 1 MiB |
 
 ### `catalog`: MCP servers, A2A agents and toolkits
@@ -299,6 +306,57 @@ fails is refused, with every problem.
 Every Markdown file but `README.md` (in any case) is a prompt, named by
 its file name without `.md`, which must follow the entry name rules.
 
+### `instructions`
+
+An instruction is text every session of a coding tool loads, such as a
+team's coding standards. Each Markdown file at the top of the source's
+folder, but `README.md` (in any case) and hidden files, is one, named by
+its file name without `.md`. Files in subfolders and other files are
+ignored. An instruction is refused when it
+
+- isn't UTF-8 text, or is empty;
+- starts with frontmatter (a first line of `---`): Sekisho writes each
+  tool's own, so an instruction is plain Markdown;
+- is over 4 KiB (4,096 bytes);
+- holds any invisible character: zero-width ones (U+200B–U+200D,
+  U+2060, and U+FEFF anywhere), direction marks and bidirectional
+  controls (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) or tag
+  characters (U+E0000–U+E007F). The reason names the code point, line and
+  column, never the text.
+
+These are stricter than for [other entries](#hidden-characters): an
+instruction is in the model's context in every session, where text a
+person can't see could steer it unnoticed. The same checks run again on
+the machine at `sekisho use`.
+
+An instruction's first heading, if it starts with one, is its
+`description`. [Environments and toolkits](environments-and-keys.md#catalog-entries)
+list instructions in order; an environment delivers at most 16 KiB of
+them, its own and its toolkits' together. A save over that is refused
+(422), and an [apply](#apply) that would take an environment over it
+keeps the instruction's or toolkit's last version.
+
+**Writing instructions that help.** Studies of coding agents find that
+instruction files add little to task success and raise the cost of every
+session; generated ones did slightly worse than none, people's own a
+little better. Agents do follow specific instructions (which command to
+run, which tests, a practice the code doesn't show), and they follow
+stale ones too. So:
+
+- keep them few and short: the 16 KiB is a ceiling, not a target, and
+  every session pays for them beside the repository's own `AGENTS.md` or
+  `CLAUDE.md`;
+- say what the agent can't find in the code: the commands to run,
+  conventions the code doesn't show, what not to touch;
+- write them yourselves rather than generating them, and keep them
+  current: change the instruction when the practice changes;
+- put long material, how-tos and reference in a [skill](#skills)
+  instead, which a tool loads only when it's needed.
+
+An instruction's `@path` text (such as `@docs/style.md`) is read by
+Claude Code, Gemini CLI and Qwen Code as an import of that file of the
+project, as in their own instruction files.
+
 ### Names
 
 An entry's name is 1–64 lowercase letters and digits, with single hyphens
@@ -387,7 +445,8 @@ hidden characters, sorted as APM's content scanner sorts them:
 - **refused**: bidirectional embeddings, overrides and isolates
   (U+202A–U+202E, U+2066–U+2069), tag characters (U+E0001–U+E007F) and
   supplementary variation selectors (U+E0100–U+E01EF);
-- **listed as warnings**, with the file, line and column: zero-width
+- **listed as warnings**, with the file, line and column (an
+  [instruction](#instructions) refuses several of these too): zero-width
   characters and direction marks (U+200B–U+200F), word joiners and
   invisible operators (U+2060–U+2064), deprecated format characters
   (U+206A–U+206F), the soft hyphen, the Arabic letter mark, variation
@@ -398,7 +457,7 @@ hidden characters, sorted as APM's content scanner sorts them:
 
 | Route | Does |
 |---|---|
-| `GET /api/v1/catalog/{kind}` | The entries of a kind: `mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts` or `toolkits` |
+| `GET /api/v1/catalog/{kind}` | The entries of a kind: `mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts`, `instructions` or `toolkits` |
 | `GET /api/v1/catalog/{kind}/{source}/{name}` | One entry, with its revisions and their files |
 | `PATCH /api/v1/catalog/{kind}/{source}/{name}` | Change its `owner` |
 | `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of its applied revision |
@@ -476,10 +535,11 @@ a2a_agents: [cost-analyst]
 skills: [finops-report]
 plugins: [focus-export@platform-plugins]
 prompts: [monthly-review]
+instructions: [cost-tags]
 ```
 
-It lists `mcp_servers`, `a2a_agents`, `skills`, `plugins` and `prompts`,
-at least one entry in all. An MCP server is its name, or
+It lists `mcp_servers`, `a2a_agents`, `skills`, `plugins`, `prompts` and
+`instructions` (kept in their order), at least one entry in all. An MCP server is its name, or
 `{server, tools}` to allow only those tools; without `tools` it allows
 them all, and `tools: []` is refused. A toolkit holds catalog entries
 only: `models` (models, default models, access and budgets belong to

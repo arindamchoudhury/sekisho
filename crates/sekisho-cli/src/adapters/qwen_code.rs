@@ -20,10 +20,10 @@ use sekisho_core::formats::ClientApi;
 
 use super::translate::{self, Layout, RemoteKey};
 use super::{
-    Adapter, AdapterError, Layer, Layering, Origin, RenderContext, Rendered, Root, RunSpec,
-    ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
+    Adapter, AdapterError, FileWrite, Layer, Layering, Origin, RenderContext, Rendered, Root,
+    RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
 };
-use crate::install::Scope;
+use crate::install::{Scope, instructions};
 
 /// Qwen Code.
 #[derive(Clone, Copy, Debug, Default)]
@@ -117,7 +117,44 @@ impl Adapter for QwenCode {
             }
         }
         translate::content(d, ctx, &layout, &mut out)?;
+        // Instructions as rules (`rulesDiscovery.ts`): without `paths:` at
+        // session start, a plugin's path-scoped ones when a matching file
+        // is touched (D222, D224).
+        let (instructions, skipped) = instructions::collect(d, ctx)?;
+        out.skipped.extend(skipped);
+        for i in &instructions {
+            if i.paths.is_none() {
+                out.always_loaded += i.text.len() as u64;
+            }
+            out.files.push(FileWrite {
+                root: layout.root,
+                path: layout.path(&format!("rules/sekisho-{}-{}.md", d.environment, i.stem))?,
+                content: i.with_paths().into_bytes(),
+                executable: false,
+                origin: i.origin.clone(),
+            });
+        }
         Ok(out)
+    }
+
+    /// Qwen Code reads a project's `.qwen/rules` only at its repository's
+    /// root (`findProjectRoot`: the nearest folder above with `.git`), so a
+    /// folder below it gets instructions Qwen Code doesn't load.
+    fn note(&self, scope: &Scope) -> Option<String> {
+        let folder = scope.project_folder()?;
+        if folder.join(".git").exists() {
+            return None;
+        }
+        let root = folder
+            .ancestors()
+            .skip(1)
+            .find(|a| a.join(".git").exists())?;
+        Some(format!(
+            "Qwen Code reads .qwen/rules only at the repository's root, {}, so the \
+             instructions installed here don't load in Qwen Code: run sekisho use there \
+             for them.",
+            root.display()
+        ))
     }
 
     fn unmanaged(
@@ -154,6 +191,7 @@ impl Adapter for QwenCode {
             skills: both(Some(ScopeKind::Project)),
             prompts: both(None),
             plugins: both(Some(ScopeKind::Project)),
+            instructions: both(None),
         }
     }
 }

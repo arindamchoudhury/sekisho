@@ -10,3 +10,6 @@ a2a_agents: [cost-analyst]
 skills: [finops-report@team-skills]
 plugins: [focus-export]
 prompts: [monthly-review]
+instructions:
+  - cost-tags
+  - units@team-rules

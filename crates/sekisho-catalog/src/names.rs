@@ -62,16 +62,20 @@ pub enum EntryKind {
     Prompt,
     /// A reusable set of other entries (D181), in `catalog` sources.
     Toolkit,
+    /// Text every session of a coding tool loads (D220), in
+    /// `instructions` sources.
+    Instruction,
 }
 
 impl EntryKind {
-    pub const ALL: [EntryKind; 6] = [
+    pub const ALL: [EntryKind; 7] = [
         EntryKind::McpServer,
         EntryKind::A2aAgent,
         EntryKind::Skill,
         EntryKind::Plugin,
         EntryKind::Prompt,
         EntryKind::Toolkit,
+        EntryKind::Instruction,
     ];
 
     /// The kind as stored and as the API's `kind` field spells it.
@@ -83,6 +87,7 @@ impl EntryKind {
             EntryKind::Plugin => "plugin",
             EntryKind::Prompt => "prompt",
             EntryKind::Toolkit => "toolkit",
+            EntryKind::Instruction => "instruction",
         }
     }
 
@@ -99,6 +104,7 @@ impl EntryKind {
             EntryKind::Plugin => "plugins",
             EntryKind::Prompt => "prompts",
             EntryKind::Toolkit => "toolkits",
+            EntryKind::Instruction => "instructions",
         }
     }
 
@@ -119,16 +125,19 @@ pub enum SourceKind {
     /// A Claude Code plugin marketplace, APM's bundles included.
     Plugins,
     Prompts,
+    /// Instructions (D220): top-level Markdown files.
+    Instructions,
     /// Git mode's environments; only [`SourceName::git_mode`] has it.
     Environments,
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 5] = [
+    pub const ALL: [SourceKind; 6] = [
         SourceKind::Catalog,
         SourceKind::Skills,
         SourceKind::Plugins,
         SourceKind::Prompts,
+        SourceKind::Instructions,
         SourceKind::Environments,
     ];
 
@@ -138,6 +147,7 @@ impl SourceKind {
             SourceKind::Skills => "skills",
             SourceKind::Plugins => "plugins",
             SourceKind::Prompts => "prompts",
+            SourceKind::Instructions => "instructions",
             SourceKind::Environments => "environments",
         }
     }
@@ -157,6 +167,7 @@ impl SourceKind {
             SourceKind::Skills => &[EntryKind::Skill],
             SourceKind::Plugins => &[EntryKind::Plugin],
             SourceKind::Prompts => &[EntryKind::Prompt],
+            SourceKind::Instructions => &[EntryKind::Instruction],
             SourceKind::Environments => &[],
         }
     }

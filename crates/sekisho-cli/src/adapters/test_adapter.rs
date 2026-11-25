@@ -201,6 +201,7 @@ impl Adapter for TestAdapter {
             skills: both(Some(ScopeKind::Global)),
             prompts: both(Some(ScopeKind::Project)),
             plugins: both(None),
+            instructions: both(None),
         }
     }
 }

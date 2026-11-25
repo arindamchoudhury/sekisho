@@ -21,6 +21,7 @@ pub enum EntrySpec {
     Plugin(PluginSpec),
     Prompt(PromptSpec),
     Toolkit(ToolkitSpec),
+    Instruction(InstructionSpec),
 }
 
 /// A toolkit: other catalog entries, never models or toolkits (D182,
@@ -34,11 +35,15 @@ pub struct ToolkitSpec {
     pub skills: Vec<EntryRef>,
     pub plugins: Vec<EntryRef>,
     pub prompts: Vec<EntryRef>,
+    /// In the order written (D220). Left out of the stored form when empty,
+    /// so toolkits stored before instructions keep their digests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<EntryRef>,
 }
 
 impl ToolkitSpec {
     /// Every reference with the kind it names, in the order written: MCP
-    /// servers, A2A agents, skills, plugins, prompts.
+    /// servers, A2A agents, skills, plugins, prompts, instructions.
     pub fn references(&self) -> Vec<(EntryKind, &EntryRef)> {
         let mut out: Vec<(EntryKind, &EntryRef)> = self
             .mcp_servers
@@ -50,6 +55,7 @@ impl ToolkitSpec {
             (EntryKind::Skill, &self.skills),
             (EntryKind::Plugin, &self.plugins),
             (EntryKind::Prompt, &self.prompts),
+            (EntryKind::Instruction, &self.instructions),
         ] {
             out.extend(refs.iter().map(|r| (kind, r)));
         }
@@ -93,6 +99,13 @@ pub struct PluginMcpServer {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSpec {
+    pub description: String,
+}
+
+/// An instruction (D220): its one file is the text. The description is
+/// the text's first Markdown heading, if it starts with one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionSpec {
     pub description: String,
 }
 

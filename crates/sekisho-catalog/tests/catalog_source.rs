@@ -704,6 +704,7 @@ fn toolkits_list_entries_of_every_kind() {
             skills: vec![reference("finops-report@team-skills")],
             plugins: vec![reference("focus-export")],
             prompts: vec![reference("monthly-review")],
+            instructions: vec![reference("cost-tags"), reference("units@team-rules")],
         })
     );
     // The spec is stored as JSON and read back unchanged.
@@ -717,8 +718,24 @@ fn toolkits_list_entries_of_every_kind() {
         json["mcp_servers"][1],
         serde_json::json!({"server": "github", "tools": ["search_issues", "get_issue"]})
     );
+    assert_eq!(
+        json["instructions"],
+        serde_json::json!(["cost-tags", "units@team-rules"])
+    );
     let back: EntrySpec = serde_json::from_value(json).unwrap();
     assert_eq!(&back, &finops.spec);
+}
+
+#[test]
+fn a_toolkit_without_instructions_keeps_its_stored_form() {
+    // Toolkits stored before instructions existed read back, and one
+    // without instructions serialises as it did, so its digest is unchanged.
+    let old = serde_json::json!({
+        "kind": "toolkit", "description": "", "mcp_servers": [],
+        "a2a_agents": [], "skills": ["pdf"], "plugins": [], "prompts": []
+    });
+    let spec: EntrySpec = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&spec).unwrap(), old);
 }
 
 #[test]

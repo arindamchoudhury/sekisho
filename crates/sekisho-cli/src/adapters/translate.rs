@@ -17,6 +17,7 @@ use super::{
     AdapterError, FileWrite, Format, KeyWrite, Origin, RelPath, RenderContext, Rendered, Root,
     Skipped, Tool,
 };
+use crate::install::instructions::is_agents_md;
 use crate::install::launch::{self, EnvValue};
 
 /// How a remote MCP server is written.
@@ -43,7 +44,7 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    fn path(&self, rest: &str) -> Result<RelPath, AdapterError> {
+    pub fn path(&self, rest: &str) -> Result<RelPath, AdapterError> {
         Ok(RelPath::parse(&format!("{}{rest}", self.base))?)
     }
 
@@ -156,6 +157,8 @@ pub(crate) fn content(
                     });
                 }
             }
+            // Each tool's own way, in its adapter.
+            EntrySpec::Instruction(_) => {}
             EntrySpec::Prompt(spec) => {
                 for f in &e.files {
                     let stem = f.path.strip_suffix(".md").unwrap_or(&f.path);
@@ -440,7 +443,8 @@ fn plugin(
             .push(layout.key(&["mcpServers", &key], value, origin.clone())?);
     }
     if needs_files {
-        for f in &e.files {
+        // A plugin's AGENTS.md is never written (D223).
+        for f in e.files.iter().filter(|f| !is_agents_md(&f.path)) {
             out.files.push(FileWrite {
                 root: Root::SekishoConfig,
                 path: RelPath::parse(&format!("plugins/{}/{name}/{}", d.environment, f.path))?,

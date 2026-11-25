@@ -7,12 +7,14 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use sekisho_catalog::delivery::{Delivery, EntryAddress};
 use sekisho_catalog::model::sha256_hex;
+use sekisho_catalog::names::EntryKind;
 use sekisho_catalog::tree::Limits;
 use sekisho_catalog::unicode;
 use sekisho_core::names::EnvName;
 use serde_json::Value;
 
 use super::files::{self, Disk, Journal};
+use super::instructions::{ALWAYS_LOADED_WARNING_BYTES, is_own_instructions_file};
 use super::lock::{EntryLock, EnvLock, FileLock, KeyLock, Lock, StoredFile, StoredKey, ToolLock};
 use super::{
     Clash, Fetch, InstallError, Item, Layered, Options, Report, Scope, Sign, exclude, merge,
@@ -122,6 +124,19 @@ impl<'a> Planner<'a> {
         }
     }
 
+    /// Refuses a repository's or person's own instructions file (D223),
+    /// whatever adapter asks for it.
+    fn check_own(&self, root: Root, path: &RelPath) -> Result<(), InstallError> {
+        if is_own_instructions_file(root, path) {
+            return Err(refused(format!(
+                "{} is the repository's or the person's own instructions: Sekisho never \
+                 writes it",
+                self.what_file(root, path)
+            )));
+        }
+        Ok(())
+    }
+
     fn what_key(&self, root: Root, file: &RelPath, key: &[String]) -> String {
         format!("{} {}", self.what_file(root, file), merge::show_key(key))
     }
@@ -181,6 +196,7 @@ impl<'a> Planner<'a> {
 
     /// `env` wants this whole file for `tool`.
     fn want_file(&mut self, env: &str, tool: Tool, w: &FileWrite) -> Result<(), InstallError> {
+        self.check_own(w.root, &w.path)?;
         let root = self.dir(w.root)?;
         files::check_no_links(&root, &w.path)?;
         let path = abs(&root, &w.path);
@@ -269,6 +285,7 @@ impl<'a> Planner<'a> {
 
     /// `env` wants this key for `tool`.
     fn want_key(&mut self, env: &str, tool: Tool, w: &KeyWrite) -> Result<(), InstallError> {
+        self.check_own(w.root, &w.file)?;
         let root = self.dir(w.root)?;
         files::check_no_links(&root, &w.file)?;
         let path = abs(&root, &w.file);
@@ -281,7 +298,19 @@ impl<'a> Planner<'a> {
                 l.tool == tool && l.root == w.root && l.file == w.file && l.key == w.key
             });
         let Some(i) = found else {
-            let existed = self.text(&path)?.is_some();
+            let text = self.text(&path)?;
+            let existed = text.is_some();
+            // The person's own Markdown file gets Sekisho's block only once
+            // they agree (D202); after that, lines come and go in it.
+            if w.format == Format::MarkdownBlock
+                && text.as_deref().is_some_and(|t| !merge::has_block(t))
+                && !self.keys.contains_key(&path)
+            {
+                let file = self.what_file(w.root, &w.file);
+                if !self.consent.contains(&file) {
+                    self.consent.push(file);
+                }
+            }
             let current = self.disk_value(&path, w.format, &w.key)?;
             match &current {
                 Some(v) if *v == w.value => {}
@@ -698,7 +727,49 @@ fn stored(rendered: &Rendered) -> ToolLock {
             })
             .collect(),
         run: rendered.run.clone(),
+        always_loaded: rendered.always_loaded,
     }
+}
+
+/// Instructions `d` delivers whose names another environment installed
+/// for one of `tools` delivers from another entry with other content
+/// (D215, D216): the instruction files carry each environment's name, so
+/// the engine's path check alone wouldn't see them.
+fn instruction_clashes(lock: &Lock, d: &Delivery, tools: &[Tool]) -> Vec<Clash> {
+    let env = d.environment.as_str();
+    let mut out = Vec::new();
+    for e in d
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Instruction)
+    {
+        for (other, held) in &lock.environments {
+            if other == env {
+                continue;
+            }
+            let differs = held.entries.iter().any(|h| {
+                h.kind == EntryKind::Instruction
+                    && h.name == e.name
+                    && h.source != e.source
+                    && h.digest != e.digest
+            });
+            let Ok(held_by) = EnvName::parse(other) else {
+                continue;
+            };
+            for &tool in tools.iter().filter(|t| held.tools.contains_key(t)) {
+                if differs {
+                    out.push(Clash {
+                        tool,
+                        kind: ContentKind::Instructions,
+                        name: e.name.to_string(),
+                        path_or_key: format!("instruction {}@{}", e.name, e.source),
+                        held_by: held_by.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// What a session here also gets from the other scope's install (D214).
@@ -846,6 +917,13 @@ pub(super) fn install(
             })
             .cloned();
         let is_model = options.models || current.is_none() || current.as_deref() == Some(&env);
+        let read = |root: Root, rel: &RelPath| -> Option<String> {
+            let dir = scope.root(root)?;
+            match files::read(&abs(&dir, rel)).ok()? {
+                Disk::File(b) => String::from_utf8(b).ok(),
+                _ => None,
+            }
+        };
         let render = |models: bool| {
             let ctx = RenderContext {
                 scope,
@@ -854,6 +932,7 @@ pub(super) fn install(
                 local_servers: &servers,
                 models,
                 sekisho,
+                read: &read,
             };
             a.render(&delivery, &ctx)
                 .map_err(|e| refused(format!("{tool}: {e}")))
@@ -885,7 +964,26 @@ pub(super) fn install(
             p.lock.models.insert(tool.as_str().to_owned(), env.clone());
         }
     }
+    let tools: Vec<Tool> = adapters.iter().map(|a| a.tool()).collect();
+    p.clashes
+        .extend(instruction_clashes(&p.lock, &delivery, &tools));
     p.lock.environments.insert(env, env_lock);
+    for &tool in &tools {
+        let total: u64 = p
+            .lock
+            .environments
+            .values()
+            .filter_map(|e| e.tools.get(&tool))
+            .map(|t| t.always_loaded)
+            .sum();
+        if total > ALWAYS_LOADED_WARNING_BYTES {
+            warnings.push(format!(
+                "{tool}: every session here loads {total} bytes of Sekisho's instructions, \
+                 more than one environment may deliver ({ALWAYS_LOADED_WARNING_BYTES}); every \
+                 session pays for them (D221)"
+            ));
+        }
+    }
     p.finalize()?;
     if !p.clashes.is_empty() {
         return Err(InstallError::Clash(std::mem::take(&mut p.clashes)));

@@ -80,6 +80,38 @@ pub fn scan(text: &str) -> Scan {
     out
 }
 
+/// The first character that makes an instruction read differently from
+/// what a person sees (D221): zero-width (U+200B–U+200D, U+2060, U+FEFF
+/// anywhere), bidirectional (U+061C, U+200E, U+200F, U+202A–U+202E,
+/// U+2066–U+2069) or tag (U+E0000–U+E007F). Instructions are always in the
+/// model's context, so these refuse, where [`scan`] only warns of some.
+pub fn invisible(text: &str) -> Option<Finding> {
+    let (mut line, mut column) = (1, 0);
+    for c in text.chars() {
+        if c == '\n' {
+            line += 1;
+            column = 0;
+            continue;
+        }
+        column += 1;
+        let what = match c {
+            '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' => "zero-width character",
+            '\u{061C}' | '\u{200E}' | '\u{200F}' => "direction mark",
+            '\u{202A}'..='\u{202E}' => "bidirectional embedding or override",
+            '\u{2066}'..='\u{2069}' => "bidirectional isolate",
+            '\u{E0000}'..='\u{E007F}' => "tag character",
+            _ => continue,
+        };
+        return Some(Finding {
+            line,
+            column,
+            codepoint: c,
+            what,
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

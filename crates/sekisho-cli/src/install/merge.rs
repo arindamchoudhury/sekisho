@@ -59,9 +59,120 @@ fn holds(array: &CstArray, item: &str) -> Option<CstNode> {
         .find(|e| e.to_serde_value() == Some(Value::String(item.to_owned())))
 }
 
+/// The first line of the block Sekisho manages in a Markdown file.
+pub const BLOCK_START: &str =
+    "<!-- sekisho:start: managed by `sekisho use`; edits are overwritten -->";
+/// Its last line.
+pub const BLOCK_END: &str = "<!-- sekisho:end -->";
+
+/// The block's start and end lines (indexes into `lines`), if there is one.
+fn find_block(lines: &[&str]) -> Result<Option<(usize, usize)>, MergeError> {
+    let Some(start) = lines
+        .iter()
+        .position(|l| l.trim_end().starts_with("<!-- sekisho:start"))
+    else {
+        return Ok(None);
+    };
+    match lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_end() == BLOCK_END)
+    {
+        Some(i) => Ok(Some((start, start + 1 + i))),
+        None => Err("Sekisho's block has no end line".into()),
+    }
+}
+
+/// The text holds Sekisho's block.
+pub fn has_block(text: &str) -> bool {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    matches!(find_block(&lines), Ok(Some(_)))
+}
+
+/// The one line a Markdown block key names.
+fn block_line(key: &[String]) -> Result<&str, MergeError> {
+    match key {
+        [line] if !line.contains(['\n', '\r']) => Ok(line),
+        _ => Err("a Markdown block key is one line".into()),
+    }
+}
+
+fn block_get(text: &str, key: &[String]) -> Result<Option<Value>, MergeError> {
+    let line = block_line(key)?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    Ok(find_block(&lines)?.and_then(|(start, end)| {
+        lines[start + 1..end]
+            .iter()
+            .any(|l| l.trim_end() == line)
+            .then_some(Value::Bool(true))
+    }))
+}
+
+fn block_set(text: Option<&str>, key: &[String], value: &Value) -> Result<String, MergeError> {
+    let line = block_line(key)?;
+    if *value != Value::Bool(true) {
+        return Err("a Markdown block line's value is true".into());
+    }
+    let text = text.unwrap_or("");
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    match find_block(&lines)? {
+        Some((start, end)) => {
+            if lines[start + 1..end].iter().any(|l| l.trim_end() == line) {
+                return Ok(text.to_owned());
+            }
+            let eol = if lines[end].ends_with("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            let mut out: String = lines[..end].concat();
+            out.push_str(line);
+            out.push_str(eol);
+            out.push_str(&lines[end..].concat());
+            Ok(out)
+        }
+        None => {
+            let mut out = text.to_owned();
+            if !out.is_empty() {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            out.push_str(&format!("{BLOCK_START}\n{line}\n{BLOCK_END}\n"));
+            Ok(out)
+        }
+    }
+}
+
+/// `text` without the line; the block goes with its last line.
+fn block_remove(text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
+    let line = block_line(key)?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let Some((start, end)) = find_block(&lines)? else {
+        return Ok((text.to_owned(), text.trim().is_empty()));
+    };
+    let kept: Vec<&str> = lines[start + 1..end]
+        .iter()
+        .copied()
+        .filter(|l| l.trim_end() != line)
+        .collect();
+    let mut out: String = lines[..start].concat();
+    if !kept.is_empty() {
+        out.push_str(lines[start]);
+        out.push_str(&kept.concat());
+        out.push_str(lines[end]);
+    }
+    out.push_str(&lines[end + 1..].concat());
+    let empty = out.trim().is_empty();
+    Ok((out, empty))
+}
+
 /// The value at `key`, if any; for an item key, the item while the array
 /// holds it.
 pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, MergeError> {
+    if format == Format::MarkdownBlock {
+        return block_get(text, key);
+    }
     if let Some((array, item)) = split_item(key) {
         if format == Format::Toml {
             return Err("array items are kept only in JSON".into());
@@ -88,6 +199,7 @@ pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, 
             }
             Ok(object.get(last).and_then(|p| p.to_serde_value()))
         }
+        Format::MarkdownBlock => unreachable!("handled above"),
         Format::Toml => {
             let doc = parse_toml(text)?;
             let mut item: &Item = doc.as_item();
@@ -109,6 +221,9 @@ pub fn set(
     key: &[String],
     value: &Value,
 ) -> Result<String, MergeError> {
+    if format == Format::MarkdownBlock {
+        return block_set(text, key, value);
+    }
     let (last, parents) = key.split_last().ok_or("an empty key")?;
     if let Some((array, item)) = split_item(key) {
         if format == Format::Toml {
@@ -144,6 +259,7 @@ pub fn set(
             ensure_multiline(&root);
             Ok(root.to_string())
         }
+        Format::MarkdownBlock => unreachable!("handled above"),
         Format::Toml => {
             let mut doc = parse_toml(text.unwrap_or(""))?;
             let mut table: &mut dyn TableLike = doc.as_table_mut();
@@ -166,6 +282,9 @@ pub fn set(
 /// `text` without `key`, each table or object it leaves empty removed too,
 /// and whether nothing is left in the document.
 pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
+    if format == Format::MarkdownBlock {
+        return block_remove(text, key);
+    }
     if let Some((array, item)) = split_item(key) {
         if format == Format::Toml {
             return Err("array items are kept only in JSON".into());
@@ -214,6 +333,7 @@ pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, boo
             let empty = is_empty_json(&root);
             Ok((root.to_string(), empty))
         }
+        Format::MarkdownBlock => unreachable!("handled above"),
         Format::Toml => {
             let mut doc = parse_toml(text)?;
             remove_toml(doc.as_table_mut(), key);
@@ -378,6 +498,56 @@ mod tests {
 
     fn key(k: &[&str]) -> Vec<String> {
         k.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn markdown_block_lines_are_set_read_and_removed() {
+        let md = Format::MarkdownBlock;
+        let a = key(&["@./a.md"]);
+        let b = key(&["@./b.md"]);
+        let yes = serde_json::json!(true);
+        // A new file holds just the block.
+        let text = set(md, None, &a, &yes).unwrap();
+        assert_eq!(text, format!("{BLOCK_START}\n@./a.md\n{BLOCK_END}\n"));
+        assert_eq!(get(md, &text, &a).unwrap(), Some(yes.clone()));
+        assert_eq!(get(md, &text, &b).unwrap(), None);
+        // The person's file gets the block at its end, after a blank line.
+        let mine = "# Mine\n\n@./outside.md\n";
+        let text = set(md, Some(mine), &a, &yes).unwrap();
+        assert_eq!(
+            text,
+            format!("# Mine\n\n@./outside.md\n\n{BLOCK_START}\n@./a.md\n{BLOCK_END}\n")
+        );
+        assert_eq!(get(md, &text, &key(&["@./outside.md"])).unwrap(), None);
+        assert!(has_block(&text) && !has_block(mine));
+        // Lines are added at the block's end, once.
+        let text = set(md, Some(&text), &b, &yes).unwrap();
+        assert_eq!(set(md, Some(&text), &a, &yes).unwrap(), text);
+        let around = text.replace("# Mine", "# Mine, edited") + "Below.\n";
+        // Removing a line keeps the rest; the last one takes the block.
+        let (text, empty) = remove(md, &around, &a).unwrap();
+        assert!(!empty);
+        assert_eq!(
+            text,
+            format!(
+                "# Mine, edited\n\n@./outside.md\n\n{BLOCK_START}\n@./b.md\n{BLOCK_END}\nBelow.\n"
+            )
+        );
+        let (text, empty) = remove(md, &text, &b).unwrap();
+        assert!(!empty);
+        assert_eq!(text, "# Mine, edited\n\n@./outside.md\n\nBelow.\n");
+        let (_, empty) = remove(md, &set(md, None, &a, &yes).unwrap(), &a).unwrap();
+        assert!(empty);
+        // CRLF files keep working; only `true` is a value; a block without
+        // its end is refused.
+        let crlf = format!("# Mine\r\n{BLOCK_START}\r\n@./a.md\r\n{BLOCK_END}\r\n");
+        assert_eq!(get(md, &crlf, &a).unwrap(), Some(yes.clone()));
+        assert_eq!(
+            set(md, Some(&crlf), &b, &yes).unwrap(),
+            format!("# Mine\r\n{BLOCK_START}\r\n@./a.md\r\n@./b.md\r\n{BLOCK_END}\r\n")
+        );
+        assert!(set(md, None, &a, &serde_json::json!("x")).is_err());
+        assert!(get(md, &format!("{BLOCK_START}\n@./a.md\n"), &a).is_err());
     }
 
     #[test]

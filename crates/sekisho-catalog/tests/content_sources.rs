@@ -915,3 +915,113 @@ fn shell_command_lines_are_refused() {
         assert!(c.refused.is_empty(), "{command} {args:?}: {:#?}", c.refused);
     }
 }
+
+// ---------------------------------------------------------------- instructions (D220, D221)
+
+#[test]
+fn an_instructions_source_has_one_entry_per_markdown_file() {
+    let c = check_temp(
+        SourceKind::Instructions,
+        &[
+            (
+                "style.md",
+                b"# Payments team style\n\nUse integer micro-USD.\n",
+            ),
+            ("review.md", b"Ask for a test with every fix.\n"),
+            // Only the top level is read; other files and README.md are not instructions.
+            ("nested/deep.md", b"Not read.\n"),
+            ("notes.txt", b"Not read.\n"),
+            ("README.md", b"About this repository.\n"),
+            (".hidden.md", b"Not read.\n"),
+        ],
+    );
+    assert_eq!(names(&c), ["review", "style"]);
+    assert!(c.refused.is_empty(), "{:#?}", c.refused);
+    let style = entry(&c, "style");
+    assert_eq!(style.kind, EntryKind::Instruction);
+    assert_eq!(style.path, "style.md");
+    assert_eq!(paths(style), ["style.md"]);
+    assert_eq!(
+        style.files[0].bytes,
+        b"# Payments team style\n\nUse integer micro-USD.\n"
+    );
+    assert!(
+        matches!(style.spec, EntrySpec::Instruction(_)),
+        "{:?}",
+        style.spec
+    );
+
+    let bad = check_temp(
+        SourceKind::Instructions,
+        &[
+            ("Bad Name.md", b"x\n"),
+            ("empty.md", b""),
+            ("latin.md", &[0x66, 0xe9, 0x0a]),
+        ],
+    );
+    assert!(bad.entries.is_empty(), "{bad:#?}");
+    refusal(&bad, "Bad Name");
+    assert!(refusal(&bad, "empty").contains("empty"), "{bad:#?}");
+    assert!(refusal(&bad, "latin").contains("UTF-8"), "{bad:#?}");
+}
+
+#[test]
+fn an_instruction_over_4_kib_is_refused() {
+    let at_limit = "a".repeat(4096);
+    let over = "a".repeat(4097);
+    let c = check_temp(
+        SourceKind::Instructions,
+        &[
+            ("fits.md", at_limit.as_bytes()),
+            ("big.md", over.as_bytes()),
+        ],
+    );
+    assert_eq!(names(&c), ["fits"]);
+    let why = refusal(&c, "big");
+    assert!(why.contains("4096"), "{why}");
+}
+
+#[test]
+fn an_instruction_with_frontmatter_is_refused() {
+    let c = check_temp(
+        SourceKind::Instructions,
+        &[
+            ("front.md", b"---\npaths: [\"**\"]\n---\nText.\n"),
+            ("rule.md", b"Text.\n\n---\n\nMore text after a rule.\n"),
+        ],
+    );
+    assert_eq!(names(&c), ["rule"]);
+    assert!(refusal(&c, "front").contains("frontmatter"), "{c:#?}");
+}
+
+#[test]
+fn an_instruction_with_any_invisible_character_is_refused() {
+    // Each refuses, naming the code point and line, never quoting the text.
+    for (c, hex) in [
+        ('\u{200B}', "U+200B"),
+        ('\u{202E}', "U+202E"),
+        ('\u{E0041}', "U+E0041"),
+    ] {
+        let text = format!("secret-ish first line\nsecond{c}line\n");
+        let check = check_temp(SourceKind::Instructions, &[("hid.md", text.as_bytes())]);
+        assert!(check.entries.is_empty(), "{hex}: {check:#?}");
+        let why = refusal(&check, "hid");
+        assert!(why.contains(hex) && why.contains("line 2"), "{why}");
+        assert!(
+            !why.contains("secret-ish") && !why.contains("second"),
+            "{why}"
+        );
+    }
+    // The other classes too: U+FEFF anywhere, U+061C, U+2066, U+2060.
+    for c in ['\u{FEFF}', '\u{061C}', '\u{2066}', '\u{2060}', '\u{200E}'] {
+        let text = format!("{c}text\n");
+        let check = check_temp(SourceKind::Instructions, &[("hid.md", text.as_bytes())]);
+        assert!(check.entries.is_empty(), "U+{:04X}: {check:#?}", c as u32);
+    }
+    // A prompt with U+200B is only warned about, as before.
+    let p = check_temp(
+        SourceKind::Prompts,
+        &[("note.md", "tw\u{200B}o\n".as_bytes())],
+    );
+    assert_eq!(names(&p), ["note"]);
+}

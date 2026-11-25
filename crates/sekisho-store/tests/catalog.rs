@@ -995,6 +995,7 @@ fn toolkit(
             skills: skills.iter().map(|s| reference(s)).collect(),
             plugins: Vec::new(),
             prompts: Vec::new(),
+            instructions: Vec::new(),
         }),
         files: Vec::new(),
     }

@@ -25,6 +25,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
     "skills": ["pdf"],
     "plugins": [],
     "prompts": ["monthly-review"],
+    "instructions": ["data-style", "review-rules@platform"],
     "toolkits": ["finops"]
   }'
 ```
@@ -42,6 +43,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/j
 | `labels` | Key–value pairs that spend exports carry ([below](#labels)) |
 | `mcp_servers` | [Catalog](catalogs.md) MCP servers: a name, or `{"server", "tools"}` to allow only those tools |
 | `a2a_agents`, `skills`, `plugins`, `prompts` | Catalog entries of each kind |
+| `instructions` | [Instructions](catalogs.md#instructions) every session loads, in this order; with its toolkits', at most 16 KiB ([below](#what-an-environment-delivers)) |
 | `toolkits` | [Toolkits](catalogs.md#toolkits), whose entries the environment delivers too |
 | `owner` | JSON only: the owner's user ID. Without it, the owner stays the same, or the admin who creates the environment owns it. `PATCH` changes it on its own ([below](#owners)) |
 
@@ -95,6 +97,20 @@ entries, then those only its toolkits bring, **each entry once**. A
 quarantined toolkit brings nothing; what the environment lists itself, or
 gets from another toolkit, stays. Toolkits themselves aren't delivered.
 
+Instructions keep their order: the environment's own first, then each
+toolkit's in the order the toolkits are listed, an instruction already
+delivered skipped. An environment listing `[b, a]` with toolkits `t1`
+(`[a, c]`) and `t2` (`[d]`) delivers `b, a, c, d`. **All of them together
+are at most 16 KiB** (16,384 bytes, at their applied versions): a save
+over it is refused with the total, such as
+
+```text
+instructions: the environment and its toolkits deliver 16400 bytes of instructions; at most 16384
+```
+
+and a catalog [apply](catalogs.md#apply) that would take an environment
+over it keeps the instruction's or toolkit's last version.
+
 | Field | Meaning |
 |---|---|
 | `kind`, `source`, `name` | The entry |
@@ -104,8 +120,9 @@ gets from another toolkit, stays. Toolkits themselves aren't delivered.
 | `quarantined`, `removed` | As in `catalog_status`; delivery leaves a quarantined entry out ([Quarantine](catalogs.md#quarantine)) |
 
 Machines read what an environment delivers from its delivery document
-([What `sekisho use` reads](#what-sekisho-use-reads)). `sekisho use`
-itself, and the gateway's MCP and A2A routes, are still to come.
+([What `sekisho use` reads](#what-sekisho-use-reads)), and
+[`sekisho use`](cli.md) writes it into each coding tool. The gateway's MCP
+and A2A routes are still to come.
 
 ### Default models
 

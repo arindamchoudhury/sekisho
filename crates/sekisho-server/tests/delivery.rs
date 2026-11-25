@@ -7,7 +7,7 @@ mod common;
 
 use common::{Reply, TestApp, app};
 use sekisho_catalog::model::{
-    CheckedEntry, EntrySpec, PluginSpec, SkillSpec, ToolkitServer, ToolkitSpec,
+    CheckedEntry, EntrySpec, InstructionSpec, PluginSpec, SkillSpec, ToolkitServer, ToolkitSpec,
 };
 use sekisho_catalog::names::{EntryKind, EntryName, EntryRef, SourceKind, SourceName};
 use sekisho_catalog::source::{Folder, SourceUrl};
@@ -82,6 +82,7 @@ fn toolkit(name: &str, skills: &[&str]) -> CheckedEntry {
             skills: skills.iter().map(|s| EntryRef::parse(s).unwrap()).collect(),
             plugins: Vec::new(),
             prompts: Vec::new(),
+            instructions: Vec::new(),
         }),
         files: Vec::new(),
     }
@@ -848,4 +849,127 @@ async fn people_see_the_spend_that_counts_them() {
         app.call("GET", "/api/v1/me/spend", None, None).await.status,
         401
     );
+}
+
+// ------------------------------------------------------------ instructions (plan 4, Task 7b)
+
+fn instruction(name: &str, text: &str) -> CheckedEntry {
+    CheckedEntry {
+        kind: EntryKind::Instruction,
+        name: EntryName::parse(name).unwrap(),
+        path: format!("{name}.md"),
+        spec: EntrySpec::Instruction(InstructionSpec {
+            description: String::new(),
+        }),
+        files: vec![file(&format!("{name}.md"), text, false)],
+    }
+}
+
+fn instruction_kit(name: &str, instructions: &[&str]) -> CheckedEntry {
+    let mut kit = toolkit(name, &[]);
+    if let EntrySpec::Toolkit(spec) = &mut kit.spec {
+        spec.instructions = instructions
+            .iter()
+            .map(|s| EntryRef::parse(s).unwrap())
+            .collect();
+    }
+    kit
+}
+
+const STYLE: &str = "# Style\n\nShort functions.\n";
+
+#[tokio::test]
+async fn instructions_are_delivered_in_order() {
+    let app = app().await;
+    models(&app).await;
+    add_source(&app, "rules").await;
+    sync(
+        &app,
+        "rules",
+        "r1",
+        vec![
+            instruction("style", STYLE),
+            instruction("review", "Ask for tests.\n"),
+            instruction("units", "Money is integer micro-USD.\n"),
+            instruction("big", &"x".repeat(4096)),
+            instruction("big-two", &"y".repeat(4096)),
+            instruction("big-three", &"z".repeat(4096)),
+            instruction("big-four", &"w".repeat(4096)),
+            instruction_kit("kit", &["review", "units"]),
+        ],
+    )
+    .await;
+    let r = put_env(
+        &app,
+        "pay",
+        json!({
+            "models": ["mock-model"],
+            "instructions": ["style", "review"],
+            "toolkits": ["kit"],
+        }),
+    )
+    .await;
+    assert_eq!(r.body["instructions"], json!(["style", "review"]));
+    let token = developer(&app).await;
+    let d = delivery(&app, &token, "pay").await;
+    assert_eq!(d.status, 200, "{}", d.text);
+    let order: Vec<(&str, &str)> = d.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["kind"].as_str().unwrap(), e["name"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("instruction", "style"),
+            ("instruction", "review"),
+            ("instruction", "units"),
+        ]
+    );
+    let style = entry(&d.body, "instruction", "style").unwrap();
+    let text = STYLE;
+    assert_eq!(
+        style["files"],
+        json!([{
+            "path": "style.md", "sha256": sha256(text.as_bytes()),
+            "size": text.len(), "executable": false
+        }])
+    );
+
+    // Over 16 KiB: refused with the total.
+    let mut body = json!({
+        "models": ["mock-model"],
+        "instructions": ["big", "big-two", "big-three", "big-four", "style"],
+        "access_groups": ["github/eng"],
+        "owner": app.owner,
+    });
+    let r = app
+        .admin("PUT", "/api/v1/environments/pay", Some(body.clone()))
+        .await;
+    assert_eq!(r.status, 422, "{}", r.text);
+    assert!(
+        r.text.contains("16410") && r.text.contains("16384"),
+        "{}",
+        r.text
+    );
+    body["instructions"] = json!(["big", "big-two", "big-three", "big-four"]);
+    let r = app
+        .admin("PUT", "/api/v1/environments/pay", Some(body))
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text);
+
+    // `instructions` is a source kind admins can add.
+    let r = app
+        .admin(
+            "POST",
+            "/api/v1/catalog-sources",
+            Some(json!({
+                "name": "more-rules", "kind": "instructions",
+                "url": "https://git.example.com/more-rules.git"
+            })),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text);
+    assert_eq!(r.body["kind"], "instructions");
 }

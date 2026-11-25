@@ -589,6 +589,38 @@ async fn apply_in(
                 .bind(id)
                 .execute(&mut *conn)
                 .await?;
+                // An instruction or toolkit that would take an environment
+                // over its instructions' limit keeps its last version (D221).
+                if matches!(kind, EntryKind::Instruction | EntryKind::Toolkit) {
+                    let over = crate::environments::instructions_over(conn, id).await?;
+                    if !over.is_empty() {
+                        sqlx::query(
+                            "update catalog_entries set applied_revision_id = $2, \
+                             removed_at = $3 where id = $1",
+                        )
+                        .bind(id)
+                        .bind(applied_rev)
+                        .bind(removed)
+                        .execute(&mut *conn)
+                        .await?;
+                        let envs: Vec<String> = over
+                            .iter()
+                            .map(|(env, bytes)| format!("{env} ({bytes} bytes)"))
+                            .collect();
+                        applied.refused.push(Refusal {
+                            path,
+                            kind: Some(kind),
+                            name: Some(name),
+                            reason: format!(
+                                "this version would take {} over {} bytes of instructions; \
+                                 the last version stays",
+                                envs.join(", "),
+                                sekisho_catalog::instructions::MAX_ENVIRONMENT_INSTRUCTION_BYTES
+                            ),
+                        });
+                        continue;
+                    }
+                }
                 sqlx::query(
                     "update catalog_revisions set applied_at = $2 \
                      where id = (select latest_revision_id from catalog_entries where id = $1) \

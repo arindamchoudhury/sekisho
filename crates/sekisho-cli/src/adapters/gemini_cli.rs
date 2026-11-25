@@ -13,16 +13,43 @@
 //! `gateway` outside ACP, while the API-key type also takes its base URL
 //! from `GOOGLE_GEMINI_BASE_URL`.
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use sekisho_catalog::delivery::Delivery;
 
 use super::translate::{self, Layout, RemoteKey};
 use super::{
-    Adapter, AdapterError, Layer, Layering, Origin, RenderContext, Rendered, Root, RunSpec,
-    ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
+    Adapter, AdapterError, FileWrite, Format, KeyWrite, Layer, Layering, Origin, RelPath,
+    RenderContext, Rendered, Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
 };
-use crate::install::Scope;
+use crate::install::instructions::{self, Instruction};
+use crate::install::{Scope, merge};
+
+/// The context file names Gemini CLI reads, from `context.fileName` in the
+/// workspace's settings, else the user's; `None` when neither sets it, so
+/// GEMINI.md alone.
+fn context_file_names(ctx: &RenderContext<'_>) -> Option<Vec<String>> {
+    let key = ["context".to_owned(), "fileName".to_owned()];
+    let read = |root: Root, file: &str| {
+        let text = (ctx.read)(root, &RelPath::parse(file).ok()?)?;
+        merge::get(Format::Jsonc, &text, &key).ok().flatten()
+    };
+    let project = ctx.scope.kind() == ScopeKind::Project;
+    let value = project
+        .then(|| read(Root::Project, ".gemini/settings.json"))
+        .flatten()
+        .or_else(|| read(Root::ToolHome(Tool::GeminiCli), "settings.json"))?;
+    match value {
+        Value::String(s) => Some(vec![s]),
+        Value::Array(items) => Some(
+            items
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
 
 /// Gemini CLI.
 #[derive(Clone, Copy, Debug, Default)]
@@ -45,6 +72,90 @@ impl GeminiCli {
             // named; an unset one becomes empty.
             user_var: |_, name, _| Some(format!("${{{name}}}")),
         }
+    }
+}
+
+impl GeminiCli {
+    /// Each instruction a file under `.gemini/sekisho/<env>/`, imported by
+    /// one block in GEMINI.md, which Gemini CLI reads unless its
+    /// `context.fileName` leaves it out (D222, D223).
+    fn project_instructions(
+        d: &Delivery,
+        ctx: &RenderContext<'_>,
+        every: &[&Instruction],
+        out: &mut Rendered,
+    ) -> Result<(), AdapterError> {
+        if let Some(names) = context_file_names(ctx)
+            && !names.iter().any(|n| n == "GEMINI.md")
+        {
+            for i in every {
+                out.skipped.push(Skipped {
+                    what: i.label.clone(),
+                    why: format!(
+                        "Gemini CLI's context.fileName setting reads {} and not GEMINI.md, \
+                         which imports Sekisho's instructions; Sekisho never writes those \
+                         files",
+                        names.join(", ")
+                    ),
+                });
+            }
+            return Ok(());
+        }
+        let gemini_md = RelPath::parse("GEMINI.md")?;
+        for i in every {
+            let file = format!(".gemini/sekisho/{}/{}.md", d.environment, i.stem);
+            out.always_loaded += i.text.len() as u64;
+            out.files.push(FileWrite {
+                root: Root::Project,
+                path: RelPath::parse(&file)?,
+                content: i.text.clone().into_bytes(),
+                executable: false,
+                origin: i.origin.clone(),
+            });
+            out.keys.push(KeyWrite {
+                root: Root::Project,
+                file: gemini_md.clone(),
+                format: Format::MarkdownBlock,
+                key: vec![format!("@./{file}")],
+                value: Value::Bool(true),
+                origin: i.origin.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// An extension of the environment's own, whose context file holds its
+    /// instructions: Gemini CLI's extensions are user-level only.
+    fn extension(
+        d: &Delivery,
+        every: &[&Instruction],
+        out: &mut Rendered,
+    ) -> Result<(), AdapterError> {
+        let name = format!("sekisho-{}", d.environment);
+        let text = instructions::joined(every);
+        out.always_loaded += text.len() as u64;
+        let version = d.revision.get(..12).unwrap_or("0");
+        let mut manifest = serde_json::to_vec_pretty(&json!({
+            "name": name,
+            "version": version,
+            "description": format!("Sekisho environment {}'s instructions", d.environment),
+            "contextFileName": "SEKISHO.md",
+        }))
+        .expect("JSON values serialize");
+        manifest.push(b'\n');
+        for (file, content) in [
+            ("gemini-extension.json", manifest),
+            ("SEKISHO.md", text.into_bytes()),
+        ] {
+            out.files.push(FileWrite {
+                root: Root::ToolHome(Tool::GeminiCli),
+                path: RelPath::parse(&format!("extensions/{name}/{file}"))?,
+                content,
+                executable: false,
+                origin: Origin::Environment,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -86,6 +197,24 @@ impl Adapter for GeminiCli {
             }
         }
         translate::content(d, ctx, &layout, &mut out)?;
+        let (instructions, skipped) = instructions::collect(d, ctx)?;
+        out.skipped.extend(skipped);
+        let (every, scoped): (Vec<&Instruction>, Vec<&Instruction>) =
+            instructions.iter().partition(|i| i.paths.is_none());
+        for i in scoped {
+            out.skipped.push(Skipped {
+                what: i.label.clone(),
+                why: "Gemini CLI has no instructions for some files only".into(),
+            });
+        }
+        if every.is_empty() {
+            return Ok(out);
+        }
+        if ctx.scope.kind() == ScopeKind::Project {
+            Self::project_instructions(d, ctx, &every, &mut out)?;
+        } else {
+            Self::extension(d, &every, &mut out)?;
+        }
         Ok(out)
     }
 
@@ -115,6 +244,7 @@ impl Adapter for GeminiCli {
             skills: both(Some(ScopeKind::Project)),
             prompts: both(None),
             plugins: both(Some(ScopeKind::Project)),
+            instructions: both(None),
         }
     }
 

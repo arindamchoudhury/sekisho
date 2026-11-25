@@ -6,6 +6,7 @@ pub mod card;
 pub mod check;
 pub mod delivery;
 pub mod environment;
+pub mod instructions;
 pub mod labels;
 pub mod launch;
 pub mod model;

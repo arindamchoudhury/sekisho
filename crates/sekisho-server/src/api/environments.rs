@@ -120,6 +120,7 @@ pub struct EnvironmentBody {
     skills: Vec<String>,
     plugins: Vec<String>,
     prompts: Vec<String>,
+    instructions: Vec<String>,
     toolkits: Vec<String>,
     /// `null` only for an environment saved before owners existed.
     owner: Option<Uuid>,
@@ -168,6 +169,7 @@ impl EnvironmentBody {
             skills: text(&spec.skills),
             plugins: text(&spec.plugins),
             prompts: text(&spec.prompts),
+            instructions: text(&spec.instructions),
             toolkits: text(&spec.toolkits),
             owner: e.owner,
             owner_email,

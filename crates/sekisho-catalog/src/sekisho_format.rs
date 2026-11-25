@@ -245,7 +245,7 @@ fn agent(map: &Mapping, opts: &CheckOptions) -> Result<(EntryName, EntrySpec), S
 }
 
 /// The fields a toolkit may have.
-const TOOLKIT_FIELDS: [&str; 9] = [
+const TOOLKIT_FIELDS: [&str; 10] = [
     "apiVersion",
     "kind",
     "name",
@@ -255,6 +255,7 @@ const TOOLKIT_FIELDS: [&str; 9] = [
     "skills",
     "plugins",
     "prompts",
+    "instructions",
 ];
 
 /// Problems found in a toolkit, each `field: message`.
@@ -422,9 +423,13 @@ fn toolkit(map: &Mapping) -> Result<(EntryName, EntrySpec), String> {
         skills: p.references(map, "skills"),
         plugins: p.references(map, "plugins"),
         prompts: p.references(map, "prompts"),
+        instructions: p.references(map, "instructions"),
     };
     if p.0.is_empty() && spec.references().is_empty() {
-        p.0.push("list at least one MCP server, A2A agent, skill, plugin or prompt".to_owned());
+        p.0.push(
+            "list at least one MCP server, A2A agent, skill, plugin, prompt or instruction"
+                .to_owned(),
+        );
     }
     match name {
         Some(name) if p.0.is_empty() => Ok((name, EntrySpec::Toolkit(spec))),

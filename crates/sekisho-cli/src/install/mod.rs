@@ -18,6 +18,7 @@ use crate::output::{CliError, Exit};
 
 pub mod exclude;
 pub mod files;
+pub mod instructions;
 pub mod launch;
 pub mod lock;
 pub mod merge;

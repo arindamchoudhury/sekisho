@@ -109,7 +109,7 @@ Every error is JSON with an `error` code and a `message` for people:
 | `POST /api/v1/catalog-sources/import-obot` | Add Obot catalog repositories as sources | [Importing Obot catalogs](catalogs.md#importing-obot-catalogs) |
 | `GET /api/v1/catalog-sources/{name}/vmcps` | Obot virtual servers offered as environments | [Virtual servers](catalogs.md#virtual-servers) |
 | `POST /api/v1/catalog-sources/{name}/vmcps/{key}/environment` | Create an environment from one (never replacing one) | [Virtual servers](catalogs.md#virtual-servers) |
-| `GET /api/v1/catalog/{kind}` | The catalog entries of a kind (`mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts`, `toolkits`), each with the `toolkits` that list it | [Entries](catalogs.md#entries) |
+| `GET /api/v1/catalog/{kind}` | The catalog entries of a kind (`mcp-servers`, `a2a-agents`, `skills`, `plugins`, `prompts`, `instructions`, `toolkits`), each with the `toolkits` that list it | [Entries](catalogs.md#entries) |
 | `GET`, `PATCH /api/v1/catalog/{kind}/{source}/{name}` | An entry with its revisions (a toolkit's with their `members`); change its owner | [Entries](catalogs.md#entries), [Toolkits](catalogs.md#toolkits), [Owners](catalogs.md#owners) |
 | `GET /api/v1/catalog/{kind}/{source}/{name}/files/{path}` | A file of an entry's applied revision | [Entries](catalogs.md#entries) |
 | `POST`, `DELETE /api/v1/catalog/{kind}/{source}/{name}/quarantine` | Quarantine an entry, or lift that | [Quarantine](catalogs.md#quarantine) |

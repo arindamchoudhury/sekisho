@@ -256,7 +256,10 @@ pub async fn create(
             }
             Some(kind) => Some(kind),
             None => {
-                fields.push("kind", "use catalog, skills, plugins or prompts");
+                fields.push(
+                    "kind",
+                    "use catalog, skills, plugins, prompts or instructions",
+                );
                 None
             }
         });

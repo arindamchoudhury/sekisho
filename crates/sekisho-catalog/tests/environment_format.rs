@@ -30,6 +30,7 @@ a2a_agents: [planner]
 skills: [pdf, review@team-skills]
 plugins: [formatter]
 prompts: [release-notes]
+instructions: [style, review@team-rules]
 toolkits: [finops]
 "#;
 
@@ -63,6 +64,9 @@ fn the_yaml_round_trips() {
     );
     assert_eq!(doc.labels.as_map()["cost-centre"], "4711");
     assert_eq!(doc.skills[1].to_string(), "review@team-skills");
+    // Instructions keep the order written (D220).
+    let instructions: Vec<String> = doc.instructions.iter().map(ToString::to_string).collect();
+    assert_eq!(instructions, ["style", "review@team-rules"]);
 
     let yaml = doc.to_yaml();
     assert!(

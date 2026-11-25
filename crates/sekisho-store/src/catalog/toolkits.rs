@@ -43,6 +43,7 @@ pub(crate) fn kind_words(kind: EntryKind) -> &'static str {
         EntryKind::Plugin => "plugin",
         EntryKind::Prompt => "prompt",
         EntryKind::Toolkit => "toolkit",
+        EntryKind::Instruction => "instruction",
     }
 }
 
@@ -55,6 +56,7 @@ fn list_name(kind: EntryKind) -> &'static str {
         EntryKind::Plugin => "plugins",
         EntryKind::Prompt => "prompts",
         EntryKind::Toolkit => "toolkits",
+        EntryKind::Instruction => "instructions",
     }
 }
 

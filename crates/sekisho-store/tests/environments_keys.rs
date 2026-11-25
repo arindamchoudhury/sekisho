@@ -6,11 +6,12 @@ use std::time::Duration;
 use sekisho_catalog::environment::McpServerUse;
 use sekisho_catalog::labels::Labels;
 use sekisho_catalog::model::{
-    A2aAgentSpec, CheckedEntry, EntrySpec, McpRuntime, McpServerSpec, PluginSpec, PromptSpec,
-    SkillSpec, ToolkitServer, ToolkitSpec,
+    A2aAgentSpec, CheckedEntry, EntrySpec, InstructionSpec, McpRuntime, McpServerSpec, PluginSpec,
+    PromptSpec, SkillSpec, ToolkitServer, ToolkitSpec,
 };
 use sekisho_catalog::names::{EntryKind, EntryName, EntryRef, SourceKind, SourceName};
 use sekisho_catalog::source::{Folder, SourceUrl};
+use sekisho_catalog::tree::TreeFile;
 use sekisho_core::formats::ProviderKind;
 use sekisho_core::keys::{EnvKeyId, KeyState, hash_secret, parse_token};
 use sekisho_core::money::MicroUsd;
@@ -818,6 +819,7 @@ fn entry(kind: EntryKind, name: &str) -> CheckedEntry {
         }),
         EntryKind::Prompt => EntrySpec::Prompt(PromptSpec { description: text }),
         EntryKind::Toolkit => panic!("use kit()"),
+        EntryKind::Instruction => panic!("use instruction()"),
     };
     CheckedEntry {
         kind,
@@ -847,6 +849,7 @@ fn kit(name: &str, servers: &[(&str, Option<&[&str]>)], skills: &[&str]) -> Chec
             skills: skills.iter().map(|s| EntryRef::parse(s).unwrap()).collect(),
             plugins: Vec::new(),
             prompts: Vec::new(),
+            instructions: Vec::new(),
         }),
         files: Vec::new(),
     }
@@ -1448,4 +1451,247 @@ async fn the_owner_changes_on_its_own() {
         store.set_environment_owner(&env_name("nope"), ada).await,
         Err(StoreError::NotFound)
     ));
+}
+
+// ------------------------------------------------------------ instructions (plan 4, Task 7b)
+
+/// An instruction whose text is `size` bytes, `tag` making versions differ.
+fn instruction(name: &str, size: usize, tag: char) -> CheckedEntry {
+    let mut text = format!("# {name}\n\n");
+    while text.len() < size {
+        text.push(tag);
+    }
+    CheckedEntry {
+        kind: EntryKind::Instruction,
+        name: EntryName::parse(name).unwrap(),
+        path: format!("{name}.md"),
+        spec: EntrySpec::Instruction(InstructionSpec {
+            description: name.to_owned(),
+        }),
+        files: vec![TreeFile {
+            path: format!("{name}.md"),
+            bytes: text.into_bytes(),
+            executable: false,
+        }],
+    }
+}
+
+/// A toolkit of instructions.
+fn instruction_kit(name: &str, instructions: &[&str]) -> CheckedEntry {
+    CheckedEntry {
+        kind: EntryKind::Toolkit,
+        name: EntryName::parse(name).unwrap(),
+        path: format!("{name}.yaml"),
+        spec: EntrySpec::Toolkit(ToolkitSpec {
+            description: String::new(),
+            mcp_servers: Vec::new(),
+            a2a_agents: Vec::new(),
+            skills: Vec::new(),
+            plugins: Vec::new(),
+            prompts: Vec::new(),
+            instructions: refs(instructions),
+        }),
+        files: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn an_environment_over_16_kib_of_instructions_is_refused() {
+    let (store, sb) = common::store().await;
+    let admin = common::admin(&store).await;
+    catalog(
+        &store,
+        &sb,
+        "a",
+        vec![
+            instruction("one", 4000, 'a'),
+            instruction("two", 4000, 'a'),
+            instruction("three", 4000, 'a'),
+            instruction("four", 4000, 'a'),
+            instruction("five", 400, 'a'),
+            instruction_kit("kit", &["four", "five"]),
+        ],
+    )
+    .await;
+    // 16,000 bytes: at most 16,384.
+    let mut s = spec("team", &[]);
+    s.instructions = refs(&["one", "two", "three", "four"]);
+    store.upsert_environment(s.clone(), admin).await.unwrap();
+    // A toolkit bringing one already listed adds only the new one: 16,400.
+    s.toolkits = refs(&["kit"]);
+    let errs = store
+        .upsert_environment(s.clone(), admin)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        messages(errs),
+        [(
+            "instructions".to_string(),
+            "the environment and its toolkits deliver 16400 bytes of instructions; \
+             at most 16384"
+                .to_string()
+        )]
+    );
+    // Saved without the toolkit, it is unchanged.
+    let env = store.get_environment(&env_name("team")).await.unwrap();
+    assert!(env.spec.toolkits.is_empty());
+    assert_eq!(env.spec.instructions.len(), 4);
+    // A check refuses it the same way.
+    assert!(store.check_environment(s, admin).await.is_err());
+}
+
+#[tokio::test]
+async fn an_apply_that_would_pass_16_kib_keeps_the_last_version() {
+    let (store, sb) = common::store().await;
+    let admin = common::admin(&store).await;
+    catalog(
+        &store,
+        &sb,
+        "a",
+        vec![
+            instruction("one", 4000, 'a'),
+            instruction("two", 4000, 'a'),
+            instruction("three", 4000, 'a'),
+            instruction("four", 4000, 'a'),
+            instruction("five", 300, 'a'),
+            instruction("six", 300, 'a'),
+            instruction_kit("kit", &["five"]),
+            entry(EntryKind::Skill, "pdf"),
+        ],
+    )
+    .await;
+    let mut s = spec("team", &[]);
+    s.instructions = refs(&["one", "two", "three", "four"]);
+    s.toolkits = refs(&["kit"]);
+    let env = store.upsert_environment(s, admin).await.unwrap();
+    // Another environment, which delivers five alone, could take it.
+    let mut other = spec("other", &[]);
+    other.instructions = refs(&["five"]);
+    store.upsert_environment(other, admin).await.unwrap();
+    let applied = async |name: &str, kind: EntryKind| {
+        store
+            .get_entry(&entry_key(kind, "a", name))
+            .await
+            .unwrap()
+            .applied
+            .unwrap()
+            .id
+    };
+    let five_before = applied("five", EntryKind::Instruction).await;
+    let kit_before = applied("kit", EntryKind::Toolkit).await;
+    let pdf_before = applied("pdf", EntryKind::Skill).await;
+
+    // five grows to 1,000 bytes (16,700 for team); the toolkit adds six
+    // (16,600); pdf changes too.
+    let mut pdf = entry(EntryKind::Skill, "pdf");
+    pdf.spec = EntrySpec::Skill(SkillSpec {
+        description: "Changed.".into(),
+        license: None,
+        compatibility: None,
+    });
+    resync(
+        &store,
+        &sb,
+        "a",
+        "c2",
+        vec![
+            instruction("one", 4000, 'a'),
+            instruction("two", 4000, 'a'),
+            instruction("three", 4000, 'a'),
+            instruction("four", 4000, 'a'),
+            instruction("five", 1000, 'b'),
+            instruction("six", 300, 'a'),
+            instruction_kit("kit", &["five", "six"]),
+            pdf,
+        ],
+    )
+    .await;
+    let done = store
+        .apply_source(&SourceName::parse("a").unwrap(), OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let mut refused: Vec<(Option<EntryKind>, Option<&str>)> = done
+        .refused
+        .iter()
+        .map(|r| (r.kind, r.name.as_deref()))
+        .collect();
+    refused.sort();
+    assert_eq!(
+        refused,
+        [
+            (Some(EntryKind::Toolkit), Some("kit")),
+            (Some(EntryKind::Instruction), Some("five")),
+        ]
+    );
+    for r in &done.refused {
+        assert!(
+            r.reason.contains("team") && r.reason.contains("16384"),
+            "{}",
+            r.reason
+        );
+    }
+    assert_eq!(applied("five", EntryKind::Instruction).await, five_before);
+    assert_eq!(applied("kit", EntryKind::Toolkit).await, kit_before);
+    assert_ne!(applied("pdf", EntryKind::Skill).await, pdf_before);
+    let names: Vec<String> = delivered(&store, &env)
+        .await
+        .into_iter()
+        .map(|d| d.0)
+        .collect();
+    assert_eq!(names, ["a/one", "a/two", "a/three", "a/four", "a/five"]);
+}
+
+#[tokio::test]
+async fn instructions_keep_their_order_and_come_once() {
+    // own [b, a], toolkit t1 [a, c], toolkit t2 [d]: delivered b, a, c, d
+    let (store, sb) = common::store().await;
+    let admin = common::admin(&store).await;
+    catalog(
+        &store,
+        &sb,
+        "a",
+        vec![
+            instruction("a", 100, 'a'),
+            instruction("b", 100, 'a'),
+            instruction("c", 100, 'a'),
+            instruction("d", 100, 'a'),
+            entry(EntryKind::Skill, "pdf"),
+            instruction_kit("t1", &["a", "c"]),
+            instruction_kit("t2", &["d"]),
+        ],
+    )
+    .await;
+    let mut s = spec("team", &[]);
+    s.skills = refs(&["pdf"]);
+    s.instructions = refs(&["b", "a"]);
+    s.toolkits = refs(&["t1", "t2"]);
+    let env = store.upsert_environment(s.clone(), admin).await.unwrap();
+    assert_eq!(env.spec.instructions, s.instructions);
+    // Listed in the environment's kind order: instructions before toolkits.
+    let kinds: Vec<EntryKind> = env.entries.iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            EntryKind::Skill,
+            EntryKind::Instruction,
+            EntryKind::Instruction,
+            EntryKind::Toolkit,
+            EntryKind::Toolkit,
+        ]
+    );
+    let got: Vec<(String, bool, Vec<String>)> = delivered(&store, &env)
+        .await
+        .into_iter()
+        .map(|(name, _, listed, via)| (name, listed, via))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("a/pdf".to_string(), true, strings(&[])),
+            ("a/b".to_string(), true, strings(&[])),
+            ("a/a".to_string(), true, strings(&["t1"])),
+            ("a/c".to_string(), false, strings(&["t1"])),
+            ("a/d".to_string(), false, strings(&["t2"])),
+        ]
+    );
 }

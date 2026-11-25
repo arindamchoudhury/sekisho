@@ -21,7 +21,7 @@ pub const KIND: &str = "Environment";
 const RESERVED_NAME: &str = "models";
 
 /// The document's fields, in the order `to_yaml` writes them.
-const FIELDS: [&str; 16] = [
+const FIELDS: [&str; 17] = [
     "api_version",
     "kind",
     "name",
@@ -37,6 +37,7 @@ const FIELDS: [&str; 16] = [
     "skills",
     "plugins",
     "prompts",
+    "instructions",
     "toolkits",
 ];
 /// Fields of the API's answer that a `PUT` may send back unchanged; the
@@ -102,6 +103,8 @@ pub struct EnvironmentDoc {
     pub skills: Vec<EntryRef>,
     pub plugins: Vec<EntryRef>,
     pub prompts: Vec<EntryRef>,
+    /// Delivered in this order, then each toolkit's (D220).
+    pub instructions: Vec<EntryRef>,
     pub toolkits: Vec<EntryRef>,
 }
 
@@ -436,6 +439,7 @@ fn read(value: &Value, origin: Origin, require_kind: bool) -> Result<Environment
     let skills = r.references("skills");
     let plugins = r.references("plugins");
     let prompts = r.references("prompts");
+    let instructions = r.references("instructions");
     let toolkits = r.references("toolkits");
 
     let mut problems = r.problems;
@@ -456,6 +460,7 @@ fn read(value: &Value, origin: Origin, require_kind: bool) -> Result<Environment
         skills,
         plugins,
         prompts,
+        instructions,
         toolkits,
     };
     // The offline checks too, at each item's own position. A model that
@@ -562,6 +567,7 @@ impl EnvironmentDoc {
             ("skills", &self.skills),
             ("plugins", &self.plugins),
             ("prompts", &self.prompts),
+            ("instructions", &self.instructions),
             ("toolkits", &self.toolkits),
         ] {
             for i in repeats(refs.iter().map(ToString::to_string)) {
@@ -647,6 +653,7 @@ impl EnvironmentDoc {
             ("skills", &self.skills),
             ("plugins", &self.plugins),
             ("prompts", &self.prompts),
+            ("instructions", &self.instructions),
             ("toolkits", &self.toolkits),
         ] {
             if !refs.is_empty() {
