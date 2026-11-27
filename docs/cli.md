@@ -1,9 +1,10 @@
 # The `sekisho` CLI
 
 Developers sign in to Sekisho with the same `sekisho` binary the server
-runs. Today it signs in, keeps the session fresh and signs out, lists the
-environments you may use, and manages your environment keys; installing an
-environment into coding tools comes next.
+runs. It signs in, keeps the session fresh and signs out, lists the
+environments you may use, manages your environment keys, installs an
+environment into the coding tools of a folder or of your own config, and
+starts the tools that take their key from a run.
 
 ## Installing it
 
@@ -132,14 +133,14 @@ sekisho use pay
 
 writes the environment `pay` into the coding tools of the current folder:
 its models, local MCP servers, skills, plugins, prompts and
-[instructions](#instructions). Today
-`sekisho use` installs for Claude Code, Codex, Gemini CLI, GitHub Copilot
-CLI and Qwen Code; the other tools follow.
+[instructions](#instructions), for all eight tools of release 1: Claude
+Code, Codex, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, Qwen Code and
+Kilo CLI.
 
 | Option | What it does |
 |---|---|
-| `--target <tool>,…` | The tools to install for (`claude-code`, `codex`, `gemini-cli`, `copilot-cli`, `qwen-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`, `.codex/`, `.gemini/`, `.qwen/`), or its program on `PATH` (`claude`, `codex`, `gemini`, `copilot`, `qwen`). None found is an error listing the targets |
-| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`), `~/.codex` (or `$CODEX_HOME`), `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`), `~/.copilot` (or `$COPILOT_HOME`), `~/.qwen` (or `$QWEN_HOME`); skills for Codex and Copilot CLI in `~/.agents/skills` |
+| `--target <tool>,…` | The tools to install for (`claude-code`, `codex`, `gemini-cli`, `opencode`, `copilot-cli`, `pi`, `qwen-code`, `kilo-cli`). Without it, the tools found here: a tool's folder in the project (`.claude/`, `.codex/`, `.gemini/`, `.opencode/`, `.pi/`, `.qwen/`, `.kilo/`), or its program on `PATH` (`claude`, `codex`, `gemini`, `opencode`, `copilot`, `pi`, `qwen`, `kilo`). None found is an error listing the targets |
+| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`), `~/.codex` (or `$CODEX_HOME`), `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`), `~/.config/opencode` and `~/.config/kilo` (in `$XDG_CONFIG_HOME` when set), `~/.copilot` (or `$COPILOT_HOME`), `~/.pi/agent` (or `$PI_CODING_AGENT_DIR`), `~/.qwen` (or `$QWEN_HOME`); skills for Codex, OpenCode, Copilot CLI, Pi and Kilo CLI in `~/.agents/skills` |
 | `--dir <path>` | The project folder, instead of the current one |
 | `--models` | Make this environment the one these tools take their models from |
 | `--dry-run` | Show what would change, with each update's diff, and write nothing |
@@ -231,8 +232,8 @@ written the same way, as `<plugin>-<name>`, with `plugin <plugin>` in the
 heading. One whose `applyTo` is `**`, or that has none, loads in every
 session; any other `applyTo` makes it apply only to those files, which
 Claude Code and Qwen Code support (as `paths:`) and Copilot CLI (as
-`applyTo`), and Codex and Gemini CLI don't, so it is skipped there with a
-warning.
+`applyTo`), and Codex, Gemini CLI, OpenCode, Pi and Kilo CLI don't, so it
+is skipped there with a warning.
 
 **Sekisho never writes a repository's or your own instructions file**:
 `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.override.md` or
@@ -269,7 +270,11 @@ run codex`), so a project's and a global install's models never meet;
 it loads MCP servers from both, the folder's winning a shared name, and
 lists both scopes' skills; the folder's `developer_instructions` replace
 the global ones. Copilot CLI loads MCP servers, skills and instructions
-from both, the folder's first.
+from both, the folder's first. OpenCode and Kilo CLI merge the global
+and the project config, the folder's winning a key both set, and load
+both scopes' `instructions` entries. Pi loads MCP servers, skills and
+prompts from both, the folder's first, but the folder's
+`APPEND_SYSTEM.md` replaces the global one.
 
 ### What Claude Code gets
 
@@ -533,6 +538,113 @@ Short functions. Money is integer micro-USD.
 
 A plugin's path-scoped instruction keeps its own `applyTo` globs.
 
+### What OpenCode gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings | `.opencode/opencode.json` | `~/.config/opencode/opencode.json` |
+| Local MCP servers | `mcp` in the same file | the same |
+| Skills | `.agents/skills/<name>/` | `~/.agents/skills/<name>/` |
+| Prompts | `.opencode/commands/<name>.md` | `~/.config/opencode/commands/<name>.md` |
+| Instructions | `.opencode/sekisho/<env>/<name>.md`, each named in `instructions` | `~/.config/opencode/sekisho/<env>/<name>.md` |
+
+A project's `.opencode/opencode.json` overrides the repository's own
+`opencode.json`, so in your sessions Sekisho's model settings win. The
+file is in the format both OpenCode 1 and OpenCode 2 read. Each format
+the environment has a default model for gets a provider of its own,
+`sekisho-<env>-anthropic`, `-openai` (Chat Completions) and `-gemini`,
+listing the models that API reaches:
+
+```json
+{
+  "provider": {
+    "sekisho-pay-anthropic": {
+      "npm": "@ai-sdk/anthropic",
+      "options": {
+        "baseURL": "{env:SEKISHO_RUN_URL}/env/pay/anthropic/v1",
+        "apiKey": "{env:SEKISHO_RUN_KEY}",
+        "headers": { "x-sekisho-tool": "opencode" }
+      },
+      "models": { "claude-sonnet-4-5": {} }
+    }
+  },
+  "model": "sekisho-pay-anthropic/claude-sonnet-4-5"
+}
+```
+
+`model` is the first default (anthropic, then openai, then gemini) and
+`small_model` the [small model](environments-and-keys.md#default-models).
+The settings work only inside `sekisho run opencode`, which sets
+`SEKISHO_RUN_URL` and `SEKISHO_RUN_KEY`. The three AI SDK packages ship
+with OpenCode, so none is fetched from npm. Local MCP servers
+are `{"type": "local", "command": [...], "enabled": true}`; they inherit
+OpenCode's environment, so a setting from yours reaches them as it is.
+Prompts are copied as OpenCode commands, and a plugin's commands as
+`/<plugin>/<name>`; its skills and MCP servers are taken apart as for
+Gemini CLI, its hooks and agents skipped. An instruction is a file of its
+own, named in `instructions` by its absolute path, since OpenCode searches
+a relative one only up to the Git root; entries of yours stay.
+
+### What Kilo CLI gets
+
+Kilo CLI, a fork of OpenCode, gets OpenCode's shapes in `.kilo/kilo.json`
+(`~/.config/kilo/kilo.json` globally), `.kilo/commands/` and
+`.kilo/sekisho/<env>/`. It treats a project's config as untrusted and
+ignores a project file that holds any `{env:…}`, so the providers, which
+need the run's variables, always go in your global `kilo.json`, and the
+project file only names its model by their ID:
+
+```json
+{ "model": "sekisho-pay-anthropic/claude-sonnet-4-5" }
+```
+
+Start it with `sekisho run kilo-cli`.
+
+### What Pi gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings | the extension `.pi/extensions/sekisho-<env>.ts` | `~/.pi/agent/extensions/sekisho-<env>.ts` |
+| Local MCP servers | `.pi/mcp.json` | `~/.pi/agent/mcp.json` |
+| Skills | `.agents/skills/<name>/` | `~/.agents/skills/<name>/` |
+| Prompts | `.pi/prompts/<name>.md` | `~/.pi/agent/prompts/<name>.md` |
+| Instructions | `.pi/APPEND_SYSTEM.md` | `~/.pi/agent/APPEND_SYSTEM.md` |
+
+(`~/.pi/agent` is `$PI_CODING_AGENT_DIR` when that is set.) Pi reads
+providers from a `models.json` in its own folder only, takes their
+address as written and keeps a key command's output for the whole
+session, so none of them can carry the run's address or a fresh token.
+Instead Sekisho writes a small extension, which Pi loads at start: only
+inside `sekisho run pi` does it register the environment's providers,
+`sekisho-<env>-anthropic`, `-openai` and `-gemini`, at the run's proxy
+with the run's key and
+[`x-sekisho-tool: pi`](gateway.md#which-coding-tool-made-a-call):
+
+```typescript
+export default function (pi: any) {
+  const url = process.env.SEKISHO_RUN_URL;
+  if (!url || !process.env.SEKISHO_RUN_KEY) return;
+  pi.registerProvider("sekisho-pay-anthropic", {
+    baseUrl: url + "/env/pay/anthropic",
+    apiKey: "$SEKISHO_RUN_KEY",
+    api: "anthropic-messages",
+    headers: { "x-sekisho-tool": "pi" },
+    models: [model("claude-sonnet-4-5")],
+  });
+}
+```
+
+`sekisho run pi` starts Pi with `--provider` and `--model` set to the
+first default (anthropic, then openai, then gemini). Pi loads a
+project's extensions, MCP servers and `APPEND_SYSTEM.md` only once you
+trust the project. Prompts are copied as Pi prompt templates, and a
+plugin's commands as `<plugin>-<name>`.
+
+`APPEND_SYSTEM.md` is one file per scope, so each environment's
+instructions are a section of it, as for
+[Codex's `developer_instructions`](#what-codex-gets); one you wrote is
+asked about before a section is added, and your text stays.
+
 ## Starting a tool with `sekisho run`
 
 ```bash
@@ -541,10 +653,10 @@ sekisho run qwen-code -- -p "Explain this repository"
 ```
 
 starts the tool with its arguments (after `--`) and the terminal handed
-over, and exits with the tool's exit code. Gemini CLI, Qwen Code and
-Copilot CLI need it; Claude Code doesn't, since it runs `sekisho token`
-itself, and for Codex `sekisho run codex` is `codex --profile
-sekisho-<env>`.
+over, and exits with the tool's exit code. Gemini CLI, OpenCode, Copilot
+CLI, Pi, Qwen Code and Kilo CLI need it; Claude Code doesn't, since it
+runs `sekisho token` itself, and for Codex `sekisho run codex` is `codex
+--profile sekisho-<env>`.
 
 The run takes the folder's install for the tool, else your global one:
 the environment the tool takes its models from, and the others installed

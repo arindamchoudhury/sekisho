@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use sekisho_catalog::delivery::Delivery;
 use sekisho_core::formats::ClientApi;
 
-use super::translate::{self, Layout, RemoteKey, Servers, UserVars};
+use super::translate::{self, Commands, Layout, RemoteKey, Servers, UserVars};
 use super::{
     Adapter, AdapterError, FileWrite, Format, Layer, Layering, Origin, RenderContext, Rendered,
     Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
@@ -65,8 +65,9 @@ impl QwenCode {
                 },
                 format: Format::Jsonc,
                 key: "mcpServers",
+                opencode: false,
             },
-            commands: true,
+            commands: Commands::Toml,
         }
     }
 }

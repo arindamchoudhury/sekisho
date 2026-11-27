@@ -132,9 +132,32 @@ fn without_section(s: &str, id: &str) -> String {
     }
 }
 
+/// `{"s": <value>}`, so a whole file's sections reuse the string ones.
+fn json_doc(value: &Value) -> String {
+    serde_json::json!({ "s": value }).to_string()
+}
+
+/// The key of the section `id` of a whole [`Format::MarkdownSections`] file.
+pub fn file_section_key(id: &str) -> Vec<String> {
+    vec![format!("{SECTION}{id}")]
+}
+
+/// The section id a whole-file key names.
+fn file_section(key: &[String]) -> Result<&str, MergeError> {
+    match key {
+        [only] => only
+            .strip_prefix(SECTION)
+            .ok_or_else(|| "a Markdown file holds sections only".to_owned()),
+        _ => Err("a Markdown file holds sections only".into()),
+    }
+}
+
 /// The string `key`'s section lives in holds text of the person's and no
 /// section of Sekisho's: adding one changes what they wrote (D202).
 pub fn foreign_text(format: Format, text: &str, key: &[String]) -> bool {
+    if format == Format::MarkdownSections {
+        return !text.trim().is_empty() && !text.contains("<!-- sekisho:");
+    }
     let Some((at, _)) = split_section(key) else {
         return false;
     };
@@ -294,6 +317,12 @@ pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, 
     if format == Format::MarkdownBlock {
         return block_get(text, key);
     }
+    if format == Format::MarkdownSections {
+        let id = file_section(key)?;
+        let wrapped = Value::String(text.to_owned());
+        let doc = json_doc(&wrapped);
+        return get(Format::Json, &doc, &section_key(&["s"], id));
+    }
     if let Some((at, id)) = split_section(key) {
         let found = match get(format, text, at)? {
             Some(Value::String(s)) => find_section(&s, id).map(|(start, end)| {
@@ -342,7 +371,7 @@ pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, 
             }
             Ok(object.get(last).and_then(|p| p.to_serde_value()))
         }
-        Format::MarkdownBlock => unreachable!("handled above"),
+        Format::MarkdownBlock | Format::MarkdownSections => unreachable!("handled above"),
         Format::Toml => {
             let doc = parse_toml(text)?;
             let mut item: &Item = doc.as_item();
@@ -366,6 +395,13 @@ pub fn set(
 ) -> Result<String, MergeError> {
     if format == Format::MarkdownBlock {
         return block_set(text, key, value);
+    }
+    if format == Format::MarkdownSections {
+        let id = file_section(key)?;
+        let body = value.as_str().ok_or("a section is a string")?;
+        let mut out = with_section(text.unwrap_or(""), id, body);
+        out.push('\n');
+        return Ok(out);
     }
     if let Some((at, id)) = split_section(key) {
         let body = value.as_str().ok_or("a section is a string")?;
@@ -440,7 +476,7 @@ pub fn set(
             ensure_multiline(&root);
             Ok(root.to_string())
         }
-        Format::MarkdownBlock => unreachable!("handled above"),
+        Format::MarkdownBlock | Format::MarkdownSections => unreachable!("handled above"),
         Format::Toml => {
             let mut doc = parse_toml(text.unwrap_or(""))?;
             let mut table: &mut dyn TableLike = doc.as_table_mut();
@@ -465,6 +501,16 @@ pub fn set(
 pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
     if format == Format::MarkdownBlock {
         return block_remove(text, key);
+    }
+    if format == Format::MarkdownSections {
+        let id = file_section(key)?;
+        let left = without_section(text, id);
+        if left.trim().is_empty() {
+            return Ok((String::new(), true));
+        }
+        let mut left = left.trim_end().to_owned();
+        left.push('\n');
+        return Ok((left, false));
     }
     if let Some((at, id)) = split_section(key) {
         let now = match get(format, text, at)? {
@@ -544,7 +590,7 @@ pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, boo
             let empty = is_empty_json(&root);
             Ok((root.to_string(), empty))
         }
-        Format::MarkdownBlock => unreachable!("handled above"),
+        Format::MarkdownBlock | Format::MarkdownSections => unreachable!("handled above"),
         Format::Toml => {
             let mut doc = parse_toml(text)?;
             remove_toml(doc.as_table_mut(), key);
@@ -890,5 +936,32 @@ mod tests {
             Some(serde_json::json!("Be terse."))
         );
         assert_eq!(show_key(&a), "developer_instructions.[sekisho:a]");
+    }
+
+    #[test]
+    fn a_markdown_file_holds_sections_beside_the_persons_text() {
+        let md = Format::MarkdownSections;
+        let a = file_section_key("a");
+        let b = file_section_key("b");
+        let text = set(md, None, &a, &serde_json::json!("A one.")).unwrap();
+        assert_eq!(text, "<!-- sekisho:a -->\nA one.\n<!-- /sekisho:a -->\n");
+        let text = set(md, Some(&text), &b, &serde_json::json!("B one.")).unwrap();
+        assert_eq!(
+            get(md, &text, &b).unwrap(),
+            Some(serde_json::json!("B one."))
+        );
+        let (text, empty) = remove(md, &text, &a).unwrap();
+        assert!(!empty);
+        assert_eq!(text, "<!-- sekisho:b -->\nB one.\n<!-- /sekisho:b -->\n");
+        let (_, empty) = remove(md, &text, &b).unwrap();
+        assert!(empty);
+
+        let mine = "Be terse.\n";
+        assert!(foreign_text(md, mine, &a));
+        let text = set(md, Some(mine), &a, &serde_json::json!("A.")).unwrap();
+        assert!(!foreign_text(md, &text, &b));
+        let (text, empty) = remove(md, &text, &a).unwrap();
+        assert!(!empty);
+        assert_eq!(text, "Be terse.\n");
     }
 }

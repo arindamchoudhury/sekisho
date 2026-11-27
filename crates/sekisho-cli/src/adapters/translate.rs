@@ -31,6 +31,21 @@ pub(crate) enum RemoteKey {
     HttpUrl,
     /// Codex: `url`, its headers in `http_headers`.
     UrlOnly,
+    /// OpenCode and Kilo CLI: `type` `remote`, `url`, `enabled`.
+    OpenCode,
+}
+
+/// How a tool takes prompts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Commands {
+    /// No prompts: each is skipped.
+    None,
+    /// TOML commands under `<base>commands/` (Gemini CLI, Qwen Code).
+    Toml,
+    /// Markdown files as Sekisho holds them, `$ARGUMENTS` and all, under
+    /// `<base><dir>`; a plugin's in a folder of its name when `nested`
+    /// (OpenCode's `/fmt/run`), else as `<plugin>-<name>` (Pi).
+    Markdown { dir: &'static str, nested: bool },
 }
 
 /// How a person's variable reaches a local server.
@@ -52,6 +67,9 @@ pub(crate) struct Servers {
     pub file: &'static str,
     pub format: Format,
     pub key: &'static str,
+    /// OpenCode's local servers: `type` `local`, `command` with the
+    /// arguments, `enabled`, `environment`.
+    pub opencode: bool,
 }
 
 /// Where one tool keeps things, in one scope.
@@ -65,9 +83,7 @@ pub(crate) struct Layout {
     /// Where `skills/<name>/` folders go: a root and a path ending in `/`.
     pub skills: (Root, &'static str),
     pub servers: Servers,
-    /// The tool runs prompts as TOML commands under `<base>commands/`; else
-    /// prompts are skipped.
-    pub commands: bool,
+    pub commands: Commands,
 }
 
 impl Layout {
@@ -175,6 +191,7 @@ fn remote(layout: &Layout, url: &str, sse: bool, headers: Option<&Value>) -> Val
         (RemoteKey::HttpUrl, false) => json!({"httpUrl": url}),
         (RemoteKey::HttpUrl, true) => json!({"url": url}),
         (RemoteKey::UrlOnly, _) => json!({"url": url}),
+        (RemoteKey::OpenCode, _) => json!({"type": "remote", "url": url, "enabled": true}),
     };
     if let Some(h) = headers.filter(|h| h.as_object().is_some_and(|m| !m.is_empty())) {
         let key = match layout.remote {
@@ -216,6 +233,15 @@ fn local(layout: &Layout, command: &str, args: &[String], env: &[(String, EnvVal
             },
         }
     }
+    if layout.servers.opencode {
+        let mut line = vec![Value::String(command.to_owned())];
+        line.extend(args.iter().map(|a| Value::String(a.clone())));
+        let mut value = json!({"type": "local", "command": line, "enabled": true});
+        if !fixed.is_empty() {
+            value["environment"] = Value::Object(fixed);
+        }
+        return value;
+    }
     let mut value = json!({"command": command, "args": args});
     if !fixed.is_empty() {
         value["env"] = Value::Object(fixed);
@@ -251,10 +277,26 @@ pub(crate) fn content(
             }
             // Each tool's own way, in its adapter.
             EntrySpec::Instruction(_) => {}
-            EntrySpec::Prompt(_) if !layout.commands => out.skipped.push(Skipped {
-                what: format!("prompt {}", e.name),
-                why: format!("{} has no custom prompts", layout.tool.title()),
-            }),
+            EntrySpec::Prompt(_) if matches!(layout.commands, Commands::None) => {
+                out.skipped.push(Skipped {
+                    what: format!("prompt {}", e.name),
+                    why: format!("{} has no custom prompts", layout.tool.title()),
+                })
+            }
+            EntrySpec::Prompt(_) if matches!(layout.commands, Commands::Markdown { .. }) => {
+                let Commands::Markdown { dir, .. } = layout.commands else {
+                    unreachable!()
+                };
+                for f in &e.files {
+                    out.files.push(FileWrite {
+                        root: layout.root,
+                        path: layout.path(&format!("{dir}{}", f.path))?,
+                        content: blob(ctx, &f.sha256)?,
+                        executable: false,
+                        origin: origin.clone(),
+                    });
+                }
+            }
             EntrySpec::Prompt(spec) => {
                 for f in &e.files {
                     let stem = f.path.strip_suffix(".md").unwrap_or(&f.path);
@@ -422,7 +464,23 @@ fn plugin(
             });
         } else if let Some(rest) = f.path.strip_prefix("commands/")
             && let Some(stem) = rest.strip_suffix(".md")
-            && layout.commands
+            && let Commands::Markdown { dir, nested } = layout.commands
+        {
+            let path = if nested {
+                format!("{dir}{name}/{stem}.md")
+            } else {
+                format!("{dir}{name}-{}.md", stem.replace('/', "-"))
+            };
+            out.files.push(FileWrite {
+                root: layout.root,
+                path: layout.path(&path)?,
+                content: bytes.clone(),
+                executable: false,
+                origin: origin.clone(),
+            });
+        } else if let Some(rest) = f.path.strip_prefix("commands/")
+            && let Some(stem) = rest.strip_suffix(".md")
+            && matches!(layout.commands, Commands::Toml)
         {
             match command(bytes, None) {
                 Ok(content) => out.files.push(FileWrite {
@@ -441,7 +499,7 @@ fn plugin(
         .get(".claude-plugin/plugin.json")
         .and_then(|b| serde_json::from_slice(b).ok());
     let declares = |key: &str| manifest.as_ref().is_some_and(|m| m.get(key).is_some());
-    if !layout.commands && (has("commands/") || declares("commands")) {
+    if matches!(layout.commands, Commands::None) && (has("commands/") || declares("commands")) {
         skip(
             out,
             "commands",

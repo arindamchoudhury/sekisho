@@ -16,6 +16,9 @@ mod claude_code;
 mod codex;
 mod copilot_cli;
 mod gemini_cli;
+mod kilo_cli;
+mod opencode;
+mod pi;
 mod qwen_code;
 mod test_adapter;
 mod translate;
@@ -24,12 +27,24 @@ pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use copilot_cli::CopilotCli;
 pub use gemini_cli::GeminiCli;
+pub use kilo_cli::KiloCli;
+pub use opencode::OpenCode;
+pub use pi::Pi;
 pub use qwen_code::QwenCode;
 pub use test_adapter::TestAdapter;
 
 /// Every tool `use` can install for, as each adapter task adds its own.
 pub fn all() -> Vec<&'static dyn Adapter> {
-    vec![&ClaudeCode, &Codex, &GeminiCli, &CopilotCli, &QwenCode]
+    vec![
+        &ClaudeCode,
+        &Codex,
+        &GeminiCli,
+        &OpenCode,
+        &CopilotCli,
+        &Pi,
+        &QwenCode,
+        &KiloCli,
+    ]
 }
 
 /// The eight coding tools of release 1 (D19).
@@ -331,6 +346,10 @@ pub enum Format {
     /// value is `true` (Gemini CLI's `GEMINI.md` imports, D222). The rest of
     /// the file is the person's and is never changed.
     MarkdownBlock,
+    /// A Markdown file of marked sections, each a key whose value is its
+    /// text (Pi's `APPEND_SYSTEM.md`, one section per environment, D222);
+    /// the person's own text outside them is never changed.
+    MarkdownSections,
 }
 
 /// What a write is for: a catalog entry, the environment itself (its MCP

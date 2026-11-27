@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use sekisho_catalog::delivery::Delivery;
 
-use super::translate::{self, Layout, RemoteKey, Servers, UserVars};
+use super::translate::{self, Commands, Layout, RemoteKey, Servers, UserVars};
 use super::{
     Adapter, AdapterError, FileWrite, Format, Layer, Layering, RelPath, RenderContext, Rendered,
     Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
@@ -65,8 +65,9 @@ impl CopilotCli {
                 },
                 format: Format::Json,
                 key: "mcpServers",
+                opencode: false,
             },
-            commands: false,
+            commands: Commands::None,
         }
     }
 }

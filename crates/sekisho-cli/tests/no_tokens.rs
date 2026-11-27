@@ -128,7 +128,14 @@ fn use_pay() -> UseArgs {
 /// Every tool `use` writes files for, not only Claude Code (Task 8).
 fn use_pay_everywhere() -> UseArgs {
     UseArgs {
-        targets: vec![Tool::ClaudeCode, Tool::Codex, Tool::CopilotCli],
+        targets: vec![
+            Tool::ClaudeCode,
+            Tool::Codex,
+            Tool::CopilotCli,
+            Tool::OpenCode,
+            Tool::KiloCli,
+            Tool::Pi,
+        ],
         ..use_pay()
     }
 }

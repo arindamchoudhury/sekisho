@@ -10,7 +10,8 @@ use sekisho_catalog::model::{EntrySpec, InstructionSpec, PluginSpec, sha256_hex}
 use sekisho_catalog::names::{EntryKind, EntryName, SourceName};
 use sekisho_cli::adapters::{
     Adapter, AdapterError, ClaudeCode, Codex, ContentKind, CopilotCli, FileWrite, GeminiCli,
-    Layering, Origin, QwenCode, RelPath, RenderContext, Rendered, Root, Tool, UnmanagedItem,
+    KiloCli, Layering, OpenCode, Origin, Pi, QwenCode, RelPath, RenderContext, Rendered, Root,
+    Tool, UnmanagedItem,
 };
 use sekisho_cli::install::{self, InstallError, Options, Report, Scope, ToolHomes};
 use sekisho_core::names::EnvName;
@@ -559,6 +560,9 @@ fn root_instruction_files_are_never_written() {
         &QwenCode,
         &Codex,
         &CopilotCli,
+        &OpenCode,
+        &KiloCli,
+        &Pi,
     ] {
         for scope in [w.project_scope(), w.global_scope()] {
             w.install(adapter, &scope, &d).unwrap();
@@ -837,4 +841,130 @@ fn copilot_cli_gets_instruction_files_for_every_path() {
             .join(".copilot/instructions/sekisho-a-style.instructions.md")
             .exists()
     );
+}
+
+fn entries(path: &Path) -> Vec<String> {
+    json_at(path)["instructions"]
+        .as_array()
+        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+/// D222: OpenCode and Kilo CLI read instruction files a config names; an
+/// absolute entry each, since a relative one is searched only up to the
+/// Git root.
+#[test]
+fn opencode_and_kilo_name_instruction_files_by_absolute_path() {
+    for (adapter, dir, config) in [
+        (
+            &OpenCode as &dyn Adapter,
+            ".opencode",
+            ".opencode/opencode.json",
+        ),
+        (&KiloCli, ".kilo", ".kilo/kilo.json"),
+    ] {
+        let w = World::new();
+        w.install(adapter, &w.project_scope(), &style_and_review(&w))
+            .unwrap();
+        let style = w.project.join(format!("{dir}/sekisho/a/style.md"));
+        assert_eq!(text_at(&style), STYLE_FILE);
+        let review = w.project.join(format!("{dir}/sekisho/a/review.md"));
+        let listed = entries(&w.project.join(config));
+        let listed_paths: Vec<&Path> = listed.iter().map(Path::new).collect();
+        assert_eq!(listed_paths, [style.as_path(), review.as_path()], "{dir}");
+        assert!(std::path::Path::new(&listed[0]).is_absolute());
+    }
+
+    // Globally, under the tool's own config folder.
+    let w = World::new();
+    w.install(&OpenCode, &w.global_scope(), &style_and_review(&w))
+        .unwrap();
+    let style = w.home.join(".config/opencode/sekisho/a/style.md");
+    assert_eq!(text_at(&style), STYLE_FILE);
+    assert!(
+        entries(&w.home.join(".config/opencode/opencode.json"))
+            .iter()
+            .any(|e| Path::new(e) == style)
+    );
+}
+
+/// D202: `instructions` entries are combined across files and kept one by
+/// one, so the person's own stay through `use` and `uninstall`.
+#[test]
+fn the_persons_own_instructions_entries_stay() {
+    let w = World::new();
+    let config = w.project.join(".opencode/opencode.json");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, r#"{"instructions": ["docs/rules.md"]}"#).unwrap();
+    w.install(&OpenCode, &w.project_scope(), &style_and_review(&w))
+        .unwrap();
+    let listed = entries(&config);
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert_eq!(listed[0], "docs/rules.md");
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert_eq!(entries(&config), ["docs/rules.md"]);
+}
+
+/// D222: Pi takes one `APPEND_SYSTEM.md` per scope, each environment's
+/// instructions a marked section of it; a path-scoped one is skipped.
+#[test]
+fn pi_gets_its_instructions_in_append_system() {
+    let w = World::new();
+    let d = delivery(
+        "a",
+        vec![
+            w.instruction("team", "style", STYLE),
+            w.instruction("team", "review", REVIEW),
+            w.plugin("fmt"),
+        ],
+    );
+    let report = w.install(&Pi, &w.project_scope(), &d).unwrap();
+    let file = w.project.join(".pi/APPEND_SYSTEM.md");
+    let text = text_at(&file);
+    assert!(text.starts_with("<!-- sekisho:a -->\n"), "{text}");
+    assert!(text.trim_end().ends_with("<!-- /sekisho:a -->"), "{text}");
+    let style = text.find(STYLE_FILE.trim_end()).expect("style");
+    let review = text.find(REVIEW_FILE.trim_end()).expect("review");
+    assert!(style < review, "{text}");
+    assert!(!text.contains("Use rustfmt."), "{text}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|x| x.contains("rust") && x.contains("skipped")),
+        "{:?}",
+        report.warnings
+    );
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert!(!file.exists());
+
+    let w = World::new();
+    w.install(&Pi, &w.global_scope(), &style_and_review(&w))
+        .unwrap();
+    assert!(text_at(&w.home.join(".pi/agent/APPEND_SYSTEM.md")).contains(STYLE_FILE.trim_end()));
+}
+
+/// D202: an `APPEND_SYSTEM.md` the person wrote is asked about before
+/// Sekisho adds its section, and their text stays.
+#[test]
+fn an_append_system_the_person_wrote_is_asked_about() {
+    let w = World::new();
+    let file = w.project.join(".pi/APPEND_SYSTEM.md");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "Be terse.\n").unwrap();
+    let err = w
+        .install(&Pi, &w.project_scope(), &style_and_review(&w))
+        .unwrap_err();
+    assert!(matches!(err, InstallError::NeedsConsent(_)), "{err:?}");
+    let yes = Options {
+        yes: true,
+        ..Options::default()
+    };
+    w.install_with(&Pi, &w.project_scope(), &style_and_review(&w), &yes)
+        .unwrap();
+    let text = text_at(&file);
+    assert!(text.starts_with("Be terse."), "{text}");
+    assert!(text.contains(STYLE_FILE.trim_end()), "{text}");
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert_eq!(text_at(&file).trim_end(), "Be terse.");
 }

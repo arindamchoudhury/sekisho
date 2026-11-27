@@ -42,11 +42,13 @@ behind a proxy on the developer's computer, which sends the token as
 
 ### Which coding tool made a call
 
-Claude Code, Codex, Gemini CLI, Copilot CLI and Qwen Code, set up by
-[`sekisho use`](cli.md#installing-an-environment) and, the last three,
-started by [`sekisho run`](cli.md#starting-a-tool-with-sekisho-run), name
+The eight coding tools, set up by
+[`sekisho use`](cli.md#installing-an-environment) and, all but Claude
+Code and Codex, started by
+[`sekisho run`](cli.md#starting-a-tool-with-sekisho-run), name
 themselves on every model call in an `x-sekisho-tool` header:
-`claude-code`, `codex`, `gemini-cli`, `copilot-cli` or `qwen-code`. It is there so that spend and
+`claude-code`, `codex`, `gemini-cli`, `opencode`, `copilot-cli`, `pi`,
+`qwen-code` or `kilo-cli`. It is there so that spend and
 usage can later be reported per tool; a tool's User-Agent alone can't say
 this, since Qwen Code sends Claude Code's to every gateway but
 Anthropic's.
