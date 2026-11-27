@@ -311,6 +311,15 @@ impl<'a> Planner<'a> {
                     self.consent.push(file);
                 }
             }
+            // A value of the person's own gets Sekisho's section only once
+            // they agree (D202), Codex's `developer_instructions` say.
+            if text
+                .as_deref()
+                .is_some_and(|t| merge::foreign_text(w.format, t, &w.key))
+                && !self.consent.contains(&what)
+            {
+                self.consent.push(what.clone());
+            }
             let current = self.disk_value(&path, w.format, &w.key)?;
             match &current {
                 Some(v) if *v == w.value => {}

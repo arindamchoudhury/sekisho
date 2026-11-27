@@ -125,6 +125,14 @@ fn use_pay() -> UseArgs {
     }
 }
 
+/// Every tool `use` writes files for, not only Claude Code (Task 8).
+fn use_pay_everywhere() -> UseArgs {
+    UseArgs {
+        targets: vec![Tool::ClaudeCode, Tool::Codex, Tool::CopilotCli],
+        ..use_pay()
+    }
+}
+
 /// Every file under `dir`, as text.
 fn every_file(dir: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -207,10 +215,12 @@ async fn no_tool_file_holds_a_token() {
 
     // Signed in.
     let (m, access) = machine(&h, ada, None).await;
-    use_(&m.context(), &use_pay(), &|_| false).await.unwrap();
+    use_(&m.context(), &use_pay_everywhere(), &|_| false)
+        .await
+        .unwrap();
     let global = UseArgs {
         global: true,
-        ..use_pay()
+        ..use_pay_everywhere()
     };
     use_(&m.context(), &global, &|_| false).await.unwrap();
     let files = every_file(m.tmp.path());
@@ -237,7 +247,9 @@ async fn no_tool_file_holds_a_token() {
     k.store
         .delete(ServerUrl::parse(&h.base).unwrap().key())
         .unwrap();
-    use_(&k.context(), &use_pay(), &|_| false).await.unwrap();
+    use_(&k.context(), &use_pay_everywhere(), &|_| false)
+        .await
+        .unwrap();
     use_(&k.context(), &global, &|_| false).await.unwrap();
     for (path, text) in every_file(k.tmp.path()) {
         assert!(!text.contains(&key), "{path} holds the environment key");

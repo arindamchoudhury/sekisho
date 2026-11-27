@@ -230,13 +230,8 @@ pub async fn use_(
             if let Some(note) = a.note(&scope) {
                 let _ = writeln!(out, "{note}");
             }
-            if a.run_spec(&d).is_some() {
-                let tool = a.tool();
-                let _ = writeln!(
-                    out,
-                    "Start {} with `sekisho run {tool}`: it takes its key from the run.",
-                    tool.title()
-                );
+            if let Some(hint) = a.start_hint(&d) {
+                let _ = writeln!(out, "{hint}");
             }
         }
     }

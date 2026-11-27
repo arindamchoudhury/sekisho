@@ -70,7 +70,82 @@ fn value_at(
     }
 }
 
-/// `key` for people: an item as `[name]`, a line as `[name:]`.
+/// Starts a key's last segment that names one marked section of a string
+/// rather than a key, so a value a tool takes once per scope (Codex's
+/// `developer_instructions`) holds a section per environment, beside the
+/// person's own text. A section is `<!-- sekisho:<id> -->`, its text, then
+/// `<!-- /sekisho:<id> -->`, on lines of their own.
+pub const SECTION: char = '\u{3}';
+
+/// The key of the section `id` in the string at `at`. Its value is the
+/// section's text.
+pub fn section_key(at: &[&str], id: &str) -> Vec<String> {
+    let mut key: Vec<String> = at.iter().map(|s| (*s).to_owned()).collect();
+    key.push(format!("{SECTION}{id}"));
+    key
+}
+
+/// The string's key and the section's id, when `key` names a section.
+fn split_section(key: &[String]) -> Option<(&[String], &str)> {
+    let (last, at) = key.split_last()?;
+    let id = last.strip_prefix(SECTION)?;
+    (!at.is_empty()).then_some((at, id))
+}
+
+/// Where the section `id` is in `s`: its start and end, past its last line.
+fn find_section(s: &str, id: &str) -> Option<(usize, usize)> {
+    let open = format!("<!-- sekisho:{id} -->");
+    let close = format!("<!-- /sekisho:{id} -->");
+    let start = s
+        .match_indices(&open)
+        .map(|(i, _)| i)
+        .find(|&i| i == 0 || s[..i].ends_with('\n'))?;
+    let from = start + open.len();
+    let end = s[from..].find(&close)? + from + close.len();
+    Some((start, end))
+}
+
+/// `s` with the section `id` holding `text`, added at the end when new.
+fn with_section(s: &str, id: &str, text: &str) -> String {
+    let section = format!(
+        "<!-- sekisho:{id} -->\n{}\n<!-- /sekisho:{id} -->",
+        text.trim_end_matches(['\n', '\r'])
+    );
+    match find_section(s, id) {
+        Some((start, end)) => format!("{}{section}{}", &s[..start], &s[end..]),
+        None if s.trim().is_empty() => section,
+        None => format!("{}\n\n{section}", s.trim_end()),
+    }
+}
+
+/// `s` without the section `id`, and the blank lines it leaves.
+fn without_section(s: &str, id: &str) -> String {
+    let Some((start, end)) = find_section(s, id) else {
+        return s.to_owned();
+    };
+    let before = s[..start].trim_end();
+    let after = s[end..].trim_start_matches(['\n', '\r']);
+    match (before.is_empty(), after.is_empty()) {
+        (true, _) => after.to_owned(),
+        (false, true) => before.to_owned(),
+        (false, false) => format!("{before}\n\n{after}"),
+    }
+}
+
+/// The string `key`'s section lives in holds text of the person's and no
+/// section of Sekisho's: adding one changes what they wrote (D202).
+pub fn foreign_text(format: Format, text: &str, key: &[String]) -> bool {
+    let Some((at, _)) = split_section(key) else {
+        return false;
+    };
+    match get(format, text, at) {
+        Ok(Some(Value::String(s))) => !s.trim().is_empty() && !s.contains("<!-- sekisho:"),
+        _ => false,
+    }
+}
+
+/// `key` for people: an item as `[name]`, a line as `[name:]`, a section
+/// as `[sekisho:<id>]`.
 pub fn show_key(key: &[String]) -> String {
     key.iter()
         .map(|s| {
@@ -78,6 +153,8 @@ pub fn show_key(key: &[String]) -> String {
                 format!("[{item}]")
             } else if let Some(line) = s.strip_prefix(LINE) {
                 format!("[{line}:]")
+            } else if let Some(id) = s.strip_prefix(SECTION) {
+                format!("[sekisho:{id}]")
             } else {
                 s.clone()
             }
@@ -217,6 +294,21 @@ pub fn get(format: Format, text: &str, key: &[String]) -> Result<Option<Value>, 
     if format == Format::MarkdownBlock {
         return block_get(text, key);
     }
+    if let Some((at, id)) = split_section(key) {
+        let found = match get(format, text, at)? {
+            Some(Value::String(s)) => find_section(&s, id).map(|(start, end)| {
+                let inner = &s[start..end];
+                let body = inner
+                    .split_once('\n')
+                    .map_or("", |(_, rest)| rest)
+                    .rsplit_once('\n')
+                    .map_or("", |(body, _)| body);
+                body.to_owned()
+            }),
+            _ => None,
+        };
+        return Ok(found.map(Value::String));
+    }
     if let Some((at, name)) = split_line(key) {
         let found = match get(format, text, at)? {
             Some(Value::String(s)) => s.lines().find(|l| names(l, name)).map(str::to_owned),
@@ -274,6 +366,20 @@ pub fn set(
 ) -> Result<String, MergeError> {
     if format == Format::MarkdownBlock {
         return block_set(text, key, value);
+    }
+    if let Some((at, id)) = split_section(key) {
+        let body = value.as_str().ok_or("a section is a string")?;
+        let now = match value_at(format, text, at)? {
+            Some(Value::String(s)) => s,
+            None => String::new(),
+            Some(_) => return Err(format!("{} isn't a string", show_key(at))),
+        };
+        return set(
+            format,
+            text,
+            at,
+            &Value::String(with_section(&now, id, body)),
+        );
     }
     if let Some((at, name)) = split_line(key) {
         let line = value.as_str().ok_or("a line is a string")?;
@@ -359,6 +465,19 @@ pub fn set(
 pub fn remove(format: Format, text: &str, key: &[String]) -> Result<(String, bool), MergeError> {
     if format == Format::MarkdownBlock {
         return block_remove(text, key);
+    }
+    if let Some((at, id)) = split_section(key) {
+        let now = match get(format, text, at)? {
+            Some(Value::String(s)) => s,
+            None => return remove(format, text, at),
+            Some(_) => return Ok((text.to_owned(), false)),
+        };
+        let left = without_section(&now, id);
+        if left.trim().is_empty() {
+            return remove(format, text, at);
+        }
+        let text = set(format, Some(text), at, &Value::String(left))?;
+        return Ok((text, false));
     }
     if let Some((at, name)) = split_line(key) {
         let now = match get(format, text, at)? {
@@ -730,5 +849,46 @@ mod tests {
         let (same, _) = remove(Format::Json, &text, &k).unwrap();
         assert_eq!(same, text);
         assert_eq!(show_key(&k), "env.H.[x-tool:]");
+    }
+
+    #[test]
+    fn sections_are_owned_one_by_one_beside_the_persons_text() {
+        let at = ["developer_instructions"];
+        let a = section_key(&at, "a");
+        let b = section_key(&at, "b");
+        let text = set(Format::Toml, None, &a, &serde_json::json!("A one.\n")).unwrap();
+        let text = set(Format::Toml, Some(&text), &b, &serde_json::json!("B one.")).unwrap();
+        assert_eq!(
+            get(Format::Toml, &text, &key(&at)).unwrap(),
+            Some(serde_json::json!(
+                "<!-- sekisho:a -->\nA one.\n<!-- /sekisho:a -->\n\n<!-- sekisho:b -->\nB one.\n<!-- /sekisho:b -->"
+            ))
+        );
+        assert_eq!(
+            get(Format::Toml, &text, &a).unwrap(),
+            Some(serde_json::json!("A one."))
+        );
+        let text = set(Format::Toml, Some(&text), &a, &serde_json::json!("A two.")).unwrap();
+        let (text, empty) = remove(Format::Toml, &text, &b).unwrap();
+        assert!(!empty);
+        assert_eq!(
+            get(Format::Toml, &text, &key(&at)).unwrap(),
+            Some(serde_json::json!(
+                "<!-- sekisho:a -->\nA two.\n<!-- /sekisho:a -->"
+            ))
+        );
+        let (_, empty) = remove(Format::Toml, &text, &a).unwrap();
+        assert!(empty);
+
+        let mine = "developer_instructions = \"Be terse.\"\n";
+        assert!(foreign_text(Format::Toml, mine, &a));
+        let text = set(Format::Toml, Some(mine), &a, &serde_json::json!("A.")).unwrap();
+        assert!(!foreign_text(Format::Toml, &text, &b));
+        let (text, _) = remove(Format::Toml, &text, &a).unwrap();
+        assert_eq!(
+            get(Format::Toml, &text, &key(&at)).unwrap(),
+            Some(serde_json::json!("Be terse."))
+        );
+        assert_eq!(show_key(&a), "developer_instructions.[sekisho:a]");
     }
 }

@@ -9,8 +9,8 @@ use sekisho_catalog::delivery::{Defaults, DeliveredEntry, DeliveredFile, Deliver
 use sekisho_catalog::model::{EntrySpec, InstructionSpec, PluginSpec, sha256_hex};
 use sekisho_catalog::names::{EntryKind, EntryName, SourceName};
 use sekisho_cli::adapters::{
-    Adapter, AdapterError, ClaudeCode, ContentKind, FileWrite, GeminiCli, Layering, Origin,
-    QwenCode, RelPath, RenderContext, Rendered, Root, Tool, UnmanagedItem,
+    Adapter, AdapterError, ClaudeCode, Codex, ContentKind, CopilotCli, FileWrite, GeminiCli,
+    Layering, Origin, QwenCode, RelPath, RenderContext, Rendered, Root, Tool, UnmanagedItem,
 };
 use sekisho_cli::install::{self, InstallError, Options, Report, Scope, ToolHomes};
 use sekisho_core::names::EnvName;
@@ -553,7 +553,13 @@ fn root_instruction_files_are_never_written() {
         "a",
         vec![w.instruction("team", "style", STYLE), w.plugin("fmt")],
     );
-    for adapter in [&ClaudeCode as &dyn Adapter, &GeminiCli, &QwenCode] {
+    for adapter in [
+        &ClaudeCode as &dyn Adapter,
+        &GeminiCli,
+        &QwenCode,
+        &Codex,
+        &CopilotCli,
+    ] {
         for scope in [w.project_scope(), w.global_scope()] {
             w.install(adapter, &scope, &d).unwrap();
         }
@@ -586,6 +592,7 @@ fn root_instruction_files_are_never_written() {
         (Root::ToolHome(Tool::ClaudeCode), "CLAUDE.md"),
         (Root::ToolHome(Tool::Codex), "AGENTS.md"),
         (Root::ToolHome(Tool::Codex), "AGENTS.override.md"),
+        (Root::ToolHome(Tool::CopilotCli), "copilot-instructions.md"),
     ] {
         let scope = match root {
             Root::Project => w.project_scope(),
@@ -696,5 +703,138 @@ fn a_dropped_instruction_is_removed() {
     assert_eq!(
         text_at(&w.project.join("GEMINI.md")),
         format!("{BLOCK_START}\n@./.gemini/sekisho/a/style.md\n{BLOCK_END}\n")
+    );
+}
+
+fn codex_instructions(path: &Path) -> Option<String> {
+    let doc: toml_edit::DocumentMut = text_at(path).parse().unwrap();
+    doc.get("developer_instructions")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
+/// D222: Codex takes one `developer_instructions` per scope, so each
+/// environment's instructions are a marked section of it, in order; a
+/// plugin's path-scoped one is skipped, since Codex loads none (D224).
+#[test]
+fn codex_gets_its_instructions_in_developer_instructions() {
+    let w = World::new();
+    let d = delivery(
+        "a",
+        vec![
+            w.instruction("team", "style", STYLE),
+            w.instruction("team", "review", REVIEW),
+            w.plugin("fmt"),
+        ],
+    );
+    let report = w.install(&Codex, &w.project_scope(), &d).unwrap();
+    let config = w.project.join(".codex/config.toml");
+    let value = codex_instructions(&config).unwrap();
+    let style = value.find(STYLE_FILE.trim_end()).expect("style");
+    let review = value.find(REVIEW_FILE.trim_end()).expect("review");
+    assert!(style < review, "{value}");
+    assert!(value.starts_with("<!-- sekisho:a -->"), "{value}");
+    assert!(value.trim_end().ends_with("<!-- /sekisho:a -->"), "{value}");
+    assert!(value.contains("Format before you commit."), "{value}");
+    assert!(value.contains("Keep lines short."), "{value}");
+    assert!(!value.contains("Use rustfmt."), "{value}");
+    assert!(!value.contains("Obey the plugin."), "{value}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|x| x.contains("rust") && x.contains("skipped") && x.contains("Codex")),
+        "{:?}",
+        report.warnings
+    );
+
+    // A second environment adds a section of its own; uninstalling one
+    // takes only its own section out, the last takes the key.
+    let b = delivery(
+        "b",
+        vec![w.instruction("ops", "oncall", "Page the owner.\n")],
+    );
+    w.install(&Codex, &w.project_scope(), &b).unwrap();
+    let value = codex_instructions(&config).unwrap();
+    assert!(value.contains("<!-- sekisho:a -->"), "{value}");
+    assert!(value.contains("<!-- sekisho:b -->"), "{value}");
+    assert!(value.contains("Page the owner."), "{value}");
+    install::uninstall(
+        &w.project_scope(),
+        Some(&[EnvName::parse("a").unwrap()]),
+        None,
+        &Options::default(),
+    )
+    .unwrap();
+    let value = codex_instructions(&config).unwrap();
+    assert!(!value.contains("sekisho:a"), "{value}");
+    assert!(value.contains("Page the owner."), "{value}");
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert!(!config.exists() || codex_instructions(&config).is_none());
+
+    // Globally, in Codex's own config.toml.
+    let w = World::new();
+    w.install(&Codex, &w.global_scope(), &style_and_review(&w))
+        .unwrap();
+    let value = codex_instructions(&w.home.join(".codex/config.toml")).unwrap();
+    assert!(value.contains(STYLE_FILE.trim_end()), "{value}");
+}
+
+/// D202: a `developer_instructions` the person wrote is asked about before
+/// Sekisho adds its section, and their text stays.
+#[test]
+fn a_developer_instructions_the_person_set_is_asked_about() {
+    let w = World::new();
+    let config = w.project.join(".codex/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "developer_instructions = \"Be terse.\"\n").unwrap();
+    let err = w
+        .install(&Codex, &w.project_scope(), &style_and_review(&w))
+        .unwrap_err();
+    assert!(matches!(err, InstallError::NeedsConsent(_)), "{err:?}");
+    let yes = Options {
+        yes: true,
+        ..Options::default()
+    };
+    w.install_with(&Codex, &w.project_scope(), &style_and_review(&w), &yes)
+        .unwrap();
+    let value = codex_instructions(&config).unwrap();
+    assert!(value.starts_with("Be terse."), "{value}");
+    assert!(value.contains(STYLE_FILE.trim_end()), "{value}");
+    install::uninstall(&w.project_scope(), None, None, &Options::default()).unwrap();
+    assert_eq!(codex_instructions(&config).as_deref(), Some("Be terse."));
+}
+
+/// D222, D224: Copilot CLI gets one `.instructions.md` per instruction,
+/// `applyTo: "**"` for every path, a plugin's path-scoped one keeping its
+/// own `applyTo`.
+#[test]
+fn copilot_cli_gets_instruction_files_for_every_path() {
+    let w = World::new();
+    let d = delivery(
+        "a",
+        vec![w.instruction("team", "style", STYLE), w.plugin("fmt")],
+    );
+    w.install(&CopilotCli, &w.project_scope(), &d).unwrap();
+    let dir = w.project.join(".github/instructions");
+    assert_eq!(
+        text_at(&dir.join("sekisho-a-style.instructions.md")),
+        format!("---\napplyTo: \"**\"\n---\n{STYLE_FILE}")
+    );
+    let rust = text_at(&dir.join("sekisho-a-fmt-rust.instructions.md"));
+    assert!(
+        rust.starts_with("---\napplyTo:\n  - \"**/*.rs\"\n  - \"src/**\"\n---\n# Rust ("),
+        "{rust}"
+    );
+    assert!(dir.join("sekisho-a-fmt-always.instructions.md").exists());
+    assert!(!w.project.join(".github/copilot-instructions.md").exists());
+
+    let w = World::new();
+    let d = delivery("a", vec![w.instruction("team", "style", STYLE)]);
+    w.install(&CopilotCli, &w.global_scope(), &d).unwrap();
+    assert!(
+        w.home
+            .join(".copilot/instructions/sekisho-a-style.instructions.md")
+            .exists()
     );
 }

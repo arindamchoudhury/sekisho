@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use sekisho_catalog::delivery::Delivery;
 
-use super::translate::{self, Layout, RemoteKey};
+use super::translate::{self, Layout, RemoteKey, Servers, UserVars};
 use super::{
     Adapter, AdapterError, FileWrite, Format, KeyWrite, Layer, Layering, Origin, RelPath,
     RenderContext, Rendered, Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
@@ -70,7 +70,27 @@ impl GeminiCli {
             // Servers get only a sanitised copy of Gemini CLI's environment
             // (no *TOKEN*, *KEY*, *SECRET* names), so every variable is
             // named; an unset one becomes empty.
-            user_var: |_, name, _| Some(format!("${{{name}}}")),
+            user_vars: UserVars::Reference(|_, name, _| Some(format!("${{{name}}}"))),
+            skills: if project {
+                (Root::Project, ".gemini/skills/")
+            } else {
+                (Root::ToolHome(Tool::GeminiCli), "skills/")
+            },
+            servers: Servers {
+                root: if project {
+                    Root::Project
+                } else {
+                    Root::ToolHome(Tool::GeminiCli)
+                },
+                file: if project {
+                    ".gemini/settings.json"
+                } else {
+                    "settings.json"
+                },
+                format: Format::Jsonc,
+                key: "mcpServers",
+            },
+            commands: true,
         }
     }
 }

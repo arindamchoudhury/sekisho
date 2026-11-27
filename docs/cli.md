@@ -133,13 +133,13 @@ sekisho use pay
 writes the environment `pay` into the coding tools of the current folder:
 its models, local MCP servers, skills, plugins, prompts and
 [instructions](#instructions). Today
-`sekisho use` installs for Claude Code, Gemini CLI and Qwen Code; the
-other tools follow.
+`sekisho use` installs for Claude Code, Codex, Gemini CLI, GitHub Copilot
+CLI and Qwen Code; the other tools follow.
 
 | Option | What it does |
 |---|---|
-| `--target <tool>,…` | The tools to install for (`claude-code`, `gemini-cli`, `qwen-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`, `.gemini/`, `.qwen/`), or its program on `PATH` (`claude`, `gemini`, `qwen`). None found is an error listing the targets |
-| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`), `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`), `~/.qwen` (or `$QWEN_HOME`) |
+| `--target <tool>,…` | The tools to install for (`claude-code`, `codex`, `gemini-cli`, `copilot-cli`, `qwen-code`). Without it, the tools found here: a tool's folder in the project (`.claude/`, `.codex/`, `.gemini/`, `.qwen/`), or its program on `PATH` (`claude`, `codex`, `gemini`, `copilot`, `qwen`). None found is an error listing the targets |
+| `--global` | Your own config instead, for every folder: `~/.claude` (or `$CLAUDE_CONFIG_DIR`), `~/.codex` (or `$CODEX_HOME`), `~/.gemini` (or `.gemini` in `$GEMINI_CLI_HOME`), `~/.copilot` (or `$COPILOT_HOME`), `~/.qwen` (or `$QWEN_HOME`); skills for Codex and Copilot CLI in `~/.agents/skills` |
 | `--dir <path>` | The project folder, instead of the current one |
 | `--models` | Make this environment the one these tools take their models from |
 | `--dry-run` | Show what would change, with each update's diff, and write nothing |
@@ -230,13 +230,15 @@ A plugin's APM instructions (`instructions/*.instructions.md`) are
 written the same way, as `<plugin>-<name>`, with `plugin <plugin>` in the
 heading. One whose `applyTo` is `**`, or that has none, loads in every
 session; any other `applyTo` makes it apply only to those files, which
-Claude Code and Qwen Code support (as `paths:`) and Gemini CLI doesn't, so
-it is skipped there with a warning.
+Claude Code and Qwen Code support (as `paths:`) and Copilot CLI (as
+`applyTo`), and Codex and Gemini CLI don't, so it is skipped there with a
+warning.
 
 **Sekisho never writes a repository's or your own instructions file**:
 `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.override.md` or
 `.github/copilot-instructions.md` in a project, nor `AGENTS.md`,
-`CLAUDE.md` or `AGENTS.override.md` in a tool's own folder. Those belong
+`CLAUDE.md`, `AGENTS.override.md` or `copilot-instructions.md` in a
+tool's own folder. Those belong
 to the repository or to you, and writing one would change what the tool
 reads: in Claude Code, a `CLAUDE.md` stops it reading the repository's
 `AGENTS.md`. A plugin's top-level `AGENTS.md` is skipped with a warning.
@@ -261,7 +263,13 @@ Claude Code also loads the global environment "tools": skill "deploy" (the sessi
 
 Gemini CLI and Qwen Code use the folder's model settings too, and on a
 shared name run the folder's MCP server and skill. A prompt both define
-is kept twice, one of them renamed with a prefix.
+is kept twice, one of them renamed with a prefix. Codex takes the
+folder's profile only when it is chosen (`codex --profile` or `sekisho
+run codex`), so a project's and a global install's models never meet;
+it loads MCP servers from both, the folder's winning a shared name, and
+lists both scopes' skills; the folder's `developer_instructions` replace
+the global ones. Copilot CLI loads MCP servers, skills and instructions
+from both, the folder's first.
 
 ### What Claude Code gets
 
@@ -414,6 +422,117 @@ repository, and only in a trusted folder when you have turned folder
 trust on: `use` says so when the folder is inside a repository but not at
 its root.
 
+### What Codex gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings | the profile `sekisho-<env>`, `~/.codex/sekisho-<env>.config.toml` | the same keys in `~/.codex/config.toml`, and the profile |
+| Local MCP servers | `[mcp_servers.<name>]` in `.codex/config.toml` | the same in `~/.codex/config.toml` |
+| Skills | `.agents/skills/<name>/` | `~/.agents/skills/<name>/` |
+| Instructions | `developer_instructions` in `.codex/config.toml` | the same in `~/.codex/config.toml` |
+
+(`~/.codex` is `$CODEX_HOME` when that is set.) Codex ignores a model
+provider in a project's `.codex/config.toml`, so a project's model
+settings are a profile in Codex's own folder:
+
+```toml
+model = "gpt-5"
+model_provider = "sekisho-pay"
+
+[model_providers.sekisho-pay]
+name = "Sekisho pay"
+base_url = "https://gateway.example.com/env/pay/openai/v1"
+wire_api = "responses"
+
+[model_providers.sekisho-pay.http_headers]
+x-sekisho-tool = "codex"
+
+[model_providers.sekisho-pay.auth]
+command = "sekisho"
+args = ["token"]
+refresh_interval_ms = 300000
+timeout_ms = 15000
+```
+
+Start Codex with `codex --profile sekisho-pay`, or `sekisho run codex`,
+which does the same. Codex runs `sekisho token` for its key every five
+minutes, and sends
+[`x-sekisho-tool: codex`](gateway.md#which-coding-tool-made-a-call). The
+model is the environment's `openai` [default model](environments-and-keys.md#default-models),
+which the Responses API must reach, Codex's only API; without one Codex
+gets no model settings. After `--global`, plain `codex` uses Sekisho too.
+The profile is one file in Codex's folder for every folder that installs
+the environment, so `uninstall` in one folder removes it for the others
+until their next `sekisho use`.
+
+Codex hands its MCP servers only a few variables of its own, so a server
+setting from your environment is forwarded by name in `env_vars`, never
+written as a value. Codex has no custom prompts, so prompts are skipped,
+and a plugin works in Codex only once Codex installs it into its own
+cache, so plugins are taken apart as for [Gemini CLI](#what-gemini-cli-gets):
+their skills and MCP servers, without hooks, agents or commands.
+
+`developer_instructions` is one value per scope, which Codex sends as a
+developer message, so each environment's instructions are a section of
+it of their own:
+
+```toml
+developer_instructions = """
+<!-- sekisho:pay -->
+# Payments style (Sekisho environment pay, instruction style)
+
+Short functions. Money is integer micro-USD.
+<!-- /sekisho:pay -->"""
+```
+
+A value you wrote yourself is asked about before a section is added
+([Your own files](#your-own-files)); your text stays, and `uninstall`
+takes out only Sekisho's section. Codex loads no instructions for some
+files only, so a plugin's path-scoped one is skipped with a warning.
+
+Codex reads a project's `.codex/config.toml` only once you trust the
+folder, so `use` says so until `~/.codex/config.toml` records it as
+trusted; Sekisho never trusts a folder for you.
+
+### What Copilot CLI gets
+
+| What | In a project | With `--global` |
+|---|---|---|
+| Model settings | none: through [`sekisho run copilot-cli`](#starting-a-tool-with-sekisho-run) | the same |
+| Local MCP servers | `.mcp.json`, shared with Claude Code | `~/.copilot/mcp-config.json` |
+| Skills | `.agents/skills/<name>/` | `~/.agents/skills/<name>/` |
+| Instructions | `.github/instructions/sekisho-<env>-<name>.instructions.md` | `~/.copilot/instructions/sekisho-<env>-<name>.instructions.md` |
+
+(`~/.copilot` is `$COPILOT_HOME` when that is set.) Copilot CLI takes a
+custom model provider from its environment variables, so it starts
+through `sekisho run copilot-cli` (by Copilot CLI's changelog, a custom
+provider works signed out of GitHub). Its
+own key command would start a program before every model request, so
+the run's proxy holds the token instead.
+
+Copilot CLI reads a project's `.mcp.json` as Claude Code does, so the
+two share its entries, written once in Claude Code's form, with your
+settings as `${NAME}` references; uninstalling one tool keeps what the
+other still uses. A plugin's servers, taken apart for Copilot CLI as
+`<plugin>-<server>`, are in that file too, so Claude Code, which runs the
+plugin itself, asks whether to start them as well. Copilot CLI reads the
+servers of a folder you trust. It reads no prompt files, so prompts are
+skipped; plugins are taken apart as for Codex.
+
+Each instruction is a file of its own for every path, which Copilot CLI
+combines with the repository's:
+
+```markdown
+---
+applyTo: "**"
+---
+# Payments style (Sekisho environment pay, instruction style)
+
+Short functions. Money is integer micro-USD.
+```
+
+A plugin's path-scoped instruction keeps its own `applyTo` globs.
+
 ## Starting a tool with `sekisho run`
 
 ```bash
@@ -422,8 +541,10 @@ sekisho run qwen-code -- -p "Explain this repository"
 ```
 
 starts the tool with its arguments (after `--`) and the terminal handed
-over, and exits with the tool's exit code. Gemini CLI and Qwen Code need
-it; Claude Code doesn't, since it runs `sekisho token` itself.
+over, and exits with the tool's exit code. Gemini CLI, Qwen Code and
+Copilot CLI need it; Claude Code doesn't, since it runs `sekisho token`
+itself, and for Codex `sekisho run codex` is `codex --profile
+sekisho-<env>`.
 
 The run takes the folder's install for the tool, else your global one:
 the environment the tool takes its models from, and the others installed
@@ -438,6 +559,7 @@ with:
 | `SEKISHO_RUN_URL` | the proxy, `http://127.0.0.1:<port>` |
 | `SEKISHO_RUN_KEY` | the run's key, which works only on that proxy and only while the run lasts |
 | Gemini CLI: `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` | `$SEKISHO_RUN_URL/env/<name>/gemini`, and the run's key |
+| Copilot CLI: `COPILOT_PROVIDER_TYPE`, `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_MODEL` | `anthropic`, `$SEKISHO_RUN_URL/env/<name>/anthropic` and the `anthropic` default model when the environment has one; else `openai`, `…/openai/v1` and the `openai` default; and the run's key |
 
 The proxy answers only requests that carry the run's key (as
 `Authorization: Bearer`, `x-api-key` or `x-goog-api-key`), only under
@@ -445,9 +567,10 @@ The proxy answers only requests that carry the run's key (as
 else is 401 or 404 and goes nowhere. It removes every credential the tool
 sent (and a `key` in the query), adds `Authorization: Bearer` with a fresh
 token, and streams the request and the answer through to the gateway. For
-Gemini CLI, whose own settings can't carry it, the proxy also sets
-[`x-sekisho-tool: gemini-cli`](gateway.md#which-coding-tool-made-a-call)
-on every request, replacing any copy the tool sent. The
+Gemini CLI and Copilot CLI, the proxy also sets
+[`x-sekisho-tool`](gateway.md#which-coding-tool-made-a-call)
+(`gemini-cli`, `copilot-cli`) on every request, replacing any copy the
+tool sent. The
 token is reused and refreshed as `sekisho token`'s is, so a run can last
 longer than an hour. A redirect from the gateway is answered with 502 and
 never followed. When the run has no token (your session has ended), the

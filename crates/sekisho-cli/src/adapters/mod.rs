@@ -13,19 +13,23 @@ use serde::{Deserialize, Serialize};
 use crate::install::Scope;
 
 mod claude_code;
+mod codex;
+mod copilot_cli;
 mod gemini_cli;
 mod qwen_code;
 mod test_adapter;
 mod translate;
 
 pub use claude_code::ClaudeCode;
+pub use codex::Codex;
+pub use copilot_cli::CopilotCli;
 pub use gemini_cli::GeminiCli;
 pub use qwen_code::QwenCode;
 pub use test_adapter::TestAdapter;
 
 /// Every tool `use` can install for, as each adapter task adds its own.
 pub fn all() -> Vec<&'static dyn Adapter> {
-    vec![&ClaudeCode, &GeminiCli, &QwenCode]
+    vec![&ClaudeCode, &Codex, &GeminiCli, &CopilotCli, &QwenCode]
 }
 
 /// The eight coding tools of release 1 (D19).
@@ -493,6 +497,18 @@ pub trait Adapter {
     /// it fetched, never of the lock, which a repository could carry.
     fn run_spec(&self, _d: &Delivery) -> Option<RunSpec> {
         None
+    }
+
+    /// How `use` tells the person to start the tool with `d`'s models:
+    /// through `sekisho run` when the tool needs it.
+    fn start_hint(&self, d: &Delivery) -> Option<String> {
+        self.run_spec(d).map(|_| {
+            let tool = self.tool();
+            format!(
+                "Start {} with `sekisho run {tool}`: it takes its key from the run.",
+                tool.title()
+            )
+        })
     }
 
     /// What `use` tells the person about this tool in `scope`, such as a

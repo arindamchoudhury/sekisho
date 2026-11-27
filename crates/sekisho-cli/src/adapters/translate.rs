@@ -1,9 +1,10 @@
-//! What Gemini CLI and Qwen Code (a fork of it) take in the same layout,
-//! from their sources (Gemini CLI `acfb42d`, Qwen Code `1de5c0b3`): skills
-//! in `skills/<name>/`, prompts as TOML commands in `commands/`, MCP servers
-//! in `settings.json`'s `mcpServers`, and plugins taken apart into those,
-//! since neither reads Claude Code plugins nor has a project folder for its
-//! own extensions (D205).
+//! Content for the tools that read no Claude Code plugin, each in its own
+//! [`Layout`]: skills in a `skills/<name>/` folder, prompts as TOML commands
+//! where the tool has them, MCP servers as keys of one config file, and
+//! plugins taken apart into those (D205). Gemini CLI and Qwen Code (from
+//! their sources, `acfb42d` and `1de5c0b3`) keep all of it under one
+//! folder; Codex (`rust-v0.172.0`) and Copilot CLI keep skills in the shared
+//! `.agents/skills/` and have no prompts.
 
 use std::collections::BTreeMap;
 
@@ -28,6 +29,29 @@ pub(crate) enum RemoteKey {
     UrlAndType,
     /// Qwen Code: `httpUrl` for streamable HTTP, `url` for SSE.
     HttpUrl,
+    /// Codex: `url`, its headers in `http_headers`.
+    UrlOnly,
+}
+
+/// How a person's variable reaches a local server.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum UserVars {
+    /// A reference in the server's `env`, given the server's variable, the
+    /// person's, and whether the server needs it; `None` leaves it to the
+    /// environment the tool hands its servers.
+    Reference(fn(&str, &str, bool) -> Option<String>),
+    /// Codex: forwarded by name in the server's `env_vars`, since Codex
+    /// hands a server only a few variables of its own.
+    Forward,
+}
+
+/// The file a tool keeps its MCP servers in, and the key they go under.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Servers {
+    pub root: Root,
+    pub file: &'static str,
+    pub format: Format,
+    pub key: &'static str,
 }
 
 /// Where one tool keeps things, in one scope.
@@ -37,10 +61,13 @@ pub(crate) struct Layout {
     /// `.gemini/` in a project, nothing in the tool's own folder.
     pub base: &'static str,
     pub remote: RemoteKey,
-    /// A person's variable in a server's `env`: `None` leaves it to the
-    /// environment the tool hands its servers. Given the server's variable,
-    /// the person's, and whether the server needs it.
-    pub user_var: fn(&str, &str, bool) -> Option<String>,
+    pub user_vars: UserVars,
+    /// Where `skills/<name>/` folders go: a root and a path ending in `/`.
+    pub skills: (Root, &'static str),
+    pub servers: Servers,
+    /// The tool runs prompts as TOML commands under `<base>commands/`; else
+    /// prompts are skipped.
+    pub commands: bool,
 }
 
 impl Layout {
@@ -52,7 +79,26 @@ impl Layout {
         self.path("settings.json")
     }
 
-    /// A key in `settings.json`, which both tools read with comments.
+    /// A skill's file.
+    fn skill(&self, rest: &str) -> Result<(Root, RelPath), AdapterError> {
+        let (root, base) = self.skills;
+        Ok((root, RelPath::parse(&format!("{base}{rest}"))?))
+    }
+
+    /// An MCP server's key.
+    fn server(&self, name: &str, value: Value, origin: Origin) -> Result<KeyWrite, AdapterError> {
+        Ok(KeyWrite {
+            root: self.servers.root,
+            file: RelPath::parse(self.servers.file)?,
+            format: self.servers.format,
+            key: vec![self.servers.key.to_owned(), name.to_owned()],
+            value,
+            origin,
+        })
+    }
+
+    /// A key in `settings.json`, which Gemini CLI and Qwen Code read with
+    /// comments.
     pub fn key(
         &self,
         key: &[&str],
@@ -128,9 +174,54 @@ fn remote(layout: &Layout, url: &str, sse: bool, headers: Option<&Value>) -> Val
         }
         (RemoteKey::HttpUrl, false) => json!({"httpUrl": url}),
         (RemoteKey::HttpUrl, true) => json!({"url": url}),
+        (RemoteKey::UrlOnly, _) => json!({"url": url}),
     };
     if let Some(h) = headers.filter(|h| h.as_object().is_some_and(|m| !m.is_empty())) {
-        value["headers"] = h.clone();
+        let key = match layout.remote {
+            RemoteKey::UrlOnly => "http_headers",
+            _ => "headers",
+        };
+        value[key] = h.clone();
+    }
+    value
+}
+
+/// `NAME` when `value` is just `${NAME}`.
+fn reference(value: &str) -> Option<&str> {
+    let name = value.strip_prefix("${")?.strip_suffix('}')?;
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    ((first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some(name)
+}
+
+/// A local server's value: its command and arguments, fixed values in
+/// `env`, the person's variables as the layout says.
+fn local(layout: &Layout, command: &str, args: &[String], env: &[(String, EnvValue)]) -> Value {
+    let mut fixed = Map::new();
+    let mut forward: Vec<Value> = Vec::new();
+    for (k, v) in env {
+        match v {
+            EnvValue::Literal(x) => {
+                fixed.insert(k.clone(), Value::String(x.clone()));
+            }
+            EnvValue::FromUser { name, required } => match layout.user_vars {
+                UserVars::Reference(f) => {
+                    if let Some(r) = f(k, name, *required) {
+                        fixed.insert(k.clone(), Value::String(r));
+                    }
+                }
+                UserVars::Forward => forward.push(Value::String(name.clone())),
+            },
+        }
+    }
+    let mut value = json!({"command": command, "args": args});
+    if !fixed.is_empty() {
+        value["env"] = Value::Object(fixed);
+    }
+    if !forward.is_empty() {
+        value["env_vars"] = Value::Array(forward);
     }
     value
 }
@@ -148,9 +239,10 @@ pub(crate) fn content(
         match &e.spec {
             EntrySpec::Skill(_) => {
                 for f in &e.files {
+                    let (root, path) = layout.skill(&format!("{}/{}", e.name, f.path))?;
                     out.files.push(FileWrite {
-                        root: layout.root,
-                        path: layout.path(&format!("skills/{}/{}", e.name, f.path))?,
+                        root,
+                        path,
                         content: blob(ctx, &f.sha256)?,
                         executable: f.executable,
                         origin: origin.clone(),
@@ -159,6 +251,10 @@ pub(crate) fn content(
             }
             // Each tool's own way, in its adapter.
             EntrySpec::Instruction(_) => {}
+            EntrySpec::Prompt(_) if !layout.commands => out.skipped.push(Skipped {
+                what: format!("prompt {}", e.name),
+                why: format!("{} has no custom prompts", layout.tool.title()),
+            }),
             EntrySpec::Prompt(spec) => {
                 for f in &e.files {
                     let stem = f.path.strip_suffix(".md").unwrap_or(&f.path);
@@ -183,25 +279,13 @@ pub(crate) fn content(
                 let Some(server) = ctx.local_servers.iter().find(|s| s.entry == address(e)) else {
                     continue;
                 };
-                let env: Map<String, Value> = server
+                let env: Vec<(String, EnvValue)> = server
                     .env
                     .iter()
-                    .filter_map(|(k, v)| {
-                        let v = match v {
-                            EnvValue::Literal(x) => x.clone(),
-                            EnvValue::FromUser { name, required } => {
-                                (layout.user_var)(k, name, *required)?
-                            }
-                        };
-                        Some((k.clone(), Value::String(v)))
-                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let mut value = json!({"command": server.command, "args": server.args});
-                if !env.is_empty() {
-                    value["env"] = Value::Object(env);
-                }
-                out.keys
-                    .push(layout.key(&["mcpServers", &server.name], value, origin)?);
+                let value = local(layout, &server.command, &server.args, &env);
+                out.keys.push(layout.server(&server.name, value, origin)?);
             }
             EntrySpec::Plugin(_) => {
                 plugin(d, e, ctx, layout, out, &mut no_cutoff)?;
@@ -216,11 +300,13 @@ pub(crate) fn content(
     // The environment's MCP endpoint, once plan 5 serves it (D216).
     if let Some(endpoint) = &d.mcp {
         let mut value = remote(layout, &endpoint.url, false, None);
-        if let Some(client) = &endpoint.client_id {
+        if let (Some(client), RemoteKey::UrlAndType | RemoteKey::HttpUrl) =
+            (&endpoint.client_id, layout.remote)
+        {
             value["oauth"] = json!({"enabled": true, "clientId": client});
         }
-        out.keys.push(layout.key(
-            &["mcpServers", &format!("sekisho-{}", d.environment)],
+        out.keys.push(layout.server(
+            &format!("sekisho-{}", d.environment),
             value,
             Origin::Environment,
         )?);
@@ -326,15 +412,17 @@ fn plugin(
     for f in &e.files {
         let bytes = &files[&f.path];
         if let Some(rest) = f.path.strip_prefix("skills/") {
+            let (root, path) = layout.skill(rest)?;
             out.files.push(FileWrite {
-                root: layout.root,
-                path: layout.path(&format!("skills/{rest}"))?,
+                root,
+                path,
                 content: bytes.clone(),
                 executable: f.executable,
                 origin: origin.clone(),
             });
         } else if let Some(rest) = f.path.strip_prefix("commands/")
             && let Some(stem) = rest.strip_suffix(".md")
+            && layout.commands
         {
             match command(bytes, None) {
                 Ok(content) => out.files.push(FileWrite {
@@ -353,6 +441,13 @@ fn plugin(
         .get(".claude-plugin/plugin.json")
         .and_then(|b| serde_json::from_slice(b).ok());
     let declares = |key: &str| manifest.as_ref().is_some_and(|m| m.get(key).is_some());
+    if !layout.commands && (has("commands/") || declares("commands")) {
+        skip(
+            out,
+            "commands",
+            format!("{} has no custom prompts", layout.tool.title()),
+        );
+    }
     if has("hooks/") || declares("hooks") {
         skip(
             out,
@@ -385,8 +480,7 @@ fn plugin(
         if let Some(url) = def.get("url").and_then(Value::as_str) {
             let sse = def.get("type").and_then(Value::as_str) == Some("sse");
             let value = remote(layout, url, sse, def.get("headers"));
-            out.keys
-                .push(layout.key(&["mcpServers", &key], value, origin.clone())?);
+            out.keys.push(layout.server(&key, value, origin.clone())?);
             continue;
         }
         let Some(command) = def.get("command").and_then(Value::as_str) else {
@@ -435,12 +529,31 @@ fn plugin(
                 *s = fill(s);
             }
         }
-        let mut value = json!({"command": command, "args": args});
-        if !env.is_empty() {
-            value["env"] = Value::Object(env);
-        }
-        out.keys
-            .push(layout.key(&["mcpServers", &key], value, origin.clone())?);
+        // A plugin's own `env` holds values as the plugin wrote them; a
+        // whole `${NAME}` is the person's variable, which a tool that
+        // expands no references gets forwarded instead.
+        let forward = matches!(layout.user_vars, UserVars::Forward);
+        let env: Vec<(String, EnvValue)> = env
+            .into_iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                match reference(&v) {
+                    Some(name) if forward => (
+                        k,
+                        EnvValue::FromUser {
+                            name: name.to_owned(),
+                            required: true,
+                        },
+                    ),
+                    _ => (k, EnvValue::Literal(v)),
+                }
+            })
+            .collect();
+        let value = local(layout, &command, &args, &env);
+        out.keys.push(layout.server(&key, value, origin.clone())?);
     }
     if needs_files {
         // A plugin's AGENTS.md is never written (D223).

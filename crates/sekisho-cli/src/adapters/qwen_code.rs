@@ -18,10 +18,10 @@ use serde_json::{Value, json};
 use sekisho_catalog::delivery::Delivery;
 use sekisho_core::formats::ClientApi;
 
-use super::translate::{self, Layout, RemoteKey};
+use super::translate::{self, Layout, RemoteKey, Servers, UserVars};
 use super::{
-    Adapter, AdapterError, FileWrite, Layer, Layering, Origin, RenderContext, Rendered, Root,
-    RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
+    Adapter, AdapterError, FileWrite, Format, Layer, Layering, Origin, RenderContext, Rendered,
+    Root, RunSpec, ScopeKind, Skipped, Tool, UnmanagedItem, on_path,
 };
 use crate::install::{Scope, instructions};
 
@@ -44,7 +44,29 @@ impl QwenCode {
             // Servers inherit Qwen Code's whole environment (less its own
             // secrets), so a variable of the server's own name reaches it
             // as it is; an unset `${VAR}` would stay as that text.
-            user_var: |key, name, _| (key != name).then(|| format!("${{{name}}}")),
+            user_vars: UserVars::Reference(|key, name, _| {
+                (key != name).then(|| format!("${{{name}}}"))
+            }),
+            skills: if project {
+                (Root::Project, ".qwen/skills/")
+            } else {
+                (Root::ToolHome(Tool::QwenCode), "skills/")
+            },
+            servers: Servers {
+                root: if project {
+                    Root::Project
+                } else {
+                    Root::ToolHome(Tool::QwenCode)
+                },
+                file: if project {
+                    ".qwen/settings.json"
+                } else {
+                    "settings.json"
+                },
+                format: Format::Jsonc,
+                key: "mcpServers",
+            },
+            commands: true,
         }
     }
 }

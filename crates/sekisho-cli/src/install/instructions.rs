@@ -29,7 +29,13 @@ const PROJECT_FILES: [&str; 5] = [
     "agents.override.md",
     ".github/copilot-instructions.md",
 ];
-const HOME_FILES: [&str; 3] = ["agents.md", "claude.md", "agents.override.md"];
+const HOME_FILES: [&str; 4] = [
+    "agents.md",
+    "claude.md",
+    "agents.override.md",
+    // Copilot CLI's user-level file, in `~/.copilot`.
+    "copilot-instructions.md",
+];
 
 /// `path` at `root` is one of the files [`PROJECT_FILES`] and
 /// [`HOME_FILES`] name, in any case (Windows' and macOS' file systems
@@ -64,6 +70,23 @@ pub struct Instruction {
 }
 
 impl Instruction {
+    /// The text with `applyTo:` frontmatter, as Copilot CLI reads an
+    /// `.instructions.md` file: `"**"` for every path, else its globs.
+    pub fn with_apply_to(&self) -> String {
+        let quoted = |g: &str| serde_json::to_string(g).expect("strings serialize");
+        let apply = match &self.paths {
+            None => format!("applyTo: {}\n", quoted("**")),
+            Some(globs) => {
+                let list: String = globs
+                    .iter()
+                    .map(|g| format!("  - {}\n", quoted(g)))
+                    .collect();
+                format!("applyTo:\n{list}")
+            }
+        };
+        format!("---\n{apply}---\n{}", self.text)
+    }
+
     /// The text with `paths:` frontmatter when path-scoped, as Claude Code
     /// and Qwen Code read it.
     pub fn with_paths(&self) -> String {
