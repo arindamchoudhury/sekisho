@@ -7,7 +7,7 @@ environment into coding tools comes next.
 
 ## Installing it
 
-There are no release binaries yet. Build it from a clone with Rust 1.99.1:
+There are no release binaries yet. Build it from a clone with Rust 1.100.0:
 
 ```bash
 cargo install --path crates/sekisho-server

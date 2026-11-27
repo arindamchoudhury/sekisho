@@ -112,35 +112,56 @@ macro_rules! name_type {
 
 name_type!(
     /// An environment's name, which is also its route prefix (`/env/<name>/…`).
-    EnvName, "environment", is_slug, SLUG_RULE
+    EnvName,
+    "environment",
+    is_slug,
+    SLUG_RULE
 );
 name_type!(
     /// A provider's name, unique across the install.
-    ProviderName, "provider", is_slug, SLUG_RULE
+    ProviderName,
+    "provider",
+    is_slug,
+    SLUG_RULE
 );
 name_type!(
     /// A model's name as the provider spells it, such as `claude-sonnet-5-5`.
-    ModelName, "model", is_model_name, MODEL_RULE
+    ModelName,
+    "model",
+    is_model_name,
+    MODEL_RULE
 );
 name_type!(
     /// A Sekisho group's name. Identity providers' groups don't follow this
     /// rule: Sekisho names them `<connector>/<group>`
     /// ([`crate::access::idp_group`]).
-    GroupName, "group", is_slug, SLUG_RULE
+    GroupName,
+    "group",
+    is_slug,
+    SLUG_RULE
 );
 name_type!(
     /// The ID of an identity provider's connector at Dex, such as `github`.
-    ConnectorId, "connector", is_connector_id, CONNECTOR_RULE
+    ConnectorId,
+    "connector",
+    is_connector_id,
+    CONNECTOR_RULE
 );
 name_type!(
     /// A catalog source's name, unique across the install. `environments`
     /// is Git mode's alone ([`SourceName::git_mode`]).
-    SourceName, "source", is_source_name, SOURCE_RULE
+    SourceName,
+    "source",
+    is_source_name,
+    SOURCE_RULE
 );
 name_type!(
     /// A catalog entry's name: a skill, plugin, prompt, MCP server or A2A
     /// agent, unique within its source and kind.
-    EntryName, "entry", is_entry_name, ENTRY_RULE
+    EntryName,
+    "entry",
+    is_entry_name,
+    ENTRY_RULE
 );
 
 impl SourceName {

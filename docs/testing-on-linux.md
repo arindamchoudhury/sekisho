@@ -28,7 +28,7 @@ the easiest.
 | Need | Version or size | Why |
 |---|---|---|
 | GNU make and bash | any recent | The `Makefile` uses bash |
-| Rust through `rustup` | 1.99.1, from `rust-toolchain.toml` | `rustup` installs it with clippy and rustfmt on the first `cargo` call |
+| Rust through `rustup` | 1.100.0, from `rust-toolchain.toml` | `rustup` installs it with clippy and rustfmt on the first `cargo` call |
 | C compiler and linker | `build-essential` (gcc, make) | `ring` (TLS) compiles C |
 | git | **2.37 or later** | Catalog syncs refuse older git, which ignores the address pin ([Running Sekisho](running.md)). Ubuntu 22.04's 2.34 is too old; 24.04 has 2.43, Debian 13 2.47 |
 | Docker Engine with the Compose plugin | Compose v2 | Database tests start `postgres:18` themselves; the end-to-end stack runs on Compose |

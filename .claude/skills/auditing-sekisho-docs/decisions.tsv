@@ -229,3 +229,4 @@ D227	The header is x-sekisho-tool with plan 4's adapter names, written by use wh
 D228	extAuthz checks the tool against the eight names, parses the version from the User-Agent per tool, takes a session ID from headers only, passes them to charges with defaults; never used for access, budgets or prices (our call 2026-11-22)	D228	design plan4
 D229	The raw User-Agent is kept in the audit only, cut to 256 characters, exported under OpenTelemetry's user_agent names (our call 2026-11-22)	user_agent\.original	design
 D230	Plan 6 reports spend, cache rebuilds and refusals by tool and lists tool versions in use; MCP calls' tool from clientInfo in plan 5; Claude Code's request class waits for D225's spike (our call 2026-11-22)	(D230|tool versions in use)	design plans
+D231	Cargo enforces the 14-day dependency rule: .cargo/config.toml sets registry.global-min-publish-age = "14 days" (the owner, 2026-11-27)	global-min-publish-age	design claude

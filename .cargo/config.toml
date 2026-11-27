@@ -1,0 +1,8 @@
+# Dependencies must have been published for at least 14 days (design
+# section 10, D231). Since Rust 1.100, Cargo's resolver skips younger
+# versions unless Cargo.lock already has them
+# (resolver.incompatible-publish-age = "deny", the default).
+# `.claude/skills/writing-sekisho-plans/pin-versions.sh --lock --since HEAD`
+# still checks each lock file change.
+[registry]
+global-min-publish-age = "14 days"

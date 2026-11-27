@@ -4,10 +4,10 @@
 # The end-to-end stack builds with SEKISHO_FEATURES=sekisho-server/e2e, which
 # allows its hook-free comparison route; release images leave it empty.
 
-FROM rust:1.99.1-slim-trixie AS build
+FROM rust:1.100.0-slim-trixie AS build
 # The image's toolchain is the pinned one; skip rust-toolchain.toml's
 # development components (clippy, rustfmt).
-ENV RUSTUP_TOOLCHAIN=1.99.1
+ENV RUSTUP_TOOLCHAIN=1.100.0
 ARG SEKISHO_FEATURES=""
 WORKDIR /src
 COPY . .
